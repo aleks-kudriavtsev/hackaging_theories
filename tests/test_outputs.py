@@ -26,7 +26,7 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         )
     ]
     assignments = [TheoryAssignment("p1", "Activity Theory", 0.75)]
-    answers = [QuestionAnswer("p1", "Q1", "Question", "Answer")]
+    answers = [QuestionAnswer("p1", "Q1", "Question", "Answer", 0.75, "Evidence")]
 
     paper_path = export_papers(papers, tmp_path / "papers.csv")
     theory_path = export_theories(assignments, tmp_path / "theories.csv")

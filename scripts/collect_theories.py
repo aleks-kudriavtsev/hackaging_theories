@@ -237,7 +237,7 @@ def main() -> None:
     for paper in papers:
         assignments.extend(classifier.classify(paper))
 
-    extractor = QuestionExtractor(config.get("extraction", {}).get("keyword_templates"))
+    extractor = QuestionExtractor(config.get("extraction"))
     question_answers = []
     for paper in papers:
         question_answers.extend(extractor.extract(paper))

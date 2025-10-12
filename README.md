@@ -19,8 +19,9 @@ The pipeline focuses on three pillars of the challenge:
    known theories. Teams can substitute this module with more advanced models
    while preserving the same interface.
 3. **Question extraction** – `src/theories_pipeline/extraction.py` automates the
-   Hackaging Q1–Q9 prompts so findings, methods, and limitations are captured in
-   structured CSV form.
+   Hackaging Q1–Q9 prompts spanning biomarkers, mechanisms, interventions, and
+   species-level comparisons so categorical outputs are captured in structured
+   CSV form.
 
 Sample inputs and outputs in `data/examples/` illustrate the expected artefacts
 that the Hackaging organisers require for leaderboard submissions.
@@ -117,7 +118,7 @@ headers for every CSV artefact. Expect the following columns:
 | --- | --- | --- |
 | `data/examples/papers.csv` | `export_papers` | `identifier`, `title`, `authors`, `abstract`, `source`, `year`, `doi` |
 | `data/examples/theories.csv` | `export_theories` | `paper_id`, `theory`, `score` (stringified to three decimal places) |
-| `data/examples/questions.csv` | `export_question_answers` | `paper_id`, `question_id`, `question`, `answer` |
+| `data/examples/questions.csv` | `export_question_answers` | `paper_id`, `question_id`, `question`, `answer`, `confidence`, `evidence` |
 
 Each row in the questions export corresponds to one of the nine constants in
 `src/theories_pipeline/extraction.py::QUESTIONS`, ensuring the Q1–Q9 prompts stay

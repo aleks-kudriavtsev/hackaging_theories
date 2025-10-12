@@ -91,7 +91,7 @@ def main() -> None:
         papers = retriever.search("", limit=None)
 
     classifier = TheoryClassifier.from_config(config["classification"]["keywords"])
-    extractor = QuestionExtractor(config.get("extraction", {}).get("keyword_templates"))
+    extractor = QuestionExtractor(config.get("extraction"))
 
     theory_counts: Counter[str] = Counter()
     question_answers = []
