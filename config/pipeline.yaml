@@ -1,8 +1,36 @@
 api_keys:
   openalex: "REPLACE_ME"
-  crossref: "REPLACE_ME"
+  crossref_contact: "you@example.com"
+  pubmed: "REPLACE_ME"
+
 data_sources:
   seed_papers: data/examples/seed_papers.json
+
+providers:
+  - name: openalex
+    type: openalex
+    enabled: true
+    api_key_key: openalex
+    batch_size: 200
+    rate_limit_per_sec: 5
+    query_shards:
+      - "{query}"
+      - "{query} aging"
+  - name: crossref
+    type: crossref
+    enabled: true
+    api_key_key: crossref_contact
+    batch_size: 100
+    rate_limit_per_sec: 10
+    query_shards:
+      - "{query}"
+  - name: pubmed
+    type: pubmed
+    enabled: false
+    api_key_key: pubmed
+    batch_size: 200
+    rate_limit_per_sec: 3
+
 classification:
   keywords:
     Activity Theory:
@@ -17,6 +45,36 @@ classification:
       - disengagement
       - withdrawal
       - detach
+
+corpus:
+  cache_dir: data/cache/literature
+  global_limit: 1500
+  targets:
+    Activity Theory:
+      target: 600
+      queries:
+        - "{base_query} activity theory"
+        - "activity theory older adults"
+      subtheories:
+        Engagement:
+          target: 300
+          queries:
+            - "activity theory engagement older adults"
+        Participation:
+          target: 200
+          queries:
+            - "activity theory participation aging"
+    Socioemotional Selectivity Theory:
+      target: 500
+      queries:
+        - "{base_query} socioemotional selectivity theory"
+        - "socioemotional selectivity older adults"
+    Disengagement Theory:
+      target: 400
+      queries:
+        - "{base_query} disengagement theory"
+        - "aging disengagement theory"
+
 extraction:
   keyword_templates:
     Q1:
@@ -46,10 +104,12 @@ extraction:
     Q9:
       - future
       - further research
+
 outputs:
   papers: data/examples/papers.csv
   theories: data/examples/theories.csv
   questions: data/examples/questions.csv
   cache_dir: data/cache
+
 pipeline:
   max_results: 10
