@@ -20,6 +20,7 @@ from theories_pipeline import (
     PaperMetadata,
     QuestionExtractor,
     TheoryClassifier,
+    TheoryOntology,
     export_question_answers,
 )
 
@@ -90,29 +91,48 @@ def main() -> None:
         retriever = LiteratureRetriever(Path(config["data_sources"]["seed_papers"]))
         papers = retriever.search("", limit=None)
 
-    classifier = TheoryClassifier.from_config(config["classification"]["keywords"])
+    ontology = TheoryOntology.from_targets_config(config.get("corpus", {}).get("targets", {}))
+    classifier = TheoryClassifier.from_config(
+        config["classification"]["keywords"], ontology=ontology
+    )
     extractor = QuestionExtractor(config.get("extraction"))
 
     theory_counts: Counter[str] = Counter()
     question_answers = []
+    assignments = []
     for paper in papers:
-        assignments = classifier.classify(paper)
-        theory_counts.update([assignment.theory for assignment in assignments])
+        paper_assignments = classifier.classify(paper)
+        assignments.extend(paper_assignments)
+        theory_counts.update([assignment.theory for assignment in paper_assignments])
         question_answers.extend(extractor.extract(paper))
 
     export_question_answers(question_answers, Path(config["outputs"]["questions"]))
 
     cache_dir = _ensure_cache_dir(Path(config["outputs"].get("cache_dir", "data/cache")))
+    coverage_counts = classifier.summarize(assignments)
+    coverage_summary = ontology.coverage(coverage_counts)
     summary = {
         "paper_count": len(papers),
         "theory_counts": dict(theory_counts),
         "question_coverage": _question_coverage(question_answers),
+        "ontology_coverage": {
+            name: {
+                "count": record.count,
+                "target": record.target,
+                "deficit": record.deficit,
+                "met": record.met,
+                "depth": record.depth,
+            }
+            for name, record in coverage_summary.items()
+        },
     }
     summary_path = cache_dir / "analysis_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(f"Wrote refreshed question answers to {config['outputs']['questions']}")
     print(f"Summary saved to {summary_path}")
+    print()
+    print(ontology.format_coverage_report(coverage_counts))
 
 
 def _question_coverage(answers: Iterable[Any]) -> Dict[str, Dict[str, int]]:

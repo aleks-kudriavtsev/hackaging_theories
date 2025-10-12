@@ -1,0 +1,193 @@
+"""Ontology helpers for hierarchical theory definitions.
+
+This module centralizes parsing and inspection of the nested theory
+configuration used throughout the pipeline.  The configuration is expected to
+define a tree (or forest) of theories where each node may specify an optional
+``target`` quota and any number of ``subtheories``.  The :class:`TheoryOntology`
+class exposes convenience helpers for walking the hierarchy, looking up
+parents/children, calculating depth, and summarising quota coverage based on
+observed paper counts.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Mapping, Optional, Sequence
+
+
+@dataclass
+class OntologyNode:
+    """Represents a theory node inside the ontology hierarchy."""
+
+    name: str
+    target: Optional[int] = None
+    parent: Optional[str] = None
+    children: List[str] = field(default_factory=list)
+
+    def add_child(self, child: str) -> None:
+        if child not in self.children:
+            self.children.append(child)
+
+
+@dataclass(frozen=True)
+class CoverageRecord:
+    """Coverage statistics for a single ontology node."""
+
+    name: str
+    depth: int
+    count: int
+    target: Optional[int]
+
+    @property
+    def deficit(self) -> Optional[int]:
+        if self.target is None:
+            return None
+        return max(0, self.target - self.count)
+
+    @property
+    def met(self) -> bool:
+        deficit = self.deficit
+        return deficit is None or deficit == 0
+
+
+class TheoryOntology:
+    """Container for a hierarchical theory/subtheory ontology."""
+
+    def __init__(self, nodes: Mapping[str, OntologyNode]) -> None:
+        self._nodes: Dict[str, OntologyNode] = {name: node for name, node in nodes.items()}
+        self._depth_cache: Dict[str, int] = {}
+        self._root_names: List[str] = [name for name, node in self._nodes.items() if node.parent is None]
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_targets_config(cls, config: Mapping[str, Mapping[str, object]]) -> "TheoryOntology":
+        """Build an ontology from the nested ``corpus.targets`` configuration."""
+
+        nodes: Dict[str, OntologyNode] = {}
+
+        def ensure(name: str) -> OntologyNode:
+            node = nodes.get(name)
+            if node is None:
+                node = OntologyNode(name=name)
+                nodes[name] = node
+            return node
+
+        def visit(name: str, data: Mapping[str, object], parent: Optional[str]) -> None:
+            node = ensure(name)
+            node.target = data.get("target") if isinstance(data.get("target"), int) or data.get("target") is None else node.target
+            node.parent = parent
+            if parent:
+                ensure(parent).add_child(name)
+            sub_config = data.get("subtheories")
+            if isinstance(sub_config, Mapping):
+                for child_name, child_data in sub_config.items():
+                    if isinstance(child_data, Mapping):
+                        visit(child_name, child_data, name)
+                    else:
+                        visit(child_name, {"target": None, "subtheories": {}}, name)
+
+        for theory_name, theory_cfg in config.items():
+            if isinstance(theory_cfg, Mapping):
+                visit(theory_name, theory_cfg, None)
+            else:
+                visit(theory_name, {"target": None, "subtheories": {}}, None)
+
+        return cls(nodes)
+
+    # ------------------------------------------------------------------
+    # Introspection helpers
+    # ------------------------------------------------------------------
+    def names(self) -> Sequence[str]:
+        return tuple(self._nodes.keys())
+
+    def roots(self) -> Sequence[str]:
+        return tuple(self._root_names)
+
+    def get(self, name: str) -> OntologyNode:
+        return self._nodes[name]
+
+    def parent(self, name: str) -> Optional[str]:
+        return self._nodes[name].parent
+
+    def children(self, name: str) -> Sequence[str]:
+        return tuple(self._nodes[name].children)
+
+    def target(self, name: str) -> Optional[int]:
+        return self._nodes[name].target
+
+    def depth(self, name: str) -> int:
+        if name in self._depth_cache:
+            return self._depth_cache[name]
+        depth = 0
+        node = self._nodes[name]
+        while node.parent is not None:
+            depth += 1
+            node = self._nodes[node.parent]
+        self._depth_cache[name] = depth
+        return depth
+
+    def levels(self) -> Dict[int, List[str]]:
+        levels: Dict[int, List[str]] = {}
+        for name in self._nodes:
+            depth = self.depth(name)
+            levels.setdefault(depth, []).append(name)
+        for names in levels.values():
+            names.sort()
+        return dict(sorted(levels.items()))
+
+    def post_order(self) -> List[str]:
+        order: List[str] = []
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visited:
+                return
+            visited.add(name)
+            for child in self.children(name):
+                visit(child)
+            order.append(name)
+
+        for root in self.roots():
+            visit(root)
+        return order
+
+    # ------------------------------------------------------------------
+    # Coverage helpers
+    # ------------------------------------------------------------------
+    def coverage(self, counts: Mapping[str, int]) -> Dict[str, CoverageRecord]:
+        records: Dict[str, CoverageRecord] = {}
+        for name in self._nodes:
+            records[name] = CoverageRecord(
+                name=name,
+                depth=self.depth(name),
+                count=int(counts.get(name, 0)),
+                target=self.target(name),
+            )
+        return records
+
+    def format_coverage_report(self, counts: Mapping[str, int]) -> str:
+        """Return a human-readable quota coverage report."""
+
+        coverage = self.coverage(counts)
+        lines = ["Ontology quota coverage:"]
+        for depth, names in self.levels().items():
+            lines.append(f"  Depth {depth}:")
+            for name in names:
+                record = coverage[name]
+                indent = "    " * depth
+                target_text = record.target if record.target is not None else "n/a"
+                deficit = record.deficit
+                if deficit is None:
+                    status = "no target"
+                elif deficit == 0:
+                    status = "target met"
+                else:
+                    status = f"deficit {deficit}"
+                lines.append(f"{indent}    - {name}: {record.count} / {target_text} ({status})")
+        return "\n".join(lines)
+
+
+__all__ = ["OntologyNode", "CoverageRecord", "TheoryOntology"]
+

@@ -1,6 +1,7 @@
 """Pipeline utilities for the Hackaging theories challenge."""
 
 from .literature import LiteratureRetriever, PaperMetadata, ProviderConfig, RetrievalResult
+from .ontology import TheoryOntology
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
@@ -16,6 +17,7 @@ __all__ = [
     "RetrievalResult",
     "TheoryClassifier",
     "TheoryAssignment",
+    "TheoryOntology",
     "QuestionExtractor",
     "QuestionAnswer",
     "export_papers",
