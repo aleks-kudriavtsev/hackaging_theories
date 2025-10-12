@@ -58,7 +58,14 @@ def export_question_answers(answers: Iterable[QuestionAnswer], path: Path) -> Pa
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["paper_id", "question_id", "question", "answer"],
+            fieldnames=[
+                "paper_id",
+                "question_id",
+                "question",
+                "answer",
+                "confidence",
+                "evidence",
+            ],
         )
         writer.writeheader()
         for answer in answers:
@@ -68,6 +75,8 @@ def export_question_answers(answers: Iterable[QuestionAnswer], path: Path) -> Pa
                     "question_id": answer.question_id,
                     "question": answer.question,
                     "answer": answer.answer,
+                    "confidence": f"{answer.confidence:.2f}",
+                    "evidence": answer.evidence or "",
                 }
             )
     return path

@@ -76,34 +76,61 @@ corpus:
         - "aging disengagement theory"
 
 extraction:
-  keyword_templates:
-    Q1:
-      - theory
-      - framework
-    Q2:
-      - research question
-      - aim
-    Q3:
-      - method
-      - design
-    Q4:
-      - participants
-      - sample
-    Q5:
-      - outcome
-      - measure
-    Q6:
-      - intervention
-      - exposure
-    Q7:
-      - finding
-      - result
-    Q8:
-      - limitation
-      - constraint
-    Q9:
-      - future
-      - further research
+  questions:
+    - id: Q1
+      prompt: "Does the paper report a biomarker of aging?"
+      allowed_answers:
+        - yes_quantitative
+        - yes_unverified
+        - no
+    - id: Q2
+      prompt: "Does the paper describe a molecular mechanism for longevity?"
+      allowed_answers:
+        - mechanistic_evidence
+        - mechanistic_hypothesis
+        - no
+    - id: Q3
+      prompt: "Does the study test or propose a longevity intervention?"
+      allowed_answers:
+        - validated_intervention
+        - proposed_intervention
+        - no
+    - id: Q4
+      prompt: "Does the paper address irreversibility or reversibility of aging changes?"
+      allowed_answers:
+        - irreversible
+        - reversible
+        - not_discussed
+    - id: Q5
+      prompt: "Does the paper provide cross-species lifespan predictors?"
+      allowed_answers:
+        - yes_quantitative
+        - yes_unverified
+        - no
+    - id: Q6
+      prompt: "Does the paper focus on naked mole rat longevity?"
+      allowed_answers:
+        - primary_focus
+        - mentioned
+        - no
+    - id: Q7
+      prompt: "Does the paper focus on avian longevity?"
+      allowed_answers:
+        - primary_focus
+        - mentioned
+        - no
+    - id: Q8
+      prompt: "Does the paper link body size to longevity?"
+      allowed_answers:
+        - supported
+        - speculative
+        - no
+    - id: Q9
+      prompt: "Does the paper examine calorie restriction and lifespan?"
+      allowed_answers:
+        - experimental
+        - observational
+        - no
 
 outputs:
   papers: data/examples/papers.csv
