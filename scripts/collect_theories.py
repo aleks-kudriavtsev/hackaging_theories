@@ -20,6 +20,7 @@ from theories_pipeline import (
     ProviderConfig,
     QuestionExtractor,
     TheoryClassifier,
+    TheoryOntology,
     export_papers,
     export_question_answers,
     export_theories,
@@ -87,6 +88,19 @@ def slugify(text: str) -> str:
     return slug or "untitled"
 
 
+def _existing_total(retriever: LiteratureRetriever, state_prefix: str) -> int:
+    state = retriever.state_store.get(state_prefix)
+    if not state:
+        return 0
+    seen = state.get("seen_identifiers")
+    if isinstance(seen, list):
+        return len(seen)
+    papers = state.get("papers")
+    if isinstance(papers, list):
+        return len(papers)
+    return 0
+
+
 def collect_for_entry(
     retriever: LiteratureRetriever,
     *,
@@ -115,7 +129,15 @@ def collect_for_entry(
     subtheory_cfg = config.get("subtheories", {})
     if subtheory_cfg:
         sub_summaries: Dict[str, Any] = {}
+        prioritized = []
         for sub_name, sub_config in subtheory_cfg.items():
+            sub_state_prefix = f"{state_prefix}::sub::{slugify(sub_name)}"
+            existing = _existing_total(retriever, sub_state_prefix) if resume else 0
+            sub_target = sub_config.get("target")
+            fill_ratio = (existing / sub_target) if sub_target else 0.0
+            prioritized.append((fill_ratio, sub_name, sub_config, sub_state_prefix))
+        prioritized.sort(key=lambda item: (item[0], item[1]))
+        for _ratio, sub_name, sub_config, sub_state_prefix in prioritized:
             sub_summary, sub_papers = collect_for_entry(
                 retriever,
                 name=sub_name,
@@ -123,7 +145,7 @@ def collect_for_entry(
                 context=context | {"subtheory": sub_name},
                 providers=providers,
                 resume=resume,
-                state_prefix=f"{state_prefix}::sub::{slugify(sub_name)}",
+                state_prefix=sub_state_prefix,
             )
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
@@ -207,10 +229,21 @@ def main() -> None:
 
     context = {"base_query": args.query}
     targets = corpus_cfg.get("targets", {})
+    ontology = TheoryOntology.from_targets_config(targets)
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
 
+    prioritized = []
     for theory_name, theory_cfg in targets.items():
+        state_prefix = f"theory::{slugify(theory_name)}"
+        existing = _existing_total(retriever, state_prefix) if resume else 0
+        theory_target = theory_cfg.get("target")
+        fill_ratio = (existing / theory_target) if theory_target else 0.0
+        prioritized.append((fill_ratio, theory_name, theory_cfg, state_prefix))
+
+    prioritized.sort(key=lambda item: (item[0], item[1]))
+
+    for _ratio, theory_name, theory_cfg, state_prefix in prioritized:
         theory_summary, theory_papers = collect_for_entry(
             retriever,
             name=theory_name,
@@ -218,7 +251,7 @@ def main() -> None:
             context=context | {"theory": theory_name},
             providers=args.providers,
             resume=resume,
-            state_prefix=f"theory::{slugify(theory_name)}",
+            state_prefix=state_prefix,
         )
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
@@ -230,12 +263,25 @@ def main() -> None:
     if global_limit is not None and len(papers) > global_limit:
         papers = papers[: global_limit]
 
-    retriever.state_store.write_summary(summary_report)
-
-    classifier = TheoryClassifier.from_config(config["classification"]["keywords"])
+    classifier = TheoryClassifier.from_config(
+        config["classification"]["keywords"], ontology=ontology
+    )
     assignments = []
     for paper in papers:
         assignments.extend(classifier.classify(paper))
+
+    coverage_counts = classifier.summarize(assignments)
+    coverage_summary = ontology.coverage(coverage_counts)
+    quota_status = {
+        name: {
+            "count": record.count,
+            "target": record.target,
+            "deficit": record.deficit,
+            "met": record.met,
+            "depth": record.depth,
+        }
+        for name, record in coverage_summary.items()
+    }
 
     extractor = QuestionExtractor(config.get("extraction"))
     question_answers = []
@@ -247,12 +293,19 @@ def main() -> None:
     export_theories(assignments, Path(outputs["theories"]))
     export_question_answers(question_answers, Path(outputs["questions"]))
 
+    retriever.state_store.write_summary(
+        {"retrieval": summary_report, "quota_status": quota_status}
+    )
+
     print(f"Exported {len(papers)} papers to {outputs['papers']}")
     print(f"Exported {len(assignments)} theory assignments to {outputs['theories']}")
     print(f"Exported {len(question_answers)} question answers to {outputs['questions']}")
 
     for theory_name, summary in summary_report.items():
         print(format_summary(theory_name, summary))
+
+    print()
+    print(ontology.format_coverage_report(coverage_counts))
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
