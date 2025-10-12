@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.T_python_cache
+.pytest_cache/

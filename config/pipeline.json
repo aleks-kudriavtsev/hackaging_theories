@@ -1,0 +1,38 @@
+{
+  "api_keys": {
+    "openalex": "REPLACE_ME",
+    "crossref": "REPLACE_ME"
+  },
+  "data_sources": {
+    "seed_papers": "data/examples/seed_papers.json"
+  },
+  "classification": {
+    "keywords": {
+      "Activity Theory": ["activity", "engagement", "participation"],
+      "Socioemotional Selectivity Theory": ["socioemotional", "goal", "emotional"],
+      "Disengagement Theory": ["disengagement", "withdrawal", "detach"]
+    }
+  },
+  "extraction": {
+    "keyword_templates": {
+      "Q1": ["theory", "framework"],
+      "Q2": ["research question", "aim"],
+      "Q3": ["method", "design"],
+      "Q4": ["participants", "sample"],
+      "Q5": ["outcome", "measure"],
+      "Q6": ["intervention", "exposure"],
+      "Q7": ["finding", "result"],
+      "Q8": ["limitation", "constraint"],
+      "Q9": ["future", "further research"]
+    }
+  },
+  "outputs": {
+    "papers": "data/examples/papers.csv",
+    "theories": "data/examples/theories.csv",
+    "questions": "data/examples/questions.csv",
+    "cache_dir": "data/cache"
+  },
+  "pipeline": {
+    "max_results": 10
+  }
+}

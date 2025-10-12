@@ -1,0 +1,45 @@
+{
+  "paper_count": 1,
+  "theory_counts": {
+    "Activity Theory": 1,
+    "Socioemotional Selectivity Theory": 1
+  },
+  "question_coverage": {
+    "Q1": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q2": {
+      "answered": 0,
+      "fallback": 1
+    },
+    "Q3": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q4": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q5": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q6": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q7": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q8": {
+      "answered": 1,
+      "fallback": 0
+    },
+    "Q9": {
+      "answered": 0,
+      "fallback": 1
+    }
+  }
+}
