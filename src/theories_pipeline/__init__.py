@@ -8,6 +8,7 @@ from .literature import (
     RetrievalResult,
 )
 from .ontology import TheoryOntology
+from .ontology_manager import OntologyManager, OntologyUpdate
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
@@ -37,6 +38,8 @@ __all__ = [
     "TheoryClassifier",
     "TheoryAssignment",
     "TheoryOntology",
+    "OntologyManager",
+    "OntologyUpdate",
     "QuestionExtractor",
     "QuestionAnswer",
     "classify_and_extract_parallel",
