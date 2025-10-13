@@ -70,12 +70,36 @@ def _ensure_cache_dir(path: Path) -> Path:
     return path
 
 
+_API_KEY_OVERRIDE_MAP = {
+    "openalex_api_key": "openalex",
+    "crossref_api_key": "crossref_contact",
+    "pubmed_api_key": "pubmed",
+}
+
+
 def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> int:
     if cli_value is not None:
         return max(1, int(cli_value))
     if isinstance(config_value, int) and config_value > 0:
         return int(config_value)
     return max(1, int(default))
+
+
+def _load_api_keys(
+    args: argparse.Namespace,
+    config_api_keys: Mapping[str, Any],
+    *,
+    base_path: Path | None,
+) -> Dict[str, str | None]:
+    resolved = resolve_api_keys(config_api_keys, base_path=base_path)
+    overrides = {
+        target_key: getattr(args, cli_attr)
+        for cli_attr, target_key in _API_KEY_OVERRIDE_MAP.items()
+        if getattr(args, cli_attr, None)
+    }
+    if overrides:
+        resolved = {**resolved, **overrides}
+    return resolved
 
 
 def _maybe_build_llm_client(
@@ -131,6 +155,19 @@ def main() -> None:
         "--papers",
         type=Path,
         help="Optional papers CSV; defaults to config outputs or seed data",
+    )
+    precedence_note = "Overrides the {name} API key (CLI > config file > environment > defaults)"
+    parser.add_argument(
+        "--openalex-api-key",
+        help=precedence_note.format(name="OpenAlex"),
+    )
+    parser.add_argument(
+        "--crossref-api-key",
+        help=precedence_note.format(name="Crossref"),
+    )
+    parser.add_argument(
+        "--pubmed-api-key",
+        help=precedence_note.format(name="PubMed"),
     )
     parser.add_argument(
         "--llm-model",
@@ -193,8 +230,10 @@ def main() -> None:
     config_path = Path(args.config)
     config = load_config(config_path)
     try:
-        api_keys = resolve_api_keys(
-            config.get("api_keys", {}), base_path=config_path.parent
+        api_keys = _load_api_keys(
+            args,
+            config.get("api_keys", {}),
+            base_path=config_path.parent,
         )
     except MissingSecretError as exc:
         parser.error(str(exc))
