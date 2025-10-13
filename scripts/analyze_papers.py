@@ -8,7 +8,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -21,6 +21,7 @@ from theories_pipeline import (
     QuestionExtractor,
     TheoryClassifier,
     TheoryOntology,
+    classify_and_extract_parallel,
     export_question_answers,
 )
 from theories_pipeline.llm import LLMClient, LLMClientConfig
@@ -66,6 +67,14 @@ def _load_papers_from_csv(path: Path) -> List[PaperMetadata]:
 def _ensure_cache_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> int:
+    if cli_value is not None:
+        return max(1, int(cli_value))
+    if isinstance(config_value, int) and config_value > 0:
+        return int(config_value)
+    return max(1, int(default))
 
 
 def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace) -> LLMClient | None:
@@ -127,15 +136,33 @@ def main() -> None:
         type=Path,
         help="Directory to cache GPT responses (default: data/cache/llm)",
     )
+    parser.add_argument(
+        "--parallel-fetch",
+        type=int,
+        help="Number of worker threads to fetch provider pages in parallel",
+    )
+    parser.add_argument(
+        "--classification-workers",
+        type=int,
+        help="Number of worker threads for GPT classification/extraction",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+
+    pipeline_cfg: Mapping[str, Any] = config.get("pipeline", {}) if isinstance(config.get("pipeline"), Mapping) else {}
+    parallel_fetch = _resolve_workers(args.parallel_fetch, pipeline_cfg.get("parallel_fetch"), 1)
+    classification_workers = _resolve_workers(
+        args.classification_workers, pipeline_cfg.get("classification_workers"), 1
+    )
 
     papers_path = args.papers or Path(config["outputs"]["papers"])
     if papers_path.exists():
         papers = _load_papers_from_csv(papers_path)
     else:
-        retriever = LiteratureRetriever(Path(config["data_sources"]["seed_papers"]))
+        retriever = LiteratureRetriever(
+            Path(config["data_sources"]["seed_papers"]), parallel_fetch=parallel_fetch
+        )
         papers = retriever.search("", limit=None)
 
     ontology = TheoryOntology.from_targets_config(config.get("corpus", {}).get("targets", {}))
@@ -145,13 +172,12 @@ def main() -> None:
     )
     extractor = QuestionExtractor(config.get("extraction"))
 
-    theory_counts: Counter[str] = Counter()
-    question_answers = []
-    assignments = []
-    for paper_assignments in classifier.classify_batch(papers):
-        assignments.extend(paper_assignments)
-        theory_counts.update([assignment.theory for assignment in paper_assignments])
-        question_answers.extend(extractor.extract(paper))
+    assignment_groups, answer_groups = classify_and_extract_parallel(
+        papers, classifier, extractor, workers=classification_workers
+    )
+    assignments = [assignment for group in assignment_groups for assignment in group]
+    question_answers = [answer for group in answer_groups for answer in group]
+    theory_counts: Counter[str] = Counter(assignment.theory for assignment in assignments)
 
     export_question_answers(question_answers, Path(config["outputs"]["questions"]))
 

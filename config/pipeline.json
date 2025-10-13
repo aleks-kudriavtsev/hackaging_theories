@@ -69,6 +69,8 @@
     "cache_dir": "data/cache"
   },
   "pipeline": {
-    "max_results": 10
+    "max_results": 10,
+    "parallel_fetch": 4,
+    "classification_workers": 4
   }
 }

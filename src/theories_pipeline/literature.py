@@ -11,13 +11,15 @@ collection runs resume from the previous cursor positions.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
-import time
-from dataclasses import dataclass, field
-import html
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency
@@ -147,18 +149,20 @@ class RateLimiter:
         else:
             self.interval = 0.0
         self._last_ts: float | None = None
+        self._lock = Lock()
 
     def wait(self) -> None:
         if self.interval <= 0:
             return
-        now = time.monotonic()
-        if self._last_ts is None:
-            self._last_ts = now
-            return
-        elapsed = now - self._last_ts
-        if elapsed < self.interval:
-            time.sleep(self.interval - elapsed)
-        self._last_ts = time.monotonic()
+        with self._lock:
+            now = time.monotonic()
+            if self._last_ts is None:
+                self._last_ts = now
+                return
+            elapsed = now - self._last_ts
+            if elapsed < self.interval:
+                time.sleep(self.interval - elapsed)
+            self._last_ts = time.monotonic()
 
 
 class StateStore:
@@ -543,6 +547,8 @@ class LiteratureRetriever:
         seed_data_path: Path | None = None,
         provider_configs: Sequence[ProviderConfig] | None = None,
         state_dir: Path | None = None,
+        *,
+        parallel_fetch: int | None = None,
     ) -> None:
         self.seed_data_path = Path(seed_data_path) if seed_data_path else None
         if self.seed_data_path and not self.seed_data_path.exists():
@@ -559,6 +565,13 @@ class LiteratureRetriever:
             self.providers.append(provider_cls(config))
         state_directory = state_dir or Path("data/cache/literature")
         self.state_store = StateStore(state_directory)
+        workers = 1
+        if parallel_fetch is not None:
+            try:
+                workers = int(parallel_fetch)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                workers = 1
+        self.parallel_fetch = max(1, workers)
 
     def _load_seed_papers(self) -> List[PaperMetadata]:
         if self.seed_data_path is None:
@@ -688,65 +701,139 @@ class LiteratureRetriever:
                     newly_added += 1
             state["seed_consumed"] = True
 
-        for query in queries:
-            query_hash = hashlib.sha1(query.encode("utf-8")).hexdigest()
-            per_query_state = query_state.get(query_hash, {})
-            for provider in selected_providers:
-                provider_state = per_query_state.get(provider.name, {})
-                shard_states = provider_state.get("shards", {})
-                for index, shard_template in enumerate(provider.query_shards):
-                    shard_key = str(index)
-                    shard_state = shard_states.get(shard_key, {})
-                    if shard_state.get("exhausted"):
-                        continue
-                    cursor = shard_state.get("cursor")
-                    final_query = shard_template.format(query=query)
-                    while True:
-                        if target is not None and len(seen_identifiers) >= target:
-                            break
-                        try:
-                            page = provider.fetch_page(final_query, cursor=cursor)
-                        except requests.RequestException as exc:  # pragma: no cover - network failure
-                            logger.warning(
-                                "Provider %s failed to fetch page for query '%s': %s",
-                                provider.name,
-                                final_query,
-                                exc,
-                            )
-                            shard_state["exhausted"] = True
-                            break
+        stop_event = Event()
+        state_lock = Lock()
 
-                        if not page.papers:
-                            shard_state["exhausted"] = True
-                            break
+        def _target_met() -> bool:
+            return target is not None and len(seen_identifiers) >= target
 
-                        for paper in page.papers:
-                            key = paper.dedupe_key
-                            if key not in seen_identifiers:
-                                seen_identifiers.add(key)
-                                collected.append(paper)
-                                newly_added += 1
-                                provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
-                            else:
-                                provider_totals.setdefault(provider.name, 0)
-
-                        cursor = page.next_cursor
-                        shard_state["cursor"] = cursor
-                        if page.exhausted or cursor is None:
-                            shard_state["exhausted"] = True
-                            break
-                        if target is not None and len(seen_identifiers) >= target:
-                            break
-
-                    shard_states[shard_key] = shard_state
-                    if target is not None and len(seen_identifiers) >= target:
-                        break
-                provider_state["shards"] = shard_states
-                per_query_state[provider.name] = provider_state
-                if target is not None and len(seen_identifiers) >= target:
+        def _process_shard(
+            provider: BaseProvider,
+            *,
+            final_query: str,
+            shard_state: Dict[str, Any],
+        ) -> None:
+            nonlocal newly_added
+            cursor = shard_state.get("cursor")
+            while not stop_event.is_set():
+                if _target_met():
+                    stop_event.set()
                     break
+                try:
+                    page = provider.fetch_page(final_query, cursor=cursor)
+                except requests.RequestException as exc:  # pragma: no cover - network failure
+                    logger.warning(
+                        "Provider %s failed to fetch page for query '%s': %s",
+                        provider.name,
+                        final_query,
+                        exc,
+                    )
+                    with state_lock:
+                        shard_state["exhausted"] = True
+                    break
+
+                if not page.papers:
+                    with state_lock:
+                        shard_state["exhausted"] = True
+                        shard_state["cursor"] = page.next_cursor
+                    break
+
+                with state_lock:
+                    for paper in page.papers:
+                        key = paper.dedupe_key
+                        if key not in seen_identifiers:
+                            seen_identifiers.add(key)
+                            collected.append(paper)
+                            newly_added += 1
+                            provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
+                        else:
+                            provider_totals.setdefault(provider.name, 0)
+                    next_cursor = page.next_cursor
+                    shard_state["cursor"] = next_cursor
+                    reached = target is not None and len(seen_identifiers) >= target
+                    exhausted = page.exhausted or next_cursor is None
+                    if exhausted:
+                        shard_state["exhausted"] = True
+                if page.exhausted or next_cursor is None:
+                    break
+                if reached:
+                    stop_event.set()
+                    break
+                cursor = next_cursor
+
+        max_workers = max(1, int(self.parallel_fetch))
+
+        for query in queries:
+            if _target_met():
+                break
+            query_hash = hashlib.sha1(query.encode("utf-8")).hexdigest()
+            existing_query_state = query_state.get(query_hash, {})
+            per_query_state: Dict[str, Any] = (
+                dict(existing_query_state) if isinstance(existing_query_state, MutableMapping) else {}
+            )
+
+            if max_workers > 1:
+                executor_cm = ThreadPoolExecutor(max_workers=max_workers)
+            else:
+                executor_cm = None
+
+            futures = []
+            try:
+                for provider in selected_providers:
+                    if _target_met():
+                        break
+                    provider_state_raw = per_query_state.get(provider.name, {})
+                    provider_state: Dict[str, Any] = (
+                        dict(provider_state_raw)
+                        if isinstance(provider_state_raw, MutableMapping)
+                        else {}
+                    )
+                    raw_shards = provider_state.get("shards", {})
+                    shard_states: Dict[str, Dict[str, Any]] = {}
+                    if isinstance(raw_shards, MutableMapping):
+                        for shard_key, shard_value in raw_shards.items():
+                            if isinstance(shard_value, MutableMapping):
+                                shard_states[str(shard_key)] = dict(shard_value)
+                            else:
+                                shard_states[str(shard_key)] = {}
+                    provider_state["shards"] = shard_states
+
+                    for index, shard_template in enumerate(provider.query_shards):
+                        if _target_met():
+                            break
+                        shard_key = str(index)
+                        shard_state = shard_states.setdefault(shard_key, {})
+                        if shard_state.get("exhausted"):
+                            continue
+                        final_query = shard_template.format(query=query)
+                        if max_workers > 1:
+                            futures.append(
+                                executor_cm.submit(
+                                    _process_shard,
+                                    provider,
+                                    final_query=final_query,
+                                    shard_state=shard_state,
+                                )
+                            )
+                        else:
+                            _process_shard(
+                                provider,
+                                final_query=final_query,
+                                shard_state=shard_state,
+                            )
+                            if _target_met():
+                                stop_event.set()
+                                break
+                    per_query_state[provider.name] = provider_state
+            finally:
+                if futures:
+                    for future in futures:
+                        future.result()
+                if executor_cm is not None:
+                    executor_cm.shutdown(wait=True)
+
             query_state[query_hash] = per_query_state
-            if target is not None and len(seen_identifiers) >= target:
+            if _target_met():
                 break
 
         state.update(
