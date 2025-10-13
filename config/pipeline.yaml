@@ -63,12 +63,26 @@ classification:
 corpus:
   cache_dir: data/cache/literature
   global_limit: 1500
+  expansion:
+    enabled: false  # Set to true to allow adaptive query exploration
+    max_new_queries: 4
+    max_snippets: 10
+    max_gpt_queries: 3
+    embedding_neighbors: 4
+    gpt_prompt: |
+      You are helping expand literature search queries for the Hackaging project.
+      Return a JSON array of new search strings based on the supplied snippets.
+      Avoid duplicates of the existing queries and keep each query under 12 words.
   targets:
     Activity Theory:
       target: 600
       queries:
         - "{base_query} activity theory"
         - "activity theory older adults"
+      expansion:
+        enabled: true
+        max_new_queries: 3
+        max_snippets: 8
       subtheories:
         Engagement:
           target: 300
@@ -83,11 +97,21 @@ corpus:
       queries:
         - "{base_query} socioemotional selectivity theory"
         - "socioemotional selectivity older adults"
+      expansion:
+        enabled: true
+        use_embeddings: true
+        use_gpt: false
     Disengagement Theory:
       target: 400
       queries:
         - "{base_query} disengagement theory"
         - "aging disengagement theory"
+      expansion:
+        enabled: true
+        gpt_prompt: |
+          Generate at most 2 concise search strings as a JSON array.
+          Focus on methodological keywords or populations that appear in the snippets.
+        max_new_queries: 2
 
 extraction:
   questions:
