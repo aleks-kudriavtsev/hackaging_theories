@@ -136,6 +136,35 @@ corpus:
         max_new_queries: 2
 
 extraction:
+  llm:
+    enabled: true
+    model: null  # Override via CLI to enable GPT-backed extraction
+    temperature: 0.0
+    batch_size: 4
+    cache_dir: data/cache/llm_extraction
+    max_retries: 3
+    retry_backoff: 2.0
+    request_timeout: 60
+    max_sentences: 5
+    decline_answers:
+      - unknown
+      - none
+      - no_answer
+    system_prompt: |
+      You are assisting the Hackaging project by answering structured research questions.
+      Select the best answer category using only the supplied evidence sentences.
+      If the evidence is insufficient, respond with "unknown".
+    request_template: |
+      Question: {question}
+      Allowed answers: {choices}
+      Evidence sentences:
+      {evidence}
+      Respond with a JSON object containing keys "answer", "confidence", and "rationale".
+  calibration:
+    gpt_weight: 0.6
+    override_threshold: 0.85
+    agreement_boost: 0.1
+    disagreement_penalty: 0.1
   questions:
     - id: Q1
       prompt: "Does the paper report a biomarker of aging?"
