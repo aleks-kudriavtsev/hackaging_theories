@@ -79,39 +79,44 @@ def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> 
 
 
 def _maybe_build_llm_client(
-    config: Mapping[str, Any],
-    args: argparse.Namespace,
+    llm_cfg: Mapping[str, Any] | None,
+    *,
+    model_override: str | None,
+    temperature_override: float | None,
+    batch_override: int | None,
+    cache_override: Path | None,
+    api_key_override: str | None,
     api_keys: Mapping[str, str | None],
 ) -> LLMClient | None:
-    classification_cfg = config.get("classification", {}) if isinstance(config, Mapping) else {}
-    llm_cfg = classification_cfg.get("llm", {}) if isinstance(classification_cfg, Mapping) else {}
+    config_data = llm_cfg if isinstance(llm_cfg, Mapping) else {}
 
-    llm_model = args.llm_model or llm_cfg.get("model")
+    llm_model = model_override or config_data.get("model")
     if not llm_model:
         return None
 
-    temperature = args.llm_temperature if args.llm_temperature is not None else llm_cfg.get("temperature", 0.0)
-    batch_size = args.llm_batch_size or llm_cfg.get("batch_size", 4)
-    cache_dir = args.llm_cache_dir or llm_cfg.get("cache_dir") or Path("data/cache/llm")
-    max_retries = llm_cfg.get("max_retries", 3)
-    retry_backoff = llm_cfg.get("retry_backoff", 2.0)
-    request_timeout = llm_cfg.get("request_timeout", 60.0)
-    api_key = args.llm_api_key or llm_cfg.get("api_key")
-    api_key_key = llm_cfg.get("api_key_key")
+    temperature_raw = (
+        temperature_override if temperature_override is not None else config_data.get("temperature", 0.0)
+    )
+    batch_size_raw = batch_override or config_data.get("batch_size", 4)
+    cache_dir_value = cache_override or config_data.get("cache_dir") or Path("data/cache/llm")
+    max_retries = int(config_data.get("max_retries", 3))
+    retry_backoff = float(config_data.get("retry_backoff", 2.0))
+    request_timeout = float(config_data.get("request_timeout", 60.0))
+    api_key = api_key_override or config_data.get("api_key")
+    api_key_key = config_data.get("api_key_key")
     if (not api_key) and api_key_key:
         api_key = api_keys.get(api_key_key)
-    api_key = api_key or None
 
     config_obj = LLMClientConfig(
         model=llm_model,
-        temperature=float(temperature),
-        batch_size=int(batch_size),
-        max_retries=int(max_retries),
-        retry_backoff=float(retry_backoff),
-        request_timeout=float(request_timeout),
-        cache_dir=Path(cache_dir),
+        temperature=float(temperature_raw),
+        batch_size=int(batch_size_raw),
+        max_retries=max_retries,
+        retry_backoff=retry_backoff,
+        request_timeout=request_timeout,
+        cache_dir=Path(cache_dir_value),
     )
-    return LLMClient(config_obj, api_key=api_key)
+    return LLMClient(config_obj, api_key=api_key or None)
 
 
 def main() -> None:
@@ -151,6 +156,29 @@ def main() -> None:
         help="Explicit API key for GPT classification (overrides config/env)",
     )
     parser.add_argument(
+        "--extraction-llm-model",
+        help="Optional OpenAI model name for GPT-assisted question extraction",
+    )
+    parser.add_argument(
+        "--extraction-llm-temperature",
+        type=float,
+        help="Override sampling temperature for GPT extraction",
+    )
+    parser.add_argument(
+        "--extraction-llm-batch-size",
+        type=int,
+        help="Number of extraction prompts to batch per GPT request",
+    )
+    parser.add_argument(
+        "--extraction-llm-cache-dir",
+        type=Path,
+        help="Directory to cache GPT extraction responses",
+    )
+    parser.add_argument(
+        "--extraction-llm-api-key",
+        help="Explicit API key for GPT extraction (overrides config/env)",
+    )
+    parser.add_argument(
         "--parallel-fetch",
         type=int,
         help="Number of worker threads to fetch provider pages in parallel",
@@ -187,11 +215,31 @@ def main() -> None:
         papers = retriever.search("", limit=None)
 
     ontology = TheoryOntology.from_targets_config(config.get("corpus", {}).get("targets", {}))
-    llm_client = _maybe_build_llm_client(config, args, api_keys)
+    classification_cfg = config.get("classification", {}) if isinstance(config, Mapping) else {}
+    extraction_cfg = config.get("extraction", {}) if isinstance(config, Mapping) else {}
+
+    llm_client = _maybe_build_llm_client(
+        classification_cfg.get("llm") if isinstance(classification_cfg, Mapping) else {},
+        model_override=args.llm_model,
+        temperature_override=args.llm_temperature,
+        batch_override=args.llm_batch_size,
+        cache_override=args.llm_cache_dir,
+        api_key_override=args.llm_api_key,
+        api_keys=api_keys,
+    )
+    extraction_llm_client = _maybe_build_llm_client(
+        extraction_cfg.get("llm") if isinstance(extraction_cfg, Mapping) else {},
+        model_override=args.extraction_llm_model,
+        temperature_override=args.extraction_llm_temperature,
+        batch_override=args.extraction_llm_batch_size,
+        cache_override=args.extraction_llm_cache_dir,
+        api_key_override=args.extraction_llm_api_key,
+        api_keys=api_keys,
+    )
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
-    extractor = QuestionExtractor(config.get("extraction"))
+    extractor = QuestionExtractor(config.get("extraction"), llm_client=extraction_llm_client)
 
     assignment_groups, answer_groups = classify_and_extract_parallel(
         papers, classifier, extractor, workers=classification_workers
