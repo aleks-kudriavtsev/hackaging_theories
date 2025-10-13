@@ -51,6 +51,8 @@ def _paper(identifier: str, *, title: str, abstract: str, source: str, citations
         year=2020,
         doi=None,
         full_text="",
+        citation_count=int(citations),
+        is_review=True,
     )
 
 
@@ -73,6 +75,8 @@ def test_pull_top_cited_reviews_filters_and_orders() -> None:
             year=2021,
             doi=None,
             full_text="",
+            citation_count=5,
+            is_review=False,
         ),
         _paper(
             "p3",
@@ -116,6 +120,8 @@ def test_extract_theories_and_build_bootstrap_tree() -> None:
             "Activity Theory discusses engagement. Subtheories: Engagement; Participation.\n"
             "Socioemotional Selectivity Theory emphasises emotional goals.\n"
         ),
+        citation_count=120,
+        is_review=True,
     )
     review = ReviewDocument(query="aging review", paper=paper, citations=120)
     secondary = PaperMetadata(
@@ -127,6 +133,8 @@ def test_extract_theories_and_build_bootstrap_tree() -> None:
         year=2020,
         doi=None,
         full_text="Activity Theory advocates participation.",
+        citation_count=30,
+        is_review=True,
     )
     review_two = ReviewDocument(query="aging review", paper=secondary, citations=30)
     result = extract_theories_from_review(review, llm_client=None)

@@ -18,6 +18,9 @@ def _write_seed(tmp_path: Path) -> Path:
             "source": "Seed",
             "year": 2022,
             "doi": "10.1000/test",
+            "citation_count": 25,
+            "is_review": True,
+            "influential_citations": ["W1"],
         },
         {
             "identifier": "p2",
@@ -26,6 +29,18 @@ def _write_seed(tmp_path: Path) -> Path:
             "abstract": "Unrelated abstract.",
             "source": "Seed",
             "year": 2021,
+            "citation_count": 2,
+            "is_review": False,
+        },
+        {
+            "identifier": "p3",
+            "title": "Engagement trends",
+            "authors": ["Alex Smith"],
+            "abstract": "Primary research report.",
+            "source": "Seed",
+            "year": 2020,
+            "citation_count": 12,
+            "is_review": True,
         },
     ]
     path = tmp_path / "seed.json"
@@ -70,3 +85,32 @@ def test_missing_seed_file_raises(tmp_path: Path) -> None:
     missing = tmp_path / "missing.json"
     with pytest.raises(FileNotFoundError):
         LiteratureRetriever(missing)
+
+
+def test_collect_queries_filters_by_citation_count(tmp_path: Path) -> None:
+    retriever = LiteratureRetriever(_write_seed(tmp_path))
+    result = retriever.collect_queries(
+        ["activity"],
+        target=None,
+        providers=None,
+        state_key=None,
+        resume=False,
+        min_citation_count=10,
+    )
+    identifiers = {paper.identifier for paper in result.papers}
+    assert identifiers == {"p1", "p3"}
+
+
+def test_collect_queries_sorts_reviews_first(tmp_path: Path) -> None:
+    retriever = LiteratureRetriever(_write_seed(tmp_path))
+    result = retriever.collect_queries(
+        [""],
+        target=None,
+        providers=None,
+        state_key=None,
+        resume=False,
+        prefer_reviews=True,
+        sort_by_citations=True,
+    )
+    ordered = [paper.identifier for paper in result.papers[:3]]
+    assert ordered == ["p1", "p3", "p2"]
