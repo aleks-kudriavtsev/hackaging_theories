@@ -28,6 +28,9 @@ def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
                 "source",
                 "year",
                 "doi",
+                "citation_count",
+                "is_review",
+                "influential_citations",
             ],
         )
         writer.writeheader()
@@ -47,6 +50,15 @@ def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
                     "source": paper.source,
                     "year": paper.year if paper.year is not None else "",
                     "doi": paper.doi if paper.doi is not None else "",
+                    "citation_count": (
+                        str(paper.citation_count) if paper.citation_count is not None else ""
+                    ),
+                    "is_review": (
+                        "true"
+                        if paper.is_review is True
+                        else "false" if paper.is_review is False else ""
+                    ),
+                    "influential_citations": "; ".join(paper.influential_citations),
                 }
             )
     return path

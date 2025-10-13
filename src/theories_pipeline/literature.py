@@ -59,6 +59,9 @@ class PaperMetadata:
     doi: str | None = None
     full_text: str = ""
     sections: Tuple[PaperSection, ...] = ()
+    citation_count: int | None = None
+    is_review: bool | None = None
+    influential_citations: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -71,6 +74,9 @@ class PaperMetadata:
             "doi": self.doi,
             "full_text": self.full_text,
             "sections": [section.to_dict() for section in self.sections],
+            "citation_count": self.citation_count,
+            "is_review": self.is_review,
+            "influential_citations": list(self.influential_citations),
         }
 
     @staticmethod
@@ -79,6 +85,28 @@ class PaperMetadata:
         sections: Tuple[PaperSection, ...] = tuple(
             PaperSection.from_dict(item) for item in sections_data if isinstance(item, MutableMapping)
         )
+        def _parse_citation(value: Any) -> int | None:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        influential = data.get("influential_citations") or []
+        if isinstance(influential, (str, bytes)):
+            influential_list = [str(influential)]
+        else:
+            influential_list = [str(item) for item in influential if item is not None]
+
+        raw_is_review = data.get("is_review")
+        if isinstance(raw_is_review, bool):
+            parsed_is_review: bool | None = raw_is_review
+        elif raw_is_review is None:
+            parsed_is_review = None
+        else:
+            parsed_is_review = str(raw_is_review).strip().lower() in {"true", "1", "yes"}
+
         return PaperMetadata(
             identifier=data["identifier"],
             title=str(data.get("title", "")),
@@ -89,6 +117,9 @@ class PaperMetadata:
             doi=data.get("doi"),
             full_text=str(data.get("full_text") or ""),
             sections=sections,
+            citation_count=_parse_citation(data.get("citation_count")),
+            is_review=parsed_is_review,
+            influential_citations=tuple(influential_list),
         )
 
     @property
@@ -337,6 +368,18 @@ class OpenAlexProvider(BaseProvider):
             identifier = item.get("id") or (f"openalex:{item.get('doi')}" if item.get("doi") else "")
             if not identifier:
                 continue
+            citation_count = item.get("cited_by_count")
+            try:
+                parsed_citations = int(citation_count) if citation_count is not None else None
+            except (TypeError, ValueError):
+                parsed_citations = None
+            type_fields = [str(item.get("type") or ""), str(item.get("type_crossref") or "")]
+            is_review = any("review" in value.lower() for value in type_fields if value)
+            related = item.get("related_works") or []
+            if isinstance(related, (str, bytes)):
+                influential = (str(related),)
+            else:
+                influential = tuple(str(entry) for entry in related if entry)
             candidates: List[str] = []
             for location in (
                 item.get("best_oa_location"),
@@ -364,6 +407,9 @@ class OpenAlexProvider(BaseProvider):
                     year=year,
                     doi=doi,
                     full_text=full_text,
+                    citation_count=parsed_citations,
+                    is_review=is_review,
+                    influential_citations=influential,
                 )
             )
         next_cursor = payload.get("meta", {}).get("next_cursor")
@@ -412,6 +458,26 @@ class CrossRefProvider(BaseProvider):
             year = None
             if "issued" in item and item["issued"].get("date-parts"):
                 year = item["issued"]["date-parts"][0][0]
+            citation_count = item.get("is-referenced-by-count")
+            try:
+                parsed_citations = int(citation_count) if citation_count is not None else None
+            except (TypeError, ValueError):
+                parsed_citations = None
+            type_value = str(item.get("type") or "")
+            is_review = "review" in type_value.lower()
+            references = item.get("reference") or []
+            influential: Tuple[str, ...]
+            if isinstance(references, Sequence) and not isinstance(references, (str, bytes)):
+                influential_list = []
+                for ref in references:
+                    if not isinstance(ref, Mapping):
+                        continue
+                    candidate = ref.get("DOI") or ref.get("doi") or ref.get("key")
+                    if candidate:
+                        influential_list.append(str(candidate))
+                influential = tuple(influential_list)
+            else:
+                influential = ()
             candidates = []
             for link in item.get("link", []) or []:
                 url = link.get("URL")
@@ -430,6 +496,9 @@ class CrossRefProvider(BaseProvider):
                     year=year,
                     doi=doi,
                     full_text=full_text,
+                    citation_count=parsed_citations,
+                    is_review=is_review,
+                    influential_citations=influential,
                 )
             )
         next_cursor = payload.get("message", {}).get("next-cursor")
@@ -492,6 +561,34 @@ class PubMedProvider(BaseProvider):
                     year = int(pubdate.split()[0])
                 except (ValueError, IndexError):
                     year = None
+            citation_count_raw = record.get("pmcrefcount")
+            try:
+                citation_count = int(citation_count_raw) if citation_count_raw not in {"", None} else None
+            except (TypeError, ValueError):
+                citation_count = None
+            pub_types = record.get("pubtype") or []
+            if isinstance(pub_types, (str, bytes)):
+                pub_type_values = [pub_types]
+            else:
+                pub_type_values = [str(value) for value in pub_types]
+            is_review = any("review" in value.lower() for value in pub_type_values)
+            references = record.get("references") or []
+            if isinstance(references, Sequence) and not isinstance(references, (str, bytes)):
+                influential_list = []
+                for ref in references:
+                    if not isinstance(ref, Mapping):
+                        continue
+                    candidate = (
+                        ref.get("sourceid")
+                        or ref.get("uid")
+                        or ref.get("pmid")
+                        or ref.get("doi")
+                    )
+                    if candidate:
+                        influential_list.append(str(candidate))
+                influential = tuple(influential_list)
+            else:
+                influential = ()
             doi = None
             pmc_id = None
             for article_id in record.get("articleids", []) or []:
@@ -517,6 +614,9 @@ class PubMedProvider(BaseProvider):
                     year=year,
                     doi=doi,
                     full_text=full_text,
+                    citation_count=citation_count,
+                    is_review=is_review,
+                    influential_citations=influential,
                 )
             )
 
@@ -627,6 +727,9 @@ class _RxivProvider(BaseProvider):
             year=year,
             doi=doi,
             full_text=full_text,
+            citation_count=None,
+            is_review=None,
+            influential_citations=(),
         )
 
     def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
@@ -737,11 +840,28 @@ class LiteratureRetriever:
                 raw_items = json.load(handle)
             papers: List[PaperMetadata] = []
             for item in raw_items:
+                citation_raw = item.get("citation_count")
+                try:
+                    citation_count = int(citation_raw) if citation_raw is not None else None
+                except (TypeError, ValueError):
+                    citation_count = None
+                raw_influential = item.get("influential_citations") or []
+                if isinstance(raw_influential, (str, bytes)):
+                    influential = (str(raw_influential),)
+                else:
+                    influential = tuple(str(entry) for entry in raw_influential if entry is not None)
+                raw_is_review = item.get("is_review")
+                if isinstance(raw_is_review, bool):
+                    is_review = raw_is_review
+                elif raw_is_review is None:
+                    is_review = None
+                else:
+                    is_review = str(raw_is_review).strip().lower() in {"true", "1", "yes"}
                 papers.append(
                     PaperMetadata(
                         identifier=item["identifier"],
                         title=str(item.get("title", "")),
-                        authors=item.get("authors", []),
+                        authors=tuple(item.get("authors", ())),
                         abstract=str(item.get("abstract", "") or ""),
                         source=str(item.get("source", "seed") or "seed"),
                         year=item.get("year"),
@@ -752,6 +872,9 @@ class LiteratureRetriever:
                             for section in item.get("sections", []) or []
                             if isinstance(section, MutableMapping)
                         ),
+                        citation_count=citation_count,
+                        is_review=is_review,
+                        influential_citations=influential,
                     )
                 )
             self._seed_cache = papers
@@ -816,6 +939,9 @@ class LiteratureRetriever:
         providers: Sequence[str] | None = None,
         state_key: str | None,
         resume: bool = True,
+        min_citation_count: int | None = None,
+        prefer_reviews: bool = False,
+        sort_by_citations: bool = False,
     ) -> RetrievalResult:
         """Collect papers for a set of query templates until ``target`` is met."""
 
@@ -836,10 +962,25 @@ class LiteratureRetriever:
         if state_key and resume:
             state = self.state_store.get(state_key)
         seen_identifiers = set(state.get("seen_identifiers", []))
-        stored_papers = [PaperMetadata.from_dict(item) for item in state.get("papers", [])]
-        prior_total = len(seen_identifiers) or len(stored_papers)
+        stored_papers_raw = [PaperMetadata.from_dict(item) for item in state.get("papers", [])]
 
-        collected: List[PaperMetadata] = list(stored_papers)
+        def _passes_filters(paper: PaperMetadata) -> bool:
+            if min_citation_count is not None:
+                citations = paper.citation_count if paper.citation_count is not None else 0
+                if citations < min_citation_count:
+                    return False
+            return True
+
+        collected: List[PaperMetadata] = []
+        accepted_identifiers: set[str] = set()
+        for paper in stored_papers_raw:
+            if _passes_filters(paper):
+                collected.append(paper)
+                key = paper.dedupe_key
+                accepted_identifiers.add(key)
+                seen_identifiers.add(key)
+        prior_total = len(accepted_identifiers)
+
         newly_added = 0
         provider_totals = state.get("provider_totals", {})
         provider_totals = {k: int(v) for k, v in provider_totals.items()}
@@ -850,16 +991,18 @@ class LiteratureRetriever:
             for paper in self._load_seed_papers():
                 key = paper.dedupe_key
                 if key not in seen_identifiers:
-                    collected.append(paper)
                     seen_identifiers.add(key)
-                    newly_added += 1
+                    if _passes_filters(paper):
+                        collected.append(paper)
+                        accepted_identifiers.add(key)
+                        newly_added += 1
             state["seed_consumed"] = True
 
         stop_event = Event()
         state_lock = Lock()
 
         def _target_met() -> bool:
-            return target is not None and len(seen_identifiers) >= target
+            return target is not None and len(accepted_identifiers) >= target
 
         def _process_shard(
             provider: BaseProvider,
@@ -897,14 +1040,18 @@ class LiteratureRetriever:
                         key = paper.dedupe_key
                         if key not in seen_identifiers:
                             seen_identifiers.add(key)
-                            collected.append(paper)
-                            newly_added += 1
-                            provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
+                            if _passes_filters(paper):
+                                collected.append(paper)
+                                accepted_identifiers.add(key)
+                                newly_added += 1
+                                provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
+                            else:
+                                provider_totals.setdefault(provider.name, 0)
                         else:
                             provider_totals.setdefault(provider.name, 0)
                     next_cursor = page.next_cursor
                     shard_state["cursor"] = next_cursor
-                    reached = target is not None and len(seen_identifiers) >= target
+                    reached = target is not None and len(accepted_identifiers) >= target
                     exhausted = page.exhausted or next_cursor is None
                     if exhausted:
                         shard_state["exhausted"] = True
@@ -990,6 +1137,35 @@ class LiteratureRetriever:
             if _target_met():
                 break
 
+        sorted_info: Dict[str, bool] | None = None
+        if prefer_reviews or sort_by_citations:
+
+            def _sort_key(paper: PaperMetadata) -> Tuple[int, int, str, str]:
+                review_score = 0
+                if prefer_reviews:
+                    if paper.is_review is True:
+                        review_score = 0
+                    elif paper.is_review is False:
+                        review_score = 1
+                    else:
+                        review_score = 2
+                citation_score = 0
+                if sort_by_citations:
+                    citation_value = paper.citation_count if paper.citation_count is not None else -1
+                    citation_score = -citation_value
+                return (
+                    review_score if prefer_reviews else 0,
+                    citation_score if sort_by_citations else 0,
+                    paper.title.lower() if paper.title else "",
+                    paper.identifier.lower(),
+                )
+
+            collected.sort(key=_sort_key)
+            sorted_info = {
+                "prefer_reviews": prefer_reviews,
+                "sort_by_citations": sort_by_citations,
+            }
+
         state.update(
             {
                 "seen_identifiers": sorted(seen_identifiers),
@@ -1010,6 +1186,9 @@ class LiteratureRetriever:
             "met_target": target is None or len(collected) >= target,
             "prior_total": prior_total,
         }
+
+        if sorted_info is not None:
+            summary["sorted"] = sorted_info
 
         return RetrievalResult(papers=collected, newly_added=newly_added, summary=summary)
 

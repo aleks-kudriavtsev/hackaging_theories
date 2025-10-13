@@ -113,6 +113,10 @@ def _render_query(template: str, context: Mapping[str, Any] | None) -> str:
 
 
 def _looks_like_review(paper: PaperMetadata) -> bool:
+    if paper.is_review is True:
+        return True
+    if paper.is_review is False:
+        return False
     text = " ".join(part for part in (paper.title, paper.abstract, paper.full_text) if part)
     if not text:
         return False
@@ -137,6 +141,11 @@ def _extract_citations(
             return int(overrides[paper.identifier])
         except (TypeError, ValueError):  # pragma: no cover - defensive
             logger.debug("Invalid citation override for %s", paper.identifier)
+    if paper.citation_count is not None:
+        try:
+            return int(paper.citation_count)
+        except (TypeError, ValueError):
+            logger.debug("Invalid citation count on %s: %s", paper.identifier, paper.citation_count)
     sources = [paper.abstract, paper.full_text] + [section.text for section in paper.sections]
     for source in sources:
         if not source:

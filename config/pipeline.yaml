@@ -84,6 +84,9 @@ classification:
 
 corpus:
   cache_dir: data/cache/literature
+  min_citation_count: 5
+  prefer_reviews: true
+  sort_by_citations: true
   global_limit: 1500
   expansion:
     enabled: false  # Set to true to allow adaptive query exploration

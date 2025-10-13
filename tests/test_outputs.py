@@ -25,6 +25,9 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             source="Seed",
             year=2020,
             doi="10.0/doi",
+            citation_count=42,
+            is_review=True,
+            influential_citations=("W1", "W2"),
         )
     ]
     assignments = [TheoryAssignment("p1", "Activity Theory", 0.75)]
@@ -43,6 +46,9 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
     with paper_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         header = reader.fieldnames or []
-        assert {"full_text", "sections"}.issubset(header)
+        assert {"full_text", "sections", "citation_count", "is_review", "influential_citations"}.issubset(header)
         first = next(reader)
         assert first["full_text"] == "Full text body"
+        assert first["citation_count"] == "42"
+        assert first["is_review"] == "true"
+        assert first["influential_citations"] == "W1; W2"

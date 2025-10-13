@@ -117,6 +117,14 @@ def slugify(text: str) -> str:
     return slug or "untitled"
 
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+    return bool(value)
+
+
 def _run_bootstrap_phase(
     retriever: LiteratureRetriever,
     llm_client: LLMClient | None,
@@ -224,17 +232,51 @@ def collect_for_entry(
     ontology: TheoryOntology | None,
     expander: QueryExpander | None,
     default_expansion: QueryExpansionSettings | None,
+    retrieval_options: Mapping[str, Any] | None = None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
     query_templates = config.get("queries") or [context.get("base_query", name)]
     queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
     queries = [q.strip() for q in queries if q.strip()]
     target = config.get("target")
+    min_citation_override = config.get("min_citation_count")
+    if min_citation_override is None and retrieval_options is not None:
+        min_citation_override = retrieval_options.get("min_citation_count")
+    try:
+        min_citation_value = (
+            int(min_citation_override)
+            if min_citation_override is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        min_citation_value = None
+
+    prefer_reviews_override = config.get("prefer_reviews")
+    if prefer_reviews_override is None and retrieval_options is not None:
+        prefer_reviews_override = retrieval_options.get("prefer_reviews")
+    prefer_reviews_flag = (
+        _coerce_bool(prefer_reviews_override)
+        if prefer_reviews_override is not None
+        else False
+    )
+
+    sort_by_citations_override = config.get("sort_by_citations")
+    if sort_by_citations_override is None and retrieval_options is not None:
+        sort_by_citations_override = retrieval_options.get("sort_by_citations")
+    sort_by_citations_flag = (
+        _coerce_bool(sort_by_citations_override)
+        if sort_by_citations_override is not None
+        else False
+    )
+
     result = retriever.collect_queries(
         queries,
         target=target,
         providers=list(providers) if providers else None,
         state_key=state_prefix,
         resume=resume,
+        min_citation_count=min_citation_value,
+        prefer_reviews=prefer_reviews_flag,
+        sort_by_citations=sort_by_citations_flag,
     )
 
     entry_map = {paper.identifier: paper for paper in result.papers}
@@ -273,17 +315,20 @@ def collect_for_entry(
             settings=expansion_settings,
             context={"current_total": summary.get("total_unique", 0)},
         )
-        if expansion_session is not None:
-            adaptive_queries = expansion_session.selected_queries()
-            if adaptive_queries:
-                merged_queries = queries + adaptive_queries
-                rerun = retriever.collect_queries(
-                    merged_queries,
-                    target=target,
-                    providers=list(providers) if providers else None,
-                    state_key=state_prefix,
-                    resume=True,
-                )
+                if expansion_session is not None:
+                    adaptive_queries = expansion_session.selected_queries()
+                    if adaptive_queries:
+                        merged_queries = queries + adaptive_queries
+                        rerun = retriever.collect_queries(
+                            merged_queries,
+                            target=target,
+                            providers=list(providers) if providers else None,
+                            state_key=state_prefix,
+                            resume=True,
+                            min_citation_count=min_citation_value,
+                            prefer_reviews=prefer_reviews_flag,
+                            sort_by_citations=sort_by_citations_flag,
+                        )
                 before_total = summary.get("total_unique", 0)
                 summary = dict(rerun.summary)
                 entry_map = {paper.identifier: paper for paper in rerun.papers}
@@ -327,6 +372,7 @@ def collect_for_entry(
                 ontology=ontology,
                 expander=expander,
                 default_expansion=default_expansion,
+                retrieval_options=retrieval_options,
             )
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
@@ -536,6 +582,20 @@ def main() -> None:
     global_limit = args.limit or corpus_cfg.get("global_limit")
     resume = not args.no_resume
 
+    retrieval_defaults: Dict[str, Any] = {}
+    if "min_citation_count" in corpus_cfg:
+        try:
+            retrieval_defaults["min_citation_count"] = int(corpus_cfg.get("min_citation_count"))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid corpus.min_citation_count value: %s",
+                corpus_cfg.get("min_citation_count"),
+            )
+    if "prefer_reviews" in corpus_cfg:
+        retrieval_defaults["prefer_reviews"] = _coerce_bool(corpus_cfg.get("prefer_reviews"))
+    if "sort_by_citations" in corpus_cfg:
+        retrieval_defaults["sort_by_citations"] = _coerce_bool(corpus_cfg.get("sort_by_citations"))
+
     ontology = TheoryOntology.from_targets_config(ontology_targets)
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
@@ -562,6 +622,7 @@ def main() -> None:
             ontology=ontology,
             expander=expander,
             default_expansion=default_expansion,
+            retrieval_options=retrieval_defaults,
         )
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
