@@ -74,6 +74,10 @@ def build_provider_configs(
         api_key_key = item.get("api_key_key")
         if not api_key and api_key_key:
             api_key = api_keys.get(api_key_key)
+        extra_cfg = dict(item.get("extra", {})) if isinstance(item.get("extra"), Mapping) else {}
+        for key in ("categories", "date_window", "window_days", "server"):
+            if key in item and key not in extra_cfg:
+                extra_cfg[key] = item[key]
         configs.append(
             ProviderConfig(
                 name=name,
@@ -85,7 +89,7 @@ def build_provider_configs(
                 batch_size=item.get("batch_size", 200),
                 rate_limit_per_sec=item.get("rate_limit_per_sec"),
                 timeout=item.get("timeout"),
-                extra=item.get("extra", {}),
+                extra=extra_cfg,
             )
         )
     return configs

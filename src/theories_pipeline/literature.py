@@ -18,6 +18,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple
@@ -525,10 +526,163 @@ class PubMedProvider(BaseProvider):
         return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
 
 
+class _RxivProvider(BaseProvider):
+    """Shared implementation for the bioRxiv and medRxiv JSON APIs."""
+
+    DEFAULT_BASE_URL = "https://api.biorxiv.org/details"
+    DEFAULT_SERVER = "biorxiv"
+    SOURCE_NAME = "rxiv"
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        extra = config.extra or {}
+        base_url = config.base_url or f"{self.DEFAULT_BASE_URL}/{self.DEFAULT_SERVER}"
+        self.base_url = base_url.rstrip("/")
+        server = extra.get("server") or self.DEFAULT_SERVER
+        self.server = str(server)
+        categories = extra.get("categories") or []
+        if isinstance(categories, str):
+            categories = [categories]
+        self._categories = {str(category).strip().lower() for category in categories if str(category).strip()}
+        window = extra.get("date_window") if isinstance(extra.get("date_window"), MutableMapping) else {}
+        date_from = (
+            (window or {}).get("from")
+            or (window or {}).get("start")
+            or extra.get("date_from")
+            or extra.get("from")
+        )
+        date_to = (
+            (window or {}).get("to")
+            or (window or {}).get("end")
+            or extra.get("date_to")
+            or extra.get("to")
+        )
+        try:
+            window_days = int(extra.get("window_days", 30))
+        except (TypeError, ValueError):
+            window_days = 30
+        today = date.today()
+        default_to = today.isoformat()
+        default_from = (today - timedelta(days=max(1, window_days))).isoformat()
+        self.date_from = str(date_from or default_from)
+        self.date_to = str(date_to or default_to)
+
+    def _build_url(self, offset: int) -> str:
+        return f"{self.base_url}/{self.date_from}/{self.date_to}/{offset}"
+
+    def _record_matches(self, record: MutableMapping[str, Any], query: str) -> bool:
+        terms = [term.strip().lower() for term in query.split() if term.strip()]
+        if not terms:
+            return True
+        haystack_parts = [
+            str(record.get("title", "")),
+            str(record.get("abstract", "")),
+            str(record.get("authors", "")),
+            str(record.get("category", "")),
+        ]
+        haystack = " ".join(part for part in haystack_parts if part).lower()
+        return all(term in haystack for term in terms)
+
+    def _parse_authors(self, value: str | None) -> Tuple[str, ...]:
+        if not value:
+            return ()
+        authors = [part.strip() for part in value.split(";") if part.strip()]
+        return tuple(authors)
+
+    def _to_metadata(self, record: MutableMapping[str, Any]) -> PaperMetadata:
+        doi = str(record.get("doi") or "") or None
+        identifier: str
+        if doi:
+            identifier = f"{self.SOURCE_NAME}:{doi}"
+        else:
+            key_source = f"{record.get('title', '')}|{record.get('date', '')}|{record.get('version', '')}"
+            identifier = f"{self.SOURCE_NAME}:{hashlib.sha1(key_source.encode('utf-8')).hexdigest()}"
+        authors = self._parse_authors(record.get("authors"))
+        abstract = record.get("abstract") or ""
+        if isinstance(abstract, str) and abstract.strip().lower() == "na":
+            abstract = ""
+        date_str = str(record.get("date") or "")
+        year = None
+        if date_str:
+            try:
+                year = int(date_str.split("-")[0])
+            except (ValueError, IndexError):
+                year = None
+        candidates: List[str] = []
+        for key in ("jatsxml", "rel_pdf", "pdf_url", "full_text"):
+            value = record.get(key)
+            if isinstance(value, str) and value and value not in candidates:
+                candidates.append(value)
+        if doi:
+            doi_url = f"https://doi.org/{doi}"
+            if doi_url not in candidates:
+                candidates.append(doi_url)
+        full_text = self._resolve_full_text(identifier, doi, candidates)
+        return PaperMetadata(
+            identifier=identifier,
+            title=str(record.get("title", "")),
+            authors=authors,
+            abstract=str(abstract or ""),
+            source=self.SOURCE_NAME,
+            year=year,
+            doi=doi,
+            full_text=full_text,
+        )
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        offset = int(cursor or 0)
+        url = self._build_url(offset)
+        self.rate_limiter.wait()
+        response = self.session.get(url, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        records = payload.get("collection", []) or []
+        messages = payload.get("messages", []) or []
+        message = messages[0] if messages else {}
+        try:
+            count = int(message.get("count", len(records)))
+        except (TypeError, ValueError):
+            count = len(records)
+        try:
+            total = int(message.get("total", offset + count))
+        except (TypeError, ValueError):
+            total = offset + count
+        papers: List[PaperMetadata] = []
+        for record in records:
+            if not isinstance(record, MutableMapping):
+                continue
+            category = str(record.get("category", "")).strip().lower()
+            if self._categories and category not in self._categories:
+                continue
+            if not self._record_matches(record, query):
+                continue
+            papers.append(self._to_metadata(record))
+        next_offset = offset + count
+        exhausted = next_offset >= total or not records
+        next_cursor = None if exhausted else str(next_offset)
+        return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
+
+
+class BioRxivProvider(_RxivProvider):
+    """Provider for the bioRxiv preprint server."""
+
+    DEFAULT_SERVER = "biorxiv"
+    SOURCE_NAME = "biorxiv"
+
+
+class MedRxivProvider(_RxivProvider):
+    """Provider for the medRxiv preprint server."""
+
+    DEFAULT_SERVER = "medrxiv"
+    SOURCE_NAME = "medrxiv"
+
+
 PROVIDER_REGISTRY: Dict[str, type[BaseProvider]] = {
     "openalex": OpenAlexProvider,
     "crossref": CrossRefProvider,
     "pubmed": PubMedProvider,
+    "biorxiv": BioRxivProvider,
+    "medrxiv": MedRxivProvider,
 }
 
 
