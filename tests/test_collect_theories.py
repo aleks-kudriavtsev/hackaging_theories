@@ -5,6 +5,10 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Callable, Dict, List, Mapping, Sequence
+
+from theories_pipeline.literature import PaperMetadata
+from theories_pipeline.review_bootstrap import ReviewDocument
 
 
 def _load_collect_theories_module():
@@ -55,6 +59,46 @@ class DummyOntologyManager:
     def append_node(self, *args, **kwargs):  # pragma: no cover - unused in tests
         return None
 
+
+class RecordingOntologyManager:
+    def __init__(self, base_config: Mapping[str, Any], *, storage_path=None):
+        self.base_config = base_config
+        self.ontology = DummyOntology()
+        self.appended: List[Dict[str, Any]] = []
+        self._known_nodes: set[str] = set()
+
+        def _register(mapping: Mapping[str, Any]) -> None:
+            for name, value in mapping.items():
+                self._known_nodes.add(str(name))
+                if isinstance(value, Mapping):
+                    sub_map = value.get("subtheories")
+                    if isinstance(sub_map, Mapping):
+                        _register(sub_map)
+
+        _register(base_config)
+
+    def has_node(self, name: str) -> bool:
+        return name in self._known_nodes
+
+    def append_node(
+        self,
+        name: str,
+        *,
+        parent: str | None = None,
+        config: Mapping[str, Any] | None = None,
+        keywords: Sequence[str] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.appended.append(
+            {
+                "name": name,
+                "parent": parent,
+                "config": dict(config or {}),
+                "keywords": list(keywords) if keywords else [],
+                "metadata": dict(metadata or {}),
+            }
+        )
+        self._known_nodes.add(name)
 
 class DummyClassifier:
     @classmethod
@@ -114,20 +158,32 @@ def _write_config(tmp_path: Path, targets: dict[str, object]) -> Path:
     return config_path
 
 
-def _patch_runtime(monkeypatch, tmp_path: Path, *, args, validate_calls: list[dict]):
+def _patch_runtime(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    args,
+    validate_calls: List[dict],
+    bootstrap_hook: Callable[..., Sequence[Any]] | None = None,
+    collect_hook: Callable[..., tuple[Mapping[str, Any], Sequence[Any]]] | None = None,
+    ontology_factory: Callable[..., Any] = DummyOntologyManager,
+) -> None:
     monkeypatch.setattr(collect_theories.argparse.ArgumentParser, "parse_args", lambda self: args)
     monkeypatch.setattr(collect_theories, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(collect_theories, "resolve_api_keys", lambda *_a, **_k: {})
     monkeypatch.setattr(collect_theories, "build_provider_configs", lambda *_a, **_k: [])
     monkeypatch.setattr(collect_theories, "LiteratureRetriever", DummyRetriever)
-    monkeypatch.setattr(collect_theories, "_run_bootstrap_phase", lambda *_a, **_k: ({}, {}, {}))
+    if bootstrap_hook is None:
+        bootstrap_hook = lambda *_a, **_k: ({}, {}, {})
+    monkeypatch.setattr(collect_theories, "_run_bootstrap_phase", bootstrap_hook)
     monkeypatch.setattr(collect_theories, "_existing_total", lambda *_a, **_k: 0)
 
-    def fake_collect_for_entry(*_a, **_k):
-        return {"providers": {"stub": 1}}, [SimpleNamespace(identifier="paper-1")]
+    if collect_hook is None:
+        def collect_hook(*_a, **_k):  # type: ignore[misc]
+            return {"providers": {"stub": 1}}, [SimpleNamespace(identifier="paper-1")]
 
-    monkeypatch.setattr(collect_theories, "collect_for_entry", fake_collect_for_entry)
-    monkeypatch.setattr(collect_theories, "OntologyManager", DummyOntologyManager)
+    monkeypatch.setattr(collect_theories, "collect_for_entry", collect_hook)
+    monkeypatch.setattr(collect_theories, "OntologyManager", ontology_factory)
     monkeypatch.setattr(collect_theories, "TheoryClassifier", DummyClassifier)
     monkeypatch.setattr(collect_theories, "QuestionExtractor", lambda _cfg: object())
     monkeypatch.setattr(
@@ -181,3 +237,104 @@ def test_quickstart_generates_cache_and_skips_validation(monkeypatch, tmp_path, 
 
     captured = capsys.readouterr().out
     assert "Quickstart ontology node cached" in captured
+
+
+def test_quickstart_bootstrap_enrichment_updates_cache(monkeypatch, tmp_path):
+    config_path = _write_config(tmp_path, {})
+    args = _prepare_args(tmp_path, config_path, quickstart=True, target_count=20)
+
+    bootstrap_nodes: Dict[str, Any] = {
+        "Activity Theory": {
+            "bootstrap": {
+                "citations": 150,
+                "reviews": ["rev-1"],
+                "queries": ["activity theory aging"],
+            },
+            "subtheories": {
+                "Engagement": {
+                    "bootstrap": {
+                        "citations": 40,
+                        "reviews": ["rev-1"],
+                        "queries": ["engagement aging"],
+                    },
+                    "subtheories": {},
+                }
+            },
+        }
+    }
+    review_doc = ReviewDocument(
+        query="Test Query",
+        paper=PaperMetadata(
+            identifier="rev-1",
+            title="Activity theory review",
+            authors=("Author",),
+            abstract="A review of activity theory",
+            source="openalex",
+            year=2021,
+            doi=None,
+            full_text="",
+            citation_count=150,
+            is_review=True,
+        ),
+        citations=150,
+    )
+    bootstrap_reviews = {"Test Query": [review_doc]}
+
+    collect_calls: List[Dict[str, Any]] = []
+
+    def capture_collect(*_a, **kwargs):
+        collect_calls.append(
+            {
+                "name": kwargs.get("name"),
+                "context": kwargs.get("context"),
+                "config": kwargs.get("config"),
+            }
+        )
+        return {"providers": {}}, []
+
+    ontology_instances: List[RecordingOntologyManager] = []
+
+    def make_ontology(base_config, **kwargs):
+        manager = RecordingOntologyManager(base_config, **kwargs)
+        ontology_instances.append(manager)
+        return manager
+
+    validate_calls: list[dict] = []
+    _patch_runtime(
+        monkeypatch,
+        tmp_path,
+        args=args,
+        validate_calls=validate_calls,
+        bootstrap_hook=lambda *_a, **_k: ({}, bootstrap_nodes, bootstrap_reviews),
+        collect_hook=capture_collect,
+        ontology_factory=make_ontology,
+    )
+
+    collect_theories.main()
+
+    assert not validate_calls, "Quickstart should continue skipping validation"
+    assert collect_calls, "collect_for_entry should be invoked"
+    assert len(collect_calls) == 1
+    call = collect_calls[0]
+    assert call["name"] == "Test Query"
+    enrichment = call["context"].get("enrichment")
+    assert enrichment, "Quickstart context should include enrichment payload"
+    theories = enrichment.get("new_theories", [])
+    assert any(entry["name"] == "Activity Theory" and entry["parent"] == "Test Query" for entry in theories)
+    assert any(entry["name"] == "Engagement" and entry["parent"] == "Activity Theory" for entry in theories)
+    shards = enrichment.get("query_shards", [])
+    shard_queries = {item["query"] for item in shards}
+    assert {"activity theory aging", "engagement aging"} <= shard_queries
+
+    config_subs = call["config"].get("subtheories", {})
+    assert "Activity Theory" in config_subs
+    assert "Engagement" in config_subs["Activity Theory"].get("subtheories", {})
+
+    assert ontology_instances, "OntologyManager should be constructed"
+    base_config = ontology_instances[0].base_config
+    assert "Activity Theory" in base_config
+
+    slug_path = tmp_path / "data" / "cache" / "ontologies" / "test-query.json"
+    payload = json.loads(slug_path.read_text(encoding="utf-8"))
+    assert "Activity Theory" in payload["subtheories"]
+    assert payload["subtheories"]["Activity Theory"]["bootstrap"]["citations"] == 150

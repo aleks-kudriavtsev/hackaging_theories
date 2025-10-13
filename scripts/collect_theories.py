@@ -183,6 +183,75 @@ def _persist_quickstart_node(node: Mapping[str, Any], slug: str) -> Path:
     return path
 
 
+def _prepare_bootstrap_enrichment(
+    root_name: str,
+    bootstrap_nodes: Mapping[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    if not bootstrap_nodes:
+        return {}
+
+    new_theories: List[Dict[str, Any]] = []
+    query_shards: List[Dict[str, Any]] = []
+
+    def _walk(
+        name: str,
+        data: Mapping[str, Any],
+        parent: str,
+    ) -> None:
+        bootstrap_info_raw = data.get("bootstrap")
+        bootstrap_info = (
+            {key: value for key, value in bootstrap_info_raw.items()}
+            if isinstance(bootstrap_info_raw, Mapping)
+            else {}
+        )
+        metadata = {"source": "review_bootstrap"}
+        if bootstrap_info:
+            metadata["bootstrap"] = bootstrap_info
+        entry = {
+            "name": name,
+            "parent": parent,
+            "metadata": metadata,
+        }
+        new_theories.append(entry)
+
+        raw_queries = bootstrap_info.get("queries")
+        if isinstance(raw_queries, Sequence) and not isinstance(raw_queries, (str, bytes)):
+            for query in raw_queries:
+                if not isinstance(query, str):
+                    continue
+                query_text = query.strip()
+                if not query_text:
+                    continue
+                query_shards.append(
+                    {
+                        "query": query_text,
+                        "metadata": {
+                            "source": "review_bootstrap",
+                            "theory": name,
+                            "parent": parent,
+                        },
+                    }
+                )
+
+        children = data.get("subtheories")
+        if isinstance(children, Mapping):
+            for child_name, child_data in children.items():
+                if isinstance(child_data, Mapping):
+                    _walk(str(child_name), child_data, name)
+
+    for theory_name, node_data in bootstrap_nodes.items():
+        if not isinstance(node_data, Mapping):
+            continue
+        _walk(str(theory_name), node_data, root_name)
+
+    payload: Dict[str, List[Dict[str, Any]]] = {}
+    if new_theories:
+        payload["new_theories"] = new_theories
+    if query_shards:
+        payload["query_shards"] = query_shards
+    return payload
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -849,6 +918,7 @@ def main() -> None:
     quickstart_active = bool(args.quickstart or not base_targets)
     quickstart_node: Dict[str, Any] | None = None
     quickstart_cache_path: Path | None = None
+    quickstart_slug: str | None = None
     if quickstart_active:
         if args.target_count is None:
             parser.error(
@@ -870,6 +940,33 @@ def main() -> None:
         corpus_cfg,
         context=context,
     )
+
+    if quickstart_active and quickstart_node and bootstrap_nodes:
+        quickstart_name = str(quickstart_node.get("name") or "Quickstart Query")
+        existing_subs = quickstart_node.get("subtheories")
+        if not isinstance(existing_subs, Mapping):
+            existing_subs = {}
+        quickstart_node["subtheories"] = merge_bootstrap_into_targets(
+            existing_subs,
+            bootstrap_nodes,
+            inject_missing=True,
+        )
+        base_targets = _quickstart_config(quickstart_node)
+        enrichment_payload = _prepare_bootstrap_enrichment(quickstart_name, bootstrap_nodes)
+        if enrichment_payload:
+            existing_enrichment = context.get("enrichment")
+            merged_enrichment: Dict[str, List[Dict[str, Any]]] = {}
+            if isinstance(existing_enrichment, Mapping):
+                for key in ("new_theories", "query_shards"):
+                    value = existing_enrichment.get(key)
+                    if isinstance(value, list):
+                        merged_enrichment[key] = list(value)
+            for key, entries in enrichment_payload.items():
+                merged_enrichment.setdefault(key, []).extend(entries)
+            context["enrichment"] = merged_enrichment
+        if quickstart_cache_path and quickstart_slug:
+            quickstart_node.setdefault("metadata", {}).setdefault("slug", quickstart_slug)
+            _persist_quickstart_node(quickstart_node, quickstart_slug)
 
     update_runtime = bool(bootstrap_config.get("update_targets", False)) if bootstrap_config else False
     if bootstrap_nodes:
