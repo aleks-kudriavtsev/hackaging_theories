@@ -70,16 +70,19 @@ retrieval strategies in the same environment.
 
 ### Environment variables
 
-External API keys are stored in the configuration under `api_keys`, but you
-should prefer environment variables during development to avoid committing
-secrets. The recommended variables are:
+External API keys are declared in the configuration under `api_keys`, and the
+CLI entry points resolve them lazily via environment variables or external
+files. Export the following variables before running the pipeline to keep
+secrets out of version control:
 
 - `OPENALEX_API_KEY`
 - `CROSSREF_API_KEY`
+- `PUBMED_API_KEY`
+- `OPENAI_API_KEY`
 
-The bundled CLI scripts do not read these variables directly; instead, reference
-them when generating your own config (e.g., with `envsubst`) or when extending
-`LiteratureRetriever` with real API clients.
+Each key supports fallbacks (defaults or file references) if you need a more
+specialised workflow. See `src/theories_pipeline/config_utils.py` for the
+supported descriptors and `config/pipeline.yaml` for annotated examples.
 
 ## Running the pipelines
 
