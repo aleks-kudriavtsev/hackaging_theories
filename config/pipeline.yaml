@@ -140,3 +140,5 @@ outputs:
 
 pipeline:
   max_results: 10
+  parallel_fetch: 4
+  classification_workers: 4

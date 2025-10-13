@@ -21,6 +21,7 @@ from theories_pipeline import (
     QuestionExtractor,
     TheoryClassifier,
     TheoryOntology,
+    classify_and_extract_parallel,
     export_papers,
     export_question_answers,
     export_theories,
@@ -41,6 +42,14 @@ def load_config(path: Path) -> Dict[str, Any]:
             raise RuntimeError("PyYAML is required to parse YAML configuration files")
         return yaml.safe_load(text)
     return json.loads(text)
+
+
+def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> int:
+    if cli_value is not None:
+        return max(1, int(cli_value))
+    if isinstance(config_value, int) and config_value > 0:
+        return int(config_value)
+    return max(1, int(default))
 
 
 def build_provider_configs(
@@ -258,17 +267,33 @@ def main() -> None:
         type=Path,
         help="Directory to cache GPT responses (default: data/cache/llm)",
     )
+    parser.add_argument(
+        "--parallel-fetch",
+        type=int,
+        help="Number of worker threads to fetch provider pages in parallel",
+    )
+    parser.add_argument(
+        "--classification-workers",
+        type=int,
+        help="Number of worker threads for GPT classification/extraction",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
 
     corpus_cfg: Mapping[str, Any] = config.get("corpus", {})
+    pipeline_cfg: Mapping[str, Any] = config.get("pipeline", {}) if isinstance(config.get("pipeline"), Mapping) else {}
+    parallel_fetch = _resolve_workers(args.parallel_fetch, pipeline_cfg.get("parallel_fetch"), 1)
+    classification_workers = _resolve_workers(
+        args.classification_workers, pipeline_cfg.get("classification_workers"), 1
+    )
     state_dir = Path(args.state_dir or corpus_cfg.get("cache_dir") or config["outputs"].get("cache_dir", "data/cache"))
     provider_configs = build_provider_configs(config, args.providers)
     retriever = LiteratureRetriever(
         Path(config["data_sources"]["seed_papers"]),
         provider_configs=provider_configs,
         state_dir=state_dir,
+        parallel_fetch=parallel_fetch,
     )
 
     global_limit = args.limit or corpus_cfg.get("global_limit")
@@ -314,9 +339,12 @@ def main() -> None:
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
-    assignments = []
-    for batch in classifier.classify_batch(papers):
-        assignments.extend(batch)
+    extractor = QuestionExtractor(config.get("extraction"))
+    assignment_groups, answer_groups = classify_and_extract_parallel(
+        papers, classifier, extractor, workers=classification_workers
+    )
+    assignments = [assignment for group in assignment_groups for assignment in group]
+    question_answers = [answer for group in answer_groups for answer in group]
 
     coverage_counts = classifier.summarize(assignments)
     coverage_summary = ontology.coverage(coverage_counts)
@@ -330,11 +358,6 @@ def main() -> None:
         }
         for name, record in coverage_summary.items()
     }
-
-    extractor = QuestionExtractor(config.get("extraction"))
-    question_answers = []
-    for paper in papers:
-        question_answers.extend(extractor.extract(paper))
 
     outputs = config["outputs"]
     export_papers(papers, Path(outputs["papers"]))

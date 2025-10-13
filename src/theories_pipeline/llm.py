@@ -29,6 +29,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any, List, Mapping, MutableMapping, Sequence
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class LLMClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self._client, self._client_mode = self._init_client()
+        self._cache_lock = Lock()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -224,20 +226,22 @@ class LLMClient:
 
     def _read_cache(self, payload: Mapping[str, Any]) -> str | None:
         path = self._cache_path(payload)
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:  # pragma: no cover - corrupt cache
-            self.logger.warning("Invalid LLM cache entry at %s; ignoring", path)
-            return None
+        with self._cache_lock:
+            if not path.exists():
+                return None
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:  # pragma: no cover - corrupt cache
+                self.logger.warning("Invalid LLM cache entry at %s; ignoring", path)
+                return None
         return str(data.get("content", ""))
 
     def _write_cache(self, payload: Mapping[str, Any], content: str) -> None:
         path = self._cache_path(payload)
         payload = dict(payload)
         payload["content"] = content
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        with self._cache_lock:
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     def _execute_with_retries(self, payload: MutableMapping[str, Any]) -> str:
         attempt = 0

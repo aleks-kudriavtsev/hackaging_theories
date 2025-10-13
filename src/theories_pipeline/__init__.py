@@ -15,6 +15,7 @@ from .outputs import (
     export_theories,
     export_question_answers,
 )
+from .pipeline_utils import classify_and_extract_parallel
 from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "TheoryOntology",
     "QuestionExtractor",
     "QuestionAnswer",
+    "classify_and_extract_parallel",
     "export_papers",
     "export_theories",
     "export_question_answers",
