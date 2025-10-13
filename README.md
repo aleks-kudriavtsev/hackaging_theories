@@ -96,6 +96,38 @@ the retriever only inspects relevant domains. Refer to the inline comments in
 
 ## Running the pipelines
 
+### Quickstart without a seed ontology
+
+You can explore the pipeline without curating an ontology file up front. Export
+any required provider credentials (or pass them inline with the CLI overrides)
+and invoke the collector in quickstart mode:
+
+```bash
+export OPENALEX_API_KEY="sk-your-openalex-key"
+export CROSSREF_API_KEY="mailto:you@example.com"
+
+python scripts/collect_theories.py "Aging Theory" \
+  --quickstart \
+  --target-count 75 \
+  --openalex-api-key "$OPENALEX_API_KEY" \
+  --crossref-api-key "$CROSSREF_API_KEY"
+```
+
+This command renders an ad-hoc ontology node named after the query, writes the
+definition to `data/cache/ontologies/aging-theory.json`, and then resumes the
+standard retrieval → classification → extraction flow. Outputs are emitted to
+the paths configured under `outputs` in `config/pipeline.yaml`
+(`data/examples/papers.csv`, `data/examples/theories.csv`, and
+`data/examples/questions.csv` by default). Subsequent enrichment runs reuse the
+same cache directories (`data/cache/literature` for provider state and
+`data/cache/ontologies/` for the generated node), so re-running the command will
+continue filling the target quota unless `--no-resume` is supplied. Promote the
+saved ontology JSON into `corpus.targets` in your configuration when you are
+ready to graduate to a managed ontology; see
+[`config/pipeline.yaml`](config/pipeline.yaml) for the fully managed layout and
+[`docs/bootstrap.md`](docs/bootstrap.md) / [`docs/query_expansion.md`](docs/query_expansion.md)
+for advanced enrichment strategies.
+
 ### Collect theories and initial Q1–Q9 answers
 
 ```bash
