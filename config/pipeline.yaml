@@ -36,6 +36,28 @@ providers:
     api_key_key: pubmed
     batch_size: 200
     rate_limit_per_sec: 3
+  - name: biorxiv
+    type: biorxiv
+    enabled: false  # Enable once you have confirmed <=1 req/sec with your deployment
+    base_url: https://api.biorxiv.org/details/biorxiv
+    batch_size: 100
+    rate_limit_per_sec: 1
+    date_window:
+      from: 2023-01-01
+      to: 2023-01-15
+    categories:
+      - neuroscience
+  - name: medrxiv
+    type: medrxiv
+    enabled: false
+    base_url: https://api.biorxiv.org/details/medrxiv
+    batch_size: 100
+    rate_limit_per_sec: 1
+    date_window:
+      from: 2023-01-01
+      to: 2023-01-15
+    categories:
+      - geriatrics
 
 classification:
   llm:

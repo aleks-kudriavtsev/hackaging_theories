@@ -13,7 +13,7 @@ The pipeline focuses on three pillars of the challenge:
 
 1. **Collection** – `src/theories_pipeline/literature.py` loads deterministic
    seed metadata for testing and can be extended with API providers (e.g.,
-   OpenAlex, CrossRef) for production runs.
+   OpenAlex, CrossRef, bioRxiv, medRxiv) for production runs.
 2. **Theory classification** – `src/theories_pipeline/theories.py` implements a
    transparent keyword matcher that scores how strongly each paper aligns with
    known theories. Teams can substitute this module with more advanced models
@@ -83,6 +83,16 @@ secrets out of version control:
 Each key supports fallbacks (defaults or file references) if you need a more
 specialised workflow. See `src/theories_pipeline/config_utils.py` for the
 supported descriptors and `config/pipeline.yaml` for annotated examples.
+
+### Preprint providers and rate limits
+
+The pipeline ships with optional bioRxiv and medRxiv providers that fetch
+preprint metadata via the public JSON endpoints. These sources are disabled by
+default; enable them in `config/pipeline.yaml` once you have configured a
+conservative rate limit (≤ 1 request/second is recommended by the operators)
+and a manageable date window. Category filters can further narrow the feed so
+the retriever only inspects relevant domains. Refer to the inline comments in
+`config/pipeline.yaml` for example settings.
 
 ## Running the pipelines
 
