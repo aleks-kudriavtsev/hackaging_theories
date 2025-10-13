@@ -17,6 +17,16 @@ from .outputs import (
 )
 from .pipeline_utils import classify_and_extract_parallel
 from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
+from .review_bootstrap import (
+    BootstrapResult,
+    ReviewDocument,
+    build_bootstrap_ontology,
+    extract_theories_from_review,
+    merge_bootstrap_into_targets,
+    normalise_review_metadata,
+    pull_top_cited_reviews,
+    write_bootstrap_cache,
+)
 
 __all__ = [
     "LiteratureRetriever",
@@ -37,4 +47,12 @@ __all__ = [
     "LLMClientConfig",
     "LLMClientError",
     "LLMRateLimitError",
+    "ReviewDocument",
+    "BootstrapResult",
+    "pull_top_cited_reviews",
+    "normalise_review_metadata",
+    "extract_theories_from_review",
+    "build_bootstrap_ontology",
+    "merge_bootstrap_into_targets",
+    "write_bootstrap_cache",
 ]
