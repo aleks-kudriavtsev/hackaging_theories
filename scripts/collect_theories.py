@@ -119,6 +119,46 @@ def slugify(text: str) -> str:
     return slug or "untitled"
 
 
+def _build_quickstart_node(query: str, target: int) -> Dict[str, Any]:
+    name = query.strip() or "Quickstart Query"
+    node = {
+        "name": name,
+        "target": int(target),
+        "queries": [query],
+        "subtheories": {},
+        "metadata": {
+            "source": "quickstart",
+            "query": query,
+            "generated_at": time.time(),
+        },
+    }
+    return node
+
+
+def _quickstart_config(node: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    name = str(node.get("name")) if node.get("name") else "Quickstart Query"
+    config: Dict[str, Dict[str, Any]] = {
+        name: {key: value for key, value in node.items() if key != "name"}
+    }
+    config[name].setdefault("subtheories", {})
+    return config
+
+
+def _persist_quickstart_node(node: Mapping[str, Any], slug: str) -> Path:
+    cache_dir = PROJECT_ROOT / "data" / "cache" / "ontologies"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": node.get("name"),
+        "target": node.get("target"),
+        "queries": node.get("queries"),
+        "metadata": node.get("metadata", {}),
+        "subtheories": node.get("subtheories", {}),
+    }
+    path = cache_dir / f"{slug}.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -665,6 +705,19 @@ def main() -> None:
         help="Path to the pipeline configuration file",
     )
     parser.add_argument(
+        "--quickstart",
+        action="store_true",
+        help=(
+            "Generate a temporary ontology node from the CLI query instead of "
+            "requiring corpus.targets"
+        ),
+    )
+    parser.add_argument(
+        "--target-count",
+        type=int,
+        help="Target paper quota for the quickstart ontology node",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help="Global maximum number of papers to export (overrides config)",
@@ -748,7 +801,29 @@ def main() -> None:
     expansion_cfg_raw = corpus_cfg.get("expansion")
     expansion_cfg = expansion_cfg_raw if isinstance(expansion_cfg_raw, Mapping) else None
 
-    base_targets = corpus_cfg.get("targets", {})
+    base_targets_raw = corpus_cfg.get("targets", {})
+    if isinstance(base_targets_raw, Mapping):
+        base_targets: Dict[str, Any] = dict(base_targets_raw)
+    else:
+        base_targets = {}
+
+    quickstart_active = bool(args.quickstart or not base_targets)
+    quickstart_node: Dict[str, Any] | None = None
+    quickstart_cache_path: Path | None = None
+    if quickstart_active:
+        if args.target_count is None:
+            parser.error(
+                "--target-count is required when --quickstart is used or corpus.targets is empty"
+            )
+        quickstart_node = _build_quickstart_node(args.query, args.target_count)
+        quickstart_slug = slugify(args.query)
+        quickstart_node.setdefault("metadata", {}).setdefault("slug", quickstart_slug)
+        quickstart_cache_path = _persist_quickstart_node(quickstart_node, quickstart_slug)
+        logger.info(
+            "Quickstart mode active; generated ontology node persisted to %s",
+            quickstart_cache_path,
+        )
+        base_targets = _quickstart_config(quickstart_node)
     context: Dict[str, Any] = {"base_query": args.query, "query": args.query}
     bootstrap_config, bootstrap_nodes, bootstrap_reviews = _run_bootstrap_phase(
         retriever,
@@ -843,7 +918,8 @@ def main() -> None:
 
     papers = list(collected_papers.values())
 
-    validate_targets(summary_report)
+    if not quickstart_active:
+        validate_targets(summary_report)
     if global_limit is not None and len(papers) > global_limit:
         papers = papers[: global_limit]
 
@@ -891,6 +967,9 @@ def main() -> None:
 
     print()
     print(ontology.format_coverage_report(coverage_counts))
+
+    if quickstart_active and quickstart_cache_path is not None:
+        print(f"Quickstart ontology node cached at {quickstart_cache_path}")
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
