@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -17,7 +18,17 @@ def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["identifier", "title", "authors", "abstract", "source", "year", "doi"],
+            fieldnames=[
+                "identifier",
+                "title",
+                "authors",
+                "abstract",
+                "full_text",
+                "sections",
+                "source",
+                "year",
+                "doi",
+            ],
         )
         writer.writeheader()
         for paper in papers:
@@ -27,6 +38,12 @@ def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
                     "title": paper.title,
                     "authors": "; ".join(paper.authors),
                     "abstract": paper.abstract,
+                    "full_text": paper.full_text,
+                    "sections": json.dumps(
+                        [section.to_dict() for section in paper.sections], ensure_ascii=False
+                    )
+                    if paper.sections
+                    else "",
                     "source": paper.source,
                     "year": paper.year if paper.year is not None else "",
                     "doi": paper.doi if paper.doi is not None else "",

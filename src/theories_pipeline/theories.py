@@ -47,7 +47,8 @@ class TheoryClassifier:
     # Classification helpers
     # ------------------------------------------------------------------
     def _score_keywords(self, paper: PaperMetadata) -> Dict[str, float]:
-        text = " ".join([paper.title, paper.abstract]).lower()
+        analysis_text = paper.analysis_text if paper.analysis_text else paper.abstract
+        text = " ".join(part for part in (paper.title, analysis_text) if part).lower()
         scores: Dict[str, float] = {}
         for theory, keywords in self.keyword_map.items():
             matches = sum(1 for kw in keywords if kw in text)
@@ -205,13 +206,28 @@ class TheoryClassifier:
         return "\n".join(lines)
 
     def _format_paper_prompt(self, paper: PaperMetadata) -> str:
-        abstract = paper.abstract.strip() or "<no abstract provided>"
+        primary_text = paper.analysis_text.strip()
+        if primary_text:
+            if paper.full_text and paper.full_text.strip():
+                text_label = "Full text"
+            elif paper.sections:
+                text_label = "Section text"
+            else:
+                text_label = "Abstract"
+        else:
+            text_label = "Abstract"
+            primary_text = paper.abstract.strip()
+        excerpt = primary_text[:4000] if primary_text else ""
+        if primary_text and len(primary_text) > 4000:
+            excerpt = f"{excerpt}..."
+        if not excerpt:
+            excerpt = "<no abstract provided>"
         authors = ", ".join(paper.authors) if paper.authors else "Unknown"
         return (
             f"Title: {paper.title}\n"
             f"Authors: {authors}\n"
             f"Source: {paper.source}\n"
-            f"Abstract: {abstract}"
+            f"{text_label}: {excerpt}"
         )
 
     def _scores_from_llm_response(self, response: LLMResponse) -> Dict[str, float] | None:

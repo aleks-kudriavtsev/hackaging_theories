@@ -59,7 +59,8 @@ class QuestionExtractor:
         }
 
     def extract(self, paper: PaperMetadata) -> List[QuestionAnswer]:
-        text = " ".join([paper.title, paper.abstract])
+        analysis_text = paper.analysis_text if paper.analysis_text else paper.abstract
+        text = " ".join(part for part in (paper.title, analysis_text) if part)
         answers: List[QuestionAnswer] = []
         sentences = _split_sentences(text)
         for question_id, question in QUESTIONS:

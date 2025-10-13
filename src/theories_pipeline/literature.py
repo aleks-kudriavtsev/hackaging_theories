@@ -15,8 +15,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+import html
+import re
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency
     import requests
@@ -24,6 +26,21 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     requests = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PaperSection:
+    """Structured subsection of a paper's full text."""
+
+    title: str
+    text: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"title": self.title, "text": self.text}
+
+    @staticmethod
+    def from_dict(data: MutableMapping[str, Any]) -> "PaperSection":
+        return PaperSection(title=str(data.get("title", "")), text=str(data.get("text", "")))
 
 
 @dataclass(frozen=True)
@@ -37,6 +54,8 @@ class PaperMetadata:
     source: str
     year: int | None = None
     doi: str | None = None
+    full_text: str = ""
+    sections: Tuple[PaperSection, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -47,18 +66,26 @@ class PaperMetadata:
             "source": self.source,
             "year": self.year,
             "doi": self.doi,
+            "full_text": self.full_text,
+            "sections": [section.to_dict() for section in self.sections],
         }
 
     @staticmethod
     def from_dict(data: MutableMapping[str, Any]) -> "PaperMetadata":
+        sections_data = data.get("sections") or []
+        sections: Tuple[PaperSection, ...] = tuple(
+            PaperSection.from_dict(item) for item in sections_data if isinstance(item, MutableMapping)
+        )
         return PaperMetadata(
             identifier=data["identifier"],
-            title=data["title"],
+            title=str(data.get("title", "")),
             authors=tuple(data.get("authors", ())),
-            abstract=data.get("abstract", ""),
-            source=data.get("source", "unknown"),
+            abstract=str(data.get("abstract", "") or ""),
+            source=str(data.get("source", "unknown") or "unknown"),
             year=data.get("year"),
             doi=data.get("doi"),
+            full_text=str(data.get("full_text") or ""),
+            sections=sections,
         )
 
     @property
@@ -66,6 +93,24 @@ class PaperMetadata:
         if self.doi:
             return self.doi.lower()
         return self.identifier.lower()
+
+    @property
+    def analysis_text(self) -> str:
+        if self.full_text and self.full_text.strip():
+            return self.full_text
+        if self.sections:
+            joined = "\n\n".join(
+                "\n".join(
+                    part
+                    for part in (section.title.strip(), section.text.strip())
+                    if part
+                )
+                for section in self.sections
+                if (section.title and section.title.strip()) or (section.text and section.text.strip())
+            )
+            if joined:
+                return joined
+        return self.abstract
 
 
 @dataclass
@@ -160,6 +205,10 @@ class BaseProvider:
             )
         self.session = requests.Session()
         self.rate_limiter = RateLimiter(config.rate_limit_per_sec)
+        cache_override = self.config.extra.get("fulltext_cache_dir") if self.config.extra else None
+        cache_dir = Path(cache_override) if cache_override else Path("data/cache/fulltext")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._fulltext_cache_dir = cache_dir
 
     @property
     def name(self) -> str:
@@ -173,6 +222,86 @@ class BaseProvider:
 
     def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Full-text helpers
+    # ------------------------------------------------------------------
+    def _fulltext_cache_path(self, identifier: str, doi: str | None) -> Path:
+        key = (doi or identifier).encode("utf-8")
+        digest = hashlib.sha256(key).hexdigest()
+        return self._fulltext_cache_dir / f"{digest}.txt"
+
+    def _read_cached_full_text(self, identifier: str, doi: str | None) -> str:
+        path = self._fulltext_cache_path(identifier, doi)
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - filesystem edge case
+            logger.debug("Failed to read cached full text for %s: %s", identifier, exc)
+            return ""
+
+    def _write_full_text_cache(self, identifier: str, doi: str | None, text: str) -> None:
+        if not text:
+            return
+        path = self._fulltext_cache_path(identifier, doi)
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - filesystem edge case
+            logger.debug("Failed to write cached full text for %s: %s", identifier, exc)
+
+    def _download_text(self, url: str) -> str:
+        headers = {
+            "Accept": "text/plain, text/html;q=0.9, application/json;q=0.1",
+            "User-Agent": "hackaging-theories-pipeline/1.0",
+        }
+        try:
+            self.rate_limiter.wait()
+            response = self.session.get(url, headers=headers, timeout=self.config.timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            logger.debug("Failed to download full text from %s: %s", url, exc)
+            return ""
+
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "pdf" in content_type or url.lower().endswith(".pdf"):
+            logger.debug("Skipping binary full text from %s (content-type=%s)", url, content_type)
+            return ""
+
+        if "json" in content_type:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if payload is None:
+                return ""
+            text = json.dumps(payload, ensure_ascii=False, indent=2)
+        else:
+            try:
+                text = response.text
+            except UnicodeDecodeError:
+                logger.debug("Failed to decode text response from %s", url)
+                return ""
+
+        normalized = _normalize_full_text(text)
+        if len(normalized) > 500_000:
+            normalized = normalized[:500_000]
+        return normalized
+
+    def _resolve_full_text(
+        self, identifier: str, doi: str | None, candidates: Iterable[str]
+    ) -> str:
+        cached = self._read_cached_full_text(identifier, doi)
+        if cached:
+            return cached
+        for url in candidates:
+            if not url:
+                continue
+            text = self._download_text(url)
+            if text:
+                self._write_full_text_cache(identifier, doi, text)
+                return text
+        return ""
 
 
 class OpenAlexProvider(BaseProvider):
@@ -203,6 +332,23 @@ class OpenAlexProvider(BaseProvider):
             identifier = item.get("id") or (f"openalex:{item.get('doi')}" if item.get("doi") else "")
             if not identifier:
                 continue
+            candidates: List[str] = []
+            for location in (
+                item.get("best_oa_location"),
+                item.get("primary_location"),
+            ):
+                if not location:
+                    continue
+                for key in ("url_for_text", "url", "landing_page_url"):
+                    value = location.get(key)
+                    if value and value not in candidates:
+                        candidates.append(value)
+            for location in item.get("locations", []) or []:
+                for key in ("url_for_text", "url", "landing_page_url"):
+                    value = location.get(key)
+                    if value and value not in candidates:
+                        candidates.append(value)
+            full_text = self._resolve_full_text(identifier, doi, candidates)
             papers.append(
                 PaperMetadata(
                     identifier=identifier,
@@ -212,6 +358,7 @@ class OpenAlexProvider(BaseProvider):
                     source="openalex",
                     year=year,
                     doi=doi,
+                    full_text=full_text,
                 )
             )
         next_cursor = payload.get("meta", {}).get("next_cursor")
@@ -260,6 +407,14 @@ class CrossRefProvider(BaseProvider):
             year = None
             if "issued" in item and item["issued"].get("date-parts"):
                 year = item["issued"]["date-parts"][0][0]
+            candidates = []
+            for link in item.get("link", []) or []:
+                url = link.get("URL")
+                if url and url not in candidates:
+                    candidates.append(url)
+            if item.get("URL") and item.get("URL") not in candidates:
+                candidates.append(item["URL"])
+            full_text = self._resolve_full_text(identifier, doi, candidates)
             papers.append(
                 PaperMetadata(
                     identifier=identifier,
@@ -269,6 +424,7 @@ class CrossRefProvider(BaseProvider):
                     source="crossref",
                     year=year,
                     doi=doi,
+                    full_text=full_text,
                 )
             )
         next_cursor = payload.get("message", {}).get("next-cursor")
@@ -332,19 +488,30 @@ class PubMedProvider(BaseProvider):
                 except (ValueError, IndexError):
                     year = None
             doi = None
+            pmc_id = None
             for article_id in record.get("articleids", []) or []:
-                if article_id.get("idtype") == "doi":
-                    doi = article_id.get("value")
-                    break
+                id_type = article_id.get("idtype")
+                value = article_id.get("value")
+                if id_type == "doi" and value and not doi:
+                    doi = value
+                if id_type == "pmc" and value and not pmc_id:
+                    pmc_id = value
+            identifier = f"pubmed:{pmid}"
+            candidates = [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"]
+            if pmc_id:
+                normalized_pmc = pmc_id if pmc_id.lower().startswith("pmc") else f"PMC{pmc_id}"
+                candidates.append(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{normalized_pmc}/")
+            full_text = self._resolve_full_text(identifier, doi, candidates)
             papers.append(
                 PaperMetadata(
-                    identifier=f"pubmed:{pmid}",
+                    identifier=identifier,
                     title=record.get("title", ""),
                     authors=tuple(a for a in authors if a),
                     abstract=record.get("elocationid", ""),
                     source="pubmed",
                     year=year,
                     doi=doi,
+                    full_text=full_text,
                 )
             )
 
@@ -406,12 +573,18 @@ class LiteratureRetriever:
                 papers.append(
                     PaperMetadata(
                         identifier=item["identifier"],
-                        title=item["title"],
+                        title=str(item.get("title", "")),
                         authors=item.get("authors", []),
-                        abstract=item.get("abstract", ""),
-                        source=item.get("source", "seed"),
+                        abstract=str(item.get("abstract", "") or ""),
+                        source=str(item.get("source", "seed") or "seed"),
                         year=item.get("year"),
                         doi=item.get("doi"),
+                        full_text=str(item.get("full_text") or ""),
+                        sections=tuple(
+                            PaperSection.from_dict(section)
+                            for section in item.get("sections", []) or []
+                            if isinstance(section, MutableMapping)
+                        ),
                     )
                 )
             self._seed_cache = papers
@@ -600,6 +773,32 @@ class LiteratureRetriever:
         return RetrievalResult(papers=collected, newly_added=newly_added, summary=summary)
 
 
+def _matches_query(paper: PaperMetadata, query: str) -> bool:
+    terms = [term.strip().lower() for term in query.split() if term.strip()]
+    if not terms:
+        return True
+    haystack = " ".join(
+        part
+        for part in (paper.title or "", paper.analysis_text or "", paper.abstract or "")
+        if part
+    ).lower()
+    return all(term in haystack for term in terms)
+
+
+def _normalize_full_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<(script|style)[^>]*>.*?</\\1>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</p>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"[\t\f\r]+", " ", cleaned)
+    cleaned = re.sub(r"\s*\n\s*", "\n", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def decode_openalex_abstract(index: Dict[str, List[int]] | None) -> str:
     """Convert the OpenAlex inverted abstract index to plain text."""
 
@@ -610,16 +809,9 @@ def decode_openalex_abstract(index: Dict[str, List[int]] | None) -> str:
     return " ".join(ordered_words)
 
 
-def _matches_query(paper: PaperMetadata, query: str) -> bool:
-    terms = [term.strip().lower() for term in query.split() if term.strip()]
-    if not terms:
-        return True
-    haystack = " ".join([paper.title or "", paper.abstract or ""]).lower()
-    return all(term in haystack for term in terms)
-
-
 __all__ = [
     "PaperMetadata",
+    "PaperSection",
     "ProviderConfig",
     "RetrievalResult",
     "LiteratureRetriever",

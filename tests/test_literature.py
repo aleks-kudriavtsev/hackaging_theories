@@ -55,7 +55,8 @@ def test_search_uses_providers(tmp_path: Path) -> None:
                 identifier="p3",
                 title="Digital engagement",
                 authors=["Someone"],
-                abstract="Discussing engagement theory",
+                abstract="",
+                full_text="Discussing engagement theory in detail",
                 source="Provider",
             )
         ]
