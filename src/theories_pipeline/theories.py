@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 from .literature import PaperMetadata
 from .ontology import TheoryOntology
+from .llm import LLMClient, LLMClientError, LLMMessage, LLMRateLimitError, LLMResponse
 
 
 @dataclass(frozen=True)
@@ -20,15 +24,24 @@ class TheoryAssignment:
 
 
 class TheoryClassifier:
-    """Keyword-based hierarchical classifier with ontology rollups."""
+    """Hybrid classifier using keywords with optional GPT assistance."""
 
-    def __init__(self, keyword_map: Mapping[str, Iterable[str]], ontology: TheoryOntology) -> None:
+    def __init__(
+        self,
+        keyword_map: Mapping[str, Iterable[str]],
+        ontology: TheoryOntology,
+        *,
+        llm_client: LLMClient | None = None,
+    ) -> None:
         self.keyword_map = {
             theory: [kw.lower() for kw in keywords]
             for theory, keywords in keyword_map.items()
         }
         self.ontology = ontology
         self._ontology_names = set(ontology.names())
+        self.llm_client = llm_client
+        self._name_lookup = {name.lower(): name for name in ontology.names()}
+        self._logger = logging.getLogger(__name__)
 
     # ------------------------------------------------------------------
     # Classification helpers
@@ -55,19 +68,40 @@ class TheoryClassifier:
         return aggregated
 
     def classify(self, paper: PaperMetadata) -> List[TheoryAssignment]:
-        aggregated = self.aggregate_scores(self._score_keywords(paper))
-        assignments = [
-            TheoryAssignment(
-                paper_id=paper.identifier,
-                theory=theory,
-                score=score,
-                depth=self.ontology.depth(theory) if theory in self._ontology_names else 0,
+        return self.classify_batch([paper])[0]
+
+    def classify_batch(self, papers: Sequence[PaperMetadata]) -> List[List[TheoryAssignment]]:
+        if not papers:
+            return []
+        if not self.llm_client:
+            return [self._keyword_assignments(paper) for paper in papers]
+
+        messages_batch = [self._build_llm_messages(paper) for paper in papers]
+        try:
+            responses = self.llm_client.generate(messages_batch)
+        except LLMRateLimitError:
+            self._logger.warning(
+                "Rate limit encountered during LLM classification; falling back to keywords"
             )
-            for theory, score in aggregated.items()
-            if score > 0.0
-        ]
-        assignments.sort(key=lambda item: (item.depth, -item.score, item.theory))
-        return assignments
+            return [self._keyword_assignments(paper) for paper in papers]
+        except LLMClientError as exc:
+            self._logger.error("LLM classification failed: %s", exc)
+            return [self._keyword_assignments(paper) for paper in papers]
+
+        assignments_batch: List[List[TheoryAssignment]] = []
+        for paper, response in zip(papers, responses):
+            llm_scores = self._scores_from_llm_response(response)
+            if llm_scores is None:
+                assignments_batch.append(self._keyword_assignments(paper))
+                continue
+            keyword_scores = self._score_keywords(paper)
+            merged_scores: Dict[str, float] = dict(keyword_scores)
+            for name, score in llm_scores.items():
+                merged_scores[name] = max(merged_scores.get(name, 0.0), score)
+            aggregated = self.aggregate_scores(merged_scores)
+            assignments_batch.append(self._assignments_from_scores(paper.identifier, aggregated))
+
+        return assignments_batch
 
     def summarize(self, assignments: Iterable[TheoryAssignment]) -> Dict[str, int]:
         counts: Dict[str, set[str]] = {name: set() for name in self.ontology.names()}
@@ -81,12 +115,18 @@ class TheoryClassifier:
     @classmethod
     def from_config(
         cls,
-        config: Mapping[str, Iterable[str] | Mapping[str, object]],
+        config: Mapping[str, object],
         *,
         ontology: TheoryOntology,
+        llm_client: LLMClient | None = None,
     ) -> "TheoryClassifier":
-        keyword_map = cls._normalize_keyword_config(config)
-        return cls(keyword_map, ontology)
+        keyword_cfg: Mapping[str, Iterable[str] | Mapping[str, object]]
+        if "keywords" in config and isinstance(config["keywords"], Mapping):
+            keyword_cfg = config["keywords"]  # type: ignore[assignment]
+        else:
+            keyword_cfg = config  # type: ignore[assignment]
+        keyword_map = cls._normalize_keyword_config(keyword_cfg)
+        return cls(keyword_map, ontology, llm_client=llm_client)
 
     @staticmethod
     def _normalize_keyword_config(
@@ -108,3 +148,152 @@ class TheoryClassifier:
             visit(theory, value)
 
         return normalized
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _keyword_assignments(self, paper: PaperMetadata) -> List[TheoryAssignment]:
+        aggregated = self.aggregate_scores(self._score_keywords(paper))
+        return self._assignments_from_scores(paper.identifier, aggregated)
+
+    def _assignments_from_scores(
+        self, paper_id: str, aggregated: Mapping[str, float]
+    ) -> List[TheoryAssignment]:
+        assignments = [
+            TheoryAssignment(
+                paper_id=paper_id,
+                theory=theory,
+                score=score,
+                depth=self.ontology.depth(theory) if theory in self._ontology_names else 0,
+            )
+            for theory, score in aggregated.items()
+            if score > 0.0
+        ]
+        assignments.sort(key=lambda item: (item.depth, -item.score, item.theory))
+        return assignments
+
+    def _build_llm_messages(self, paper: PaperMetadata) -> List[LLMMessage]:
+        ontology_description = self._format_ontology_prompt()
+        paper_text = self._format_paper_prompt(paper)
+        system_prompt = (
+            "You are an expert gerontology analyst. Assign the paper to the "
+            "most appropriate theory and optional subtheory from the provided "
+            "ontology. Respond with JSON containing a 'predictions' array."
+        )
+        user_prompt = (
+            f"Ontology:\n{ontology_description}\n\nPaper:\n{paper_text}\n\n"
+            "Return a JSON object like {\"predictions\":[{\"theory\":...,\"subtheory\":...,\"confidence\":0.0}]}."
+            " Use a confidence between 0 and 1."
+        )
+        return [LLMMessage("system", system_prompt), LLMMessage("user", user_prompt)]
+
+    def _format_ontology_prompt(self) -> str:
+        levels: Dict[int, List[str]] = {}
+        for name in self.ontology.names():
+            depth = self.ontology.depth(name)
+            levels.setdefault(depth, []).append(name)
+        lines: List[str] = []
+        for depth in sorted(levels):
+            indent = "  " * depth
+            children = sorted(levels[depth])
+            for name in children:
+                parent = self.ontology.parent(name)
+                if parent:
+                    lines.append(f"{indent}- {name} (child of {parent})")
+                else:
+                    lines.append(f"{indent}- {name}")
+        return "\n".join(lines)
+
+    def _format_paper_prompt(self, paper: PaperMetadata) -> str:
+        abstract = paper.abstract.strip() or "<no abstract provided>"
+        authors = ", ".join(paper.authors) if paper.authors else "Unknown"
+        return (
+            f"Title: {paper.title}\n"
+            f"Authors: {authors}\n"
+            f"Source: {paper.source}\n"
+            f"Abstract: {abstract}"
+        )
+
+    def _scores_from_llm_response(self, response: LLMResponse) -> Dict[str, float] | None:
+        content = response.content.strip()
+        if not content:
+            return None
+        data = self._extract_json(content)
+        if data is None:
+            self._logger.warning("LLM response not valid JSON: %s", content[:200])
+            return None
+        predictions = data.get("predictions") or data.get("theories") or data.get("assignments")
+        if isinstance(predictions, Mapping):
+            predictions = [predictions]
+        if not isinstance(predictions, list):
+            self._logger.warning("LLM response missing predictions: %s", content[:200])
+            return None
+        scores: Dict[str, float] = {}
+        for item in predictions:
+            if not isinstance(item, Mapping):
+                continue
+            theory_name = self._match_name(item.get("theory"))
+            if not theory_name:
+                continue
+            confidence = self._coerce_confidence(item.get("confidence"))
+            if confidence <= 0:
+                continue
+            scores[theory_name] = max(scores.get(theory_name, 0.0), confidence)
+            sub_candidates = self._collect_subtheories(item)
+            for sub_name in sub_candidates:
+                matched = self._match_name(sub_name)
+                if matched:
+                    scores[matched] = max(scores.get(matched, 0.0), confidence)
+        return scores if scores else None
+
+    def _collect_subtheories(self, item: Mapping[str, object]) -> List[str]:
+        sub_names: List[str] = []
+        direct = item.get("subtheory") or item.get("sub_theory") or item.get("sub")
+        if isinstance(direct, str) and direct.strip():
+            sub_names.append(direct.strip())
+        sub_list = item.get("subtheories") or item.get("sub_theories")
+        if isinstance(sub_list, Sequence):
+            for entry in sub_list:
+                if isinstance(entry, str) and entry.strip():
+                    sub_names.append(entry.strip())
+                elif isinstance(entry, Mapping):
+                    name = entry.get("name") or entry.get("theory")
+                    if isinstance(name, str) and name.strip():
+                        sub_names.append(name.strip())
+        return sub_names
+
+    def _extract_json(self, text: str) -> MutableMapping[str, object] | None:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                return None
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+
+    def _coerce_confidence(self, value: object) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            confidence = float(value)
+        elif isinstance(value, str):
+            cleaned = value.strip().rstrip("%")
+            if not cleaned:
+                return 0.0
+            try:
+                confidence = float(cleaned)
+            except ValueError:
+                return 0.0
+        else:
+            return 0.0
+        if confidence > 1.5:
+            confidence /= 100.0
+        return max(0.0, min(1.0, confidence))
+
+    def _match_name(self, name: object) -> str | None:
+        if not isinstance(name, str):
+            return None
+        return self._name_lookup.get(name.strip().lower())

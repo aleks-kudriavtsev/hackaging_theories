@@ -23,6 +23,7 @@ from theories_pipeline import (
     TheoryOntology,
     export_question_answers,
 )
+from theories_pipeline.llm import LLMClient, LLMClientConfig
 
 try:
     import yaml  # type: ignore
@@ -67,6 +68,33 @@ def _ensure_cache_dir(path: Path) -> Path:
     return path
 
 
+def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace) -> LLMClient | None:
+    classification_cfg = config.get("classification", {}) if isinstance(config, Mapping) else {}
+    llm_cfg = classification_cfg.get("llm", {}) if isinstance(classification_cfg, Mapping) else {}
+
+    llm_model = args.llm_model or llm_cfg.get("model")
+    if not llm_model:
+        return None
+
+    temperature = args.llm_temperature if args.llm_temperature is not None else llm_cfg.get("temperature", 0.0)
+    batch_size = args.llm_batch_size or llm_cfg.get("batch_size", 4)
+    cache_dir = args.llm_cache_dir or llm_cfg.get("cache_dir") or Path("data/cache/llm")
+    max_retries = llm_cfg.get("max_retries", 3)
+    retry_backoff = llm_cfg.get("retry_backoff", 2.0)
+    request_timeout = llm_cfg.get("request_timeout", 60.0)
+
+    config_obj = LLMClientConfig(
+        model=llm_model,
+        temperature=float(temperature),
+        batch_size=int(batch_size),
+        max_retries=int(max_retries),
+        retry_backoff=float(retry_backoff),
+        request_timeout=float(request_timeout),
+        cache_dir=Path(cache_dir),
+    )
+    return LLMClient(config_obj)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -80,6 +108,25 @@ def main() -> None:
         type=Path,
         help="Optional papers CSV; defaults to config outputs or seed data",
     )
+    parser.add_argument(
+        "--llm-model",
+        help="Optional OpenAI model name for GPT-assisted classification",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        help="Override sampling temperature for GPT classification",
+    )
+    parser.add_argument(
+        "--llm-batch-size",
+        type=int,
+        help="Number of papers to classify per GPT request batch",
+    )
+    parser.add_argument(
+        "--llm-cache-dir",
+        type=Path,
+        help="Directory to cache GPT responses (default: data/cache/llm)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -92,16 +139,16 @@ def main() -> None:
         papers = retriever.search("", limit=None)
 
     ontology = TheoryOntology.from_targets_config(config.get("corpus", {}).get("targets", {}))
+    llm_client = _maybe_build_llm_client(config, args)
     classifier = TheoryClassifier.from_config(
-        config["classification"]["keywords"], ontology=ontology
+        config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
     extractor = QuestionExtractor(config.get("extraction"))
 
     theory_counts: Counter[str] = Counter()
     question_answers = []
     assignments = []
-    for paper in papers:
-        paper_assignments = classifier.classify(paper)
+    for paper_assignments in classifier.classify_batch(papers):
         assignments.extend(paper_assignments)
         theory_counts.update([assignment.theory for assignment in paper_assignments])
         question_answers.extend(extractor.extract(paper))

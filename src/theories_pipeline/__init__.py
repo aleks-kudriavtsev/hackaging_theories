@@ -9,6 +9,7 @@ from .outputs import (
     export_theories,
     export_question_answers,
 )
+from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
 
 __all__ = [
     "LiteratureRetriever",
@@ -23,4 +24,8 @@ __all__ = [
     "export_papers",
     "export_theories",
     "export_question_answers",
+    "LLMClient",
+    "LLMClientConfig",
+    "LLMClientError",
+    "LLMRateLimitError",
 ]
