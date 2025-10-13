@@ -1,6 +1,12 @@
 """Pipeline utilities for the Hackaging theories challenge."""
 
-from .literature import LiteratureRetriever, PaperMetadata, ProviderConfig, RetrievalResult
+from .literature import (
+    LiteratureRetriever,
+    PaperMetadata,
+    PaperSection,
+    ProviderConfig,
+    RetrievalResult,
+)
 from .ontology import TheoryOntology
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
@@ -14,6 +20,7 @@ from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
 __all__ = [
     "LiteratureRetriever",
     "PaperMetadata",
+    "PaperSection",
     "ProviderConfig",
     "RetrievalResult",
     "TheoryClassifier",

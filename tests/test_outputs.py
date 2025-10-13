@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 
 from theories_pipeline.extraction import QuestionAnswer
-from theories_pipeline.literature import PaperMetadata
+from theories_pipeline.literature import PaperMetadata, PaperSection
 from theories_pipeline.outputs import (
     export_papers,
     export_question_answers,
@@ -20,6 +20,8 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             title="Sample",
             authors=["Author"],
             abstract="Abstract text",
+            full_text="Full text body",
+            sections=(PaperSection("Intro", "Section text"),),
             source="Seed",
             year=2020,
             doi="10.0/doi",
@@ -38,3 +40,9 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             reader = csv.reader(handle)
             rows = list(reader)
             assert len(rows) >= 2
+    with paper_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        header = reader.fieldnames or []
+        assert {"full_text", "sections"}.issubset(header)
+        first = next(reader)
+        assert first["full_text"] == "Full text body"

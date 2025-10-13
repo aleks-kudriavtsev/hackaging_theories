@@ -13,7 +13,8 @@ def test_classifier_returns_sorted_assignments() -> None:
         identifier="p1",
         title="Activity engagement for seniors",
         authors=["Author"],
-        abstract="The study applies activity theory and socioemotional selectivity theory.",
+        abstract="",
+        full_text="The study applies activity theory and socioemotional selectivity theory.",
         source="Test",
     )
     ontology = TheoryOntology.from_targets_config(
