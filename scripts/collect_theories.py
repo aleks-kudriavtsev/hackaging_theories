@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -17,11 +19,11 @@ if str(SRC_PATH) not in sys.path:
 
 from theories_pipeline import (
     LiteratureRetriever,
+    OntologyManager,
     PaperMetadata,
     ProviderConfig,
     QuestionExtractor,
     TheoryClassifier,
-    TheoryOntology,
     classify_and_extract_parallel,
     export_papers,
     export_question_answers,
@@ -229,7 +231,7 @@ def collect_for_entry(
     providers: Iterable[str] | None,
     resume: bool,
     state_prefix: str,
-    ontology: TheoryOntology | None,
+    ontology_manager: OntologyManager | None,
     expander: QueryExpander | None,
     default_expansion: QueryExpansionSettings | None,
     retrieval_options: Mapping[str, Any] | None = None,
@@ -237,6 +239,7 @@ def collect_for_entry(
     query_templates = config.get("queries") or [context.get("base_query", name)]
     queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
     queries = [q.strip() for q in queries if q.strip()]
+    base_queries = list(queries)
     target = config.get("target")
     min_citation_override = config.get("min_citation_count")
     if min_citation_override is None and retrieval_options is not None:
@@ -267,6 +270,169 @@ def collect_for_entry(
         if sort_by_citations_override is not None
         else False
     )
+
+    existing_state: Mapping[str, Any] = {}
+    if state_prefix:
+        try:
+            existing_state = retriever.state_store.get(state_prefix)
+        except AttributeError:
+            existing_state = {}
+
+    enrichment_sources: List[Mapping[str, Any]] = []
+    config_enrichment = config.get("enrichment")
+    if isinstance(config_enrichment, Mapping):
+        enrichment_sources.append(config_enrichment)
+    context_enrichment = context.get("enrichment")
+    if isinstance(context_enrichment, Mapping):
+        enrichment_sources.append(context_enrichment)
+
+    new_theory_entries: List[Mapping[str, Any]] = []
+    query_shard_entries: List[Any] = []
+    for source in enrichment_sources:
+        raw_theories = source.get("new_theories")
+        if isinstance(raw_theories, Mapping):
+            new_theory_entries.append(raw_theories)
+        elif isinstance(raw_theories, Iterable) and not isinstance(raw_theories, (str, bytes)):
+            for item in raw_theories:
+                if isinstance(item, Mapping):
+                    new_theory_entries.append(item)
+        raw_shards = source.get("query_shards")
+        if isinstance(raw_shards, Mapping):
+            query_shard_entries.append(raw_shards)
+        elif isinstance(raw_shards, Iterable) and not isinstance(raw_shards, (str, bytes)):
+            for item in raw_shards:
+                if isinstance(item, (str, Mapping)):
+                    query_shard_entries.append(item)
+        elif isinstance(raw_shards, str):
+            query_shard_entries.append(raw_shards)
+
+    enrichment_state_raw = (
+        existing_state.get("enrichment") if isinstance(existing_state, Mapping) else {}
+    )
+    enrichment_state: Dict[str, Dict[str, Any]] = {
+        "new_theories": {},
+        "query_shards": {},
+    }
+    if isinstance(enrichment_state_raw, Mapping):
+        stored_theories = enrichment_state_raw.get("new_theories")
+        if isinstance(stored_theories, Mapping):
+            enrichment_state["new_theories"] = {
+                str(key): dict(value) if isinstance(value, Mapping) else {"status": value}
+                for key, value in stored_theories.items()
+            }
+        stored_shards = enrichment_state_raw.get("query_shards")
+        if isinstance(stored_shards, Mapping):
+            enrichment_state["query_shards"] = {
+                str(key): dict(value) if isinstance(value, Mapping) else {"status": value}
+                for key, value in stored_shards.items()
+            }
+
+    added_theories: List[Dict[str, Any]] = []
+    used_query_shards: List[Dict[str, Any]] = []
+    pruned_shards: List[Dict[str, Any]] = []
+
+    if ontology_manager and new_theory_entries:
+        for entry in new_theory_entries:
+            entry_name = entry.get("name") or entry.get("theory")
+            if not isinstance(entry_name, str):
+                continue
+            entry_name = entry_name.strip()
+            if not entry_name:
+                continue
+            parent_name = entry.get("parent")
+            if not isinstance(parent_name, str) or not parent_name.strip():
+                parent_name = name
+            else:
+                parent_name = parent_name.strip()
+            config_payload = entry.get("config")
+            if isinstance(config_payload, Mapping):
+                node_config = dict(config_payload)
+            else:
+                node_config = {}
+            if "target" not in node_config and entry.get("target") is not None:
+                try:
+                    node_config["target"] = int(entry.get("target"))
+                except (TypeError, ValueError):
+                    pass
+            metadata_payload = (
+                dict(entry.get("metadata"))
+                if isinstance(entry.get("metadata"), Mapping)
+                else {}
+            )
+            keywords_raw = entry.get("keywords")
+            keywords_list: List[str] | None = None
+            if isinstance(keywords_raw, Iterable) and not isinstance(keywords_raw, (str, bytes)):
+                keywords_list = [str(item).strip() for item in keywords_raw if str(item).strip()]
+            is_new = False
+            if ontology_manager.has_node(entry_name):
+                logger.debug("Ontology already contains node '%s'; skipping append", entry_name)
+            else:
+                try:
+                    ontology_manager.append_node(
+                        entry_name,
+                        parent=parent_name,
+                        config=node_config,
+                        keywords=keywords_list,
+                        metadata=metadata_payload,
+                    )
+                    is_new = True
+                except ValueError as exc:
+                    logger.warning("Failed to append ontology node '%s': %s", entry_name, exc)
+                    continue
+            record = {
+                "name": entry_name,
+                "parent": parent_name,
+                "config": node_config,
+                "metadata": metadata_payload,
+                "keywords": keywords_list or [],
+            }
+            enrichment_state["new_theories"].setdefault(entry_name, {}).update(record)
+            if is_new:
+                added_theories.append(record)
+    elif new_theory_entries:
+        logger.debug(
+            "Received new ontology theories without a manager; entries will be ignored"
+        )
+
+    for entry in query_shard_entries:
+        if isinstance(entry, Mapping):
+            query_text = entry.get("query") or entry.get("text")
+            prune_flag = bool(entry.get("prune")) or str(entry.get("status", "")).lower() == "pruned"
+            metadata_payload = {
+                key: value
+                for key, value in entry.items()
+                if key not in {"query", "text", "prune", "status"}
+            }
+        else:
+            query_text = entry
+            prune_flag = False
+            metadata_payload = {}
+        if not isinstance(query_text, str):
+            continue
+        query_text = query_text.strip()
+        if not query_text:
+            continue
+        shard_id = hashlib.sha1(query_text.encode("utf-8")).hexdigest()
+        record = enrichment_state["query_shards"].setdefault(shard_id, {})
+        record["query"] = query_text
+        if metadata_payload:
+            meta_existing = record.setdefault("metadata", {})
+            if isinstance(meta_existing, MutableMapping):
+                meta_existing.update(metadata_payload)
+            else:
+                record["metadata"] = dict(metadata_payload)
+        if prune_flag:
+            record["status"] = "pruned"
+            pruned_shards.append({"query": query_text})
+            continue
+        if record.get("status") == "pruned":
+            continue
+        if query_text not in queries:
+            queries.append(query_text)
+        record.setdefault("status", "pending")
+        used_query_shards.append({"id": shard_id, "query": query_text})
+
+    ontology = ontology_manager.ontology if ontology_manager else None
 
     result = retriever.collect_queries(
         queries,
@@ -315,20 +481,20 @@ def collect_for_entry(
             settings=expansion_settings,
             context={"current_total": summary.get("total_unique", 0)},
         )
-                if expansion_session is not None:
-                    adaptive_queries = expansion_session.selected_queries()
-                    if adaptive_queries:
-                        merged_queries = queries + adaptive_queries
-                        rerun = retriever.collect_queries(
-                            merged_queries,
-                            target=target,
-                            providers=list(providers) if providers else None,
-                            state_key=state_prefix,
-                            resume=True,
-                            min_citation_count=min_citation_value,
-                            prefer_reviews=prefer_reviews_flag,
-                            sort_by_citations=sort_by_citations_flag,
-                        )
+        if expansion_session is not None:
+            adaptive_queries = expansion_session.selected_queries()
+            if adaptive_queries:
+                merged_queries = queries + adaptive_queries
+                rerun = retriever.collect_queries(
+                    merged_queries,
+                    target=target,
+                    providers=list(providers) if providers else None,
+                    state_key=state_prefix,
+                    resume=True,
+                    min_citation_count=min_citation_value,
+                    prefer_reviews=prefer_reviews_flag,
+                    sort_by_citations=sort_by_citations_flag,
+                )
                 before_total = summary.get("total_unique", 0)
                 summary = dict(rerun.summary)
                 entry_map = {paper.identifier: paper for paper in rerun.papers}
@@ -348,6 +514,50 @@ def collect_for_entry(
                 )
             else:
                 summary["expansion"] = {"enabled": True, "queries": []}
+        else:
+            summary["expansion"] = {"enabled": True, "queries": []}
+
+    timestamp = time.time()
+    if state_prefix:
+        state_payload = retriever.state_store.get(state_prefix)
+        if not isinstance(state_payload, MutableMapping):
+            state_payload = {}
+        else:
+            state_payload = dict(state_payload)
+        for shard in used_query_shards:
+            shard_state = enrichment_state["query_shards"].setdefault(
+                shard["id"], {"query": shard["query"]}
+            )
+            shard_state["status"] = "consumed"
+            shard_state["last_used"] = timestamp
+        for theory_record in added_theories:
+            theory_state = enrichment_state["new_theories"].setdefault(
+                theory_record["name"], {}
+            )
+            theory_state.update(theory_record)
+            theory_state["status"] = "added"
+            theory_state["updated_at"] = timestamp
+        if pruned_shards:
+            for shard in pruned_shards:
+                shard_id = hashlib.sha1(shard["query"].encode("utf-8")).hexdigest()
+                shard_state = enrichment_state["query_shards"].setdefault(
+                    shard_id, {"query": shard["query"]}
+                )
+                shard_state["status"] = "pruned"
+                shard_state["updated_at"] = timestamp
+        state_payload["enrichment"] = enrichment_state
+        retriever.state_store.set(state_prefix, state_payload)
+
+    enrichment_report: Dict[str, Any] = {}
+    new_query_list = [item["query"] for item in used_query_shards if item["query"] not in base_queries]
+    if added_theories:
+        enrichment_report["new_theories"] = [item["name"] for item in added_theories]
+    if new_query_list:
+        enrichment_report["queries_used"] = new_query_list
+    if pruned_shards:
+        enrichment_report["pruned_queries"] = [item["query"] for item in pruned_shards]
+    if enrichment_report:
+        summary["enrichment"] = enrichment_report
 
     subtheory_cfg = config.get("subtheories", {})
     if subtheory_cfg:
@@ -369,7 +579,7 @@ def collect_for_entry(
                 providers=providers,
                 resume=resume,
                 state_prefix=sub_state_prefix,
-                ontology=ontology,
+                ontology_manager=ontology_manager,
                 expander=expander,
                 default_expansion=default_expansion,
                 retrieval_options=retrieval_options,
@@ -596,7 +806,10 @@ def main() -> None:
     if "sort_by_citations" in corpus_cfg:
         retrieval_defaults["sort_by_citations"] = _coerce_bool(corpus_cfg.get("sort_by_citations"))
 
-    ontology = TheoryOntology.from_targets_config(ontology_targets)
+    ontology_manager = OntologyManager(
+        ontology_targets, storage_path=state_dir / "runtime_ontology.json"
+    )
+    ontology = ontology_manager.ontology
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
 
@@ -619,7 +832,7 @@ def main() -> None:
             providers=args.providers,
             resume=resume,
             state_prefix=state_prefix,
-            ontology=ontology,
+            ontology_manager=ontology_manager,
             expander=expander,
             default_expansion=default_expansion,
             retrieval_options=retrieval_defaults,
@@ -634,9 +847,12 @@ def main() -> None:
     if global_limit is not None and len(papers) > global_limit:
         papers = papers[: global_limit]
 
+    ontology = ontology_manager.ontology
+
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
+    classifier.attach_manager(ontology_manager)
     extractor = QuestionExtractor(config.get("extraction"))
     assignment_groups, answer_groups = classify_and_extract_parallel(
         papers, classifier, extractor, workers=classification_workers

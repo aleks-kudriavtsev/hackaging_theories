@@ -6,11 +6,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 
 from .literature import PaperMetadata
 from .ontology import TheoryOntology
 from .llm import LLMClient, LLMClientError, LLMMessage, LLMRateLimitError, LLMResponse
+
+if TYPE_CHECKING:
+    from .ontology_manager import OntologyManager, OntologyUpdate
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,36 @@ class TheoryClassifier:
             if assignment.theory in counts:
                 counts[assignment.theory].add(assignment.paper_id)
         return {name: len(ids) for name, ids in counts.items()}
+
+    def update_ontology(
+        self,
+        ontology: TheoryOntology,
+        *,
+        keyword_updates: Mapping[str, Iterable[str]] | None = None,
+    ) -> None:
+        """Refresh the classifier state after an ontology update."""
+
+        self.ontology = ontology
+        self._ontology_names = set(ontology.names())
+        self._name_lookup = {name.lower(): name for name in ontology.names()}
+        if keyword_updates:
+            for name, keywords in keyword_updates.items():
+                normalized = [kw.lower() for kw in keywords]
+                if normalized:
+                    self.keyword_map[name] = normalized
+
+    def attach_manager(self, manager: "OntologyManager") -> None:
+        """Subscribe to ontology updates emitted by an :class:`OntologyManager`."""
+
+        def _listener(ontology: TheoryOntology, update: "OntologyUpdate") -> None:
+            keyword_updates: Dict[str, Iterable[str]] = {}
+            for name, data in update.added.items():
+                keywords = data.get("keywords")
+                if keywords:
+                    keyword_updates[name] = keywords
+            self.update_ontology(ontology, keyword_updates=keyword_updates)
+
+        manager.register_listener(_listener)
 
     @classmethod
     def from_config(
