@@ -5,7 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from theories_pipeline.literature import LiteratureRetriever, PaperMetadata
+from theories_pipeline.literature import LiteratureRetriever, PaperMetadata, ProviderPage
+
+
+class _StaticProvider:
+    def __init__(self, name: str, papers: list[PaperMetadata]):
+        self.name = name
+        self._papers = list(papers)
+        self.query_shards = ("{query}",)
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        return ProviderPage(papers=list(self._papers), next_cursor=None, exhausted=True)
 
 
 def _write_seed(tmp_path: Path) -> Path:
@@ -46,6 +56,26 @@ def _write_seed(tmp_path: Path) -> Path:
     path = tmp_path / "seed.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def duplicate_no_doi_papers() -> list[PaperMetadata]:
+    return [
+        PaperMetadata(
+            identifier="prov-a:001",
+            title="Understanding Cognitive Aging",
+            authors=["Alice B. Smith", "John Doe"],
+            abstract="",
+            source="prov-a",
+        ),
+        PaperMetadata(
+            identifier="prov-b:xyz",
+            title="Understanding Cognitive Aging",
+            authors=["john doe", "Alice B Smith"],
+            abstract="",
+            source="prov-b",
+        ),
+    ]
 
 
 def test_search_returns_matching_papers(tmp_path: Path) -> None:
@@ -114,3 +144,43 @@ def test_collect_queries_sorts_reviews_first(tmp_path: Path) -> None:
     )
     ordered = [paper.identifier for paper in result.papers[:3]]
     assert ordered == ["p1", "p3", "p2"]
+
+
+def test_collect_queries_deduplicates_no_doi_records(
+    tmp_path: Path, duplicate_no_doi_papers: list[PaperMetadata]
+) -> None:
+    state_dir = tmp_path / "state"
+    retriever = LiteratureRetriever(None, state_dir=state_dir)
+    retriever.providers = [
+        _StaticProvider("prov-a", [duplicate_no_doi_papers[0]]),
+        _StaticProvider("prov-b", [duplicate_no_doi_papers[1]]),
+    ]
+
+    result = retriever.collect_queries(
+        ["cognitive aging"],
+        target=None,
+        providers=None,
+        state_key="dedupe",  # persist across runs
+        resume=True,
+    )
+    matching_titles = [
+        paper for paper in result.papers if paper.title == "Understanding Cognitive Aging"
+    ]
+    assert len(matching_titles) == 1
+    assert result.newly_added == 1
+
+    stored_state = retriever.state_store.get("dedupe")
+    assert stored_state["seen_canonical_keys"]
+
+    repeat_result = retriever.collect_queries(
+        ["cognitive aging"],
+        target=None,
+        providers=None,
+        state_key="dedupe",
+        resume=True,
+    )
+    repeat_titles = [
+        paper for paper in repeat_result.papers if paper.title == "Understanding Cognitive Aging"
+    ]
+    assert len(repeat_titles) == 1
+    assert repeat_result.newly_added == 0

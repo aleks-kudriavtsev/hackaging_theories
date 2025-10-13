@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -29,6 +30,18 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     requests = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+_CANONICAL_TOKEN_SPLIT = re.compile(r"[^\w]+", flags=re.UNICODE)
+
+
+def _canonical_tokens(value: str) -> List[str]:
+    if not value:
+        return []
+    normalized = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    lowered = stripped.casefold()
+    return [token for token in _CANONICAL_TOKEN_SPLIT.split(lowered) if token]
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,20 @@ class PaperMetadata:
         if self.doi:
             return self.doi.lower()
         return self.identifier.lower()
+
+    def canonical_key(self) -> str | None:
+        if self.doi:
+            return self.doi.lower()
+        title_tokens = _canonical_tokens(self.title)
+        if not title_tokens:
+            return None
+        author_tokens: List[str] = []
+        for author in self.authors:
+            author_tokens.extend(_canonical_tokens(author))
+        canonical_parts = ["title:" + "-".join(title_tokens)]
+        if author_tokens:
+            canonical_parts.append("authors:" + "-".join(sorted(author_tokens)))
+        return "|".join(canonical_parts)
 
     @property
     def analysis_text(self) -> str:
@@ -962,6 +989,7 @@ class LiteratureRetriever:
         if state_key and resume:
             state = self.state_store.get(state_key)
         seen_identifiers = set(state.get("seen_identifiers", []))
+        seen_canonical_keys = set(state.get("seen_canonical_keys", []))
         stored_papers_raw = [PaperMetadata.from_dict(item) for item in state.get("papers", [])]
 
         def _passes_filters(paper: PaperMetadata) -> bool:
@@ -979,6 +1007,9 @@ class LiteratureRetriever:
                 key = paper.dedupe_key
                 accepted_identifiers.add(key)
                 seen_identifiers.add(key)
+                canonical = paper.canonical_key()
+                if canonical:
+                    seen_canonical_keys.add(canonical)
         prior_total = len(accepted_identifiers)
 
         newly_added = 0
@@ -992,6 +1023,9 @@ class LiteratureRetriever:
                 key = paper.dedupe_key
                 if key not in seen_identifiers:
                     seen_identifiers.add(key)
+                    canonical = paper.canonical_key()
+                    if canonical:
+                        seen_canonical_keys.add(canonical)
                     if _passes_filters(paper):
                         collected.append(paper)
                         accepted_identifiers.add(key)
@@ -1038,15 +1072,25 @@ class LiteratureRetriever:
                 with state_lock:
                     for paper in page.papers:
                         key = paper.dedupe_key
-                        if key not in seen_identifiers:
+                        canonical = paper.canonical_key()
+                        duplicate = key in seen_identifiers
+                        if not duplicate and canonical:
+                            duplicate = canonical in seen_canonical_keys
+                        if duplicate:
                             seen_identifiers.add(key)
-                            if _passes_filters(paper):
-                                collected.append(paper)
-                                accepted_identifiers.add(key)
-                                newly_added += 1
-                                provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
-                            else:
-                                provider_totals.setdefault(provider.name, 0)
+                            if canonical:
+                                seen_canonical_keys.add(canonical)
+                            provider_totals.setdefault(provider.name, 0)
+                            continue
+
+                        seen_identifiers.add(key)
+                        if canonical:
+                            seen_canonical_keys.add(canonical)
+                        if _passes_filters(paper):
+                            collected.append(paper)
+                            accepted_identifiers.add(key)
+                            newly_added += 1
+                            provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
                         else:
                             provider_totals.setdefault(provider.name, 0)
                     next_cursor = page.next_cursor
@@ -1169,6 +1213,7 @@ class LiteratureRetriever:
         state.update(
             {
                 "seen_identifiers": sorted(seen_identifiers),
+                "seen_canonical_keys": sorted(seen_canonical_keys),
                 "papers": [paper.to_dict() for paper in collected],
                 "provider_totals": provider_totals,
                 "queries": query_state,
