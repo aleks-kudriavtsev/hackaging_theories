@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+import re
 import sys
 from pathlib import Path
-import json
-import re
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,11 +29,15 @@ from theories_pipeline import (
 )
 from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
 from theories_pipeline.llm import LLMClient, LLMClientConfig
-
+from theories_pipeline.ontology import OntologyNode
+from theories_pipeline.query_expansion import QueryExpander, QueryExpansionSettings
 try:
     import yaml  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     yaml = None
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -113,6 +118,18 @@ def _existing_total(retriever: LiteratureRetriever, state_prefix: str) -> int:
     return 0
 
 
+def _has_expansion_config(targets: Mapping[str, Any]) -> bool:
+    for data in targets.values():
+        if not isinstance(data, Mapping):
+            continue
+        if isinstance(data.get("expansion"), Mapping):
+            return True
+        sub = data.get("subtheories")
+        if isinstance(sub, Mapping) and _has_expansion_config(sub):
+            return True
+    return False
+
+
 def collect_for_entry(
     retriever: LiteratureRetriever,
     *,
@@ -122,6 +139,9 @@ def collect_for_entry(
     providers: Iterable[str] | None,
     resume: bool,
     state_prefix: str,
+    ontology: TheoryOntology | None,
+    expander: QueryExpander | None,
+    default_expansion: QueryExpansionSettings | None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
     query_templates = config.get("queries") or [context.get("base_query", name)]
     queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
@@ -137,6 +157,70 @@ def collect_for_entry(
 
     entry_map = {paper.identifier: paper for paper in result.papers}
     summary = dict(result.summary)
+
+    node = None
+    if ontology is not None:
+        try:
+            node = ontology.get(name)
+        except KeyError:
+            node = None
+    if node is None:
+        node = OntologyNode(name=name, target=config.get("target"))
+
+    expansion_cfg = config.get("expansion") if isinstance(config.get("expansion"), Mapping) else None
+    expansion_settings = None
+    if expander:
+        if expansion_cfg:
+            expansion_settings = expander.settings_for(expansion_cfg)
+        elif default_expansion:
+            expansion_settings = expander.settings_for({})
+
+    expansion_session = None
+    if (
+        expansion_settings
+        and expansion_settings.enabled
+        and target
+        and summary.get("total_unique", 0) < target
+        and expander is not None
+    ):
+        logger.info("Target unmet for %s; attempting adaptive query expansion", name)
+        expansion_session = expander.expand(
+            node,
+            base_queries=queries,
+            papers=result.papers,
+            settings=expansion_settings,
+            context={"current_total": summary.get("total_unique", 0)},
+        )
+        if expansion_session is not None:
+            adaptive_queries = expansion_session.selected_queries()
+            if adaptive_queries:
+                merged_queries = queries + adaptive_queries
+                rerun = retriever.collect_queries(
+                    merged_queries,
+                    target=target,
+                    providers=list(providers) if providers else None,
+                    state_key=state_prefix,
+                    resume=True,
+                )
+                before_total = summary.get("total_unique", 0)
+                summary = dict(rerun.summary)
+                entry_map = {paper.identifier: paper for paper in rerun.papers}
+                new_unique = max(0, summary.get("total_unique", 0) - before_total)
+                summary["expansion"] = {
+                    "enabled": True,
+                    "queries": adaptive_queries,
+                    "before_total": before_total,
+                    "after_total": summary.get("total_unique", 0),
+                    "new_unique": new_unique,
+                }
+                expander.record_performance(
+                    expansion_session,
+                    before_total=before_total,
+                    after_total=summary.get("total_unique", 0),
+                    new_unique=new_unique,
+                )
+            else:
+                summary["expansion"] = {"enabled": True, "queries": []}
 
     subtheory_cfg = config.get("subtheories", {})
     if subtheory_cfg:
@@ -158,6 +242,9 @@ def collect_for_entry(
                 providers=providers,
                 resume=resume,
                 state_prefix=sub_state_prefix,
+                ontology=ontology,
+                expander=expander,
+                default_expansion=default_expansion,
             )
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
@@ -318,11 +405,25 @@ def main() -> None:
         parallel_fetch=parallel_fetch,
     )
 
+    llm_client = _maybe_build_llm_client(config, args, api_keys)
+
+    expansion_cfg_raw = corpus_cfg.get("expansion")
+    expansion_cfg = expansion_cfg_raw if isinstance(expansion_cfg_raw, Mapping) else None
+    targets = corpus_cfg.get("targets", {})
+    wants_expansion = (expansion_cfg is not None) or _has_expansion_config(targets)
+    default_expansion: QueryExpansionSettings | None = None
+    expander: QueryExpander | None = None
+    if wants_expansion:
+        default_data = expansion_cfg or {"enabled": False}
+        default_expansion = QueryExpansionSettings.from_mapping(default_data)
+        expander = QueryExpander(llm_client=llm_client, default_settings=default_expansion)
+    elif expansion_cfg:
+        logger.warning("Ignoring non-mapping expansion configuration: %s", type(expansion_cfg))
+
     global_limit = args.limit or corpus_cfg.get("global_limit")
     resume = not args.no_resume
 
     context = {"base_query": args.query}
-    targets = corpus_cfg.get("targets", {})
     ontology = TheoryOntology.from_targets_config(targets)
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
@@ -346,6 +447,9 @@ def main() -> None:
             providers=args.providers,
             resume=resume,
             state_prefix=state_prefix,
+            ontology=ontology,
+            expander=expander,
+            default_expansion=default_expansion,
         )
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
@@ -357,7 +461,6 @@ def main() -> None:
     if global_limit is not None and len(papers) > global_limit:
         papers = papers[: global_limit]
 
-    llm_client = _maybe_build_llm_client(config, args, api_keys)
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
