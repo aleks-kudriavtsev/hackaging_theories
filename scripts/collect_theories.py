@@ -8,7 +8,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -31,6 +31,14 @@ from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
 from theories_pipeline.llm import LLMClient, LLMClientConfig
 from theories_pipeline.ontology import OntologyNode
 from theories_pipeline.query_expansion import QueryExpander, QueryExpansionSettings
+from theories_pipeline.review_bootstrap import (
+    ReviewDocument,
+    build_bootstrap_ontology,
+    extract_theories_from_review,
+    merge_bootstrap_into_targets,
+    pull_top_cited_reviews,
+    write_bootstrap_cache,
+)
 try:
     import yaml  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -107,6 +115,76 @@ def render_query(template: str, context: Mapping[str, Any]) -> str:
 def slugify(text: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
     return slug or "untitled"
+
+
+def _run_bootstrap_phase(
+    retriever: LiteratureRetriever,
+    llm_client: LLMClient | None,
+    corpus_cfg: Mapping[str, Any],
+    *,
+    context: Mapping[str, Any],
+) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Sequence[ReviewDocument]]]:
+    bootstrap_cfg_raw = corpus_cfg.get("bootstrap")
+    if not isinstance(bootstrap_cfg_raw, Mapping):
+        return {}, {}, {}
+    if not bootstrap_cfg_raw.get("enabled", True):
+        return {}, {}, {}
+    seed_queries = bootstrap_cfg_raw.get("queries")
+    if not seed_queries:
+        return {}, {}, {}
+
+    extra_context = bootstrap_cfg_raw.get("context")
+    effective_context = context
+    if isinstance(extra_context, Mapping):
+        effective_context = context | extra_context
+
+    providers = bootstrap_cfg_raw.get("providers")
+    min_citations = int(bootstrap_cfg_raw.get("min_citations", 0))
+    limit_per_query = bootstrap_cfg_raw.get("limit_per_query")
+    max_per_query = bootstrap_cfg_raw.get("max_per_query")
+    state_prefix = str(bootstrap_cfg_raw.get("state_prefix", "bootstrap::reviews"))
+    resume = bool(bootstrap_cfg_raw.get("resume", True))
+    citation_overrides = bootstrap_cfg_raw.get("citation_overrides")
+    citation_mapping = citation_overrides if isinstance(citation_overrides, Mapping) else None
+
+    provider_filter: Sequence[str] | None = None
+    if isinstance(providers, Sequence) and not isinstance(providers, (str, bytes)):
+        provider_filter = tuple(str(provider) for provider in providers)
+
+    review_map = pull_top_cited_reviews(
+        retriever,
+        seed_queries,
+        providers=provider_filter,
+        min_citations=min_citations,
+        limit_per_query=limit_per_query if isinstance(limit_per_query, int) else None,
+        max_per_query=max_per_query if isinstance(max_per_query, int) else None,
+        state_prefix=state_prefix,
+        resume=resume,
+        citation_overrides=citation_mapping,
+        context=effective_context,
+    )
+
+    review_docs = [doc for documents in review_map.values() for doc in documents]
+    if not review_docs:
+        return dict(bootstrap_cfg_raw), {}, review_map
+
+    max_theories = bootstrap_cfg_raw.get("max_theories")
+    theory_cap = int(max_theories) if isinstance(max_theories, int) else None
+    extraction_results = [
+        extract_theories_from_review(review, llm_client=llm_client, max_theories=theory_cap)
+        for review in review_docs
+    ]
+    bootstrap_nodes = build_bootstrap_ontology(extraction_results)
+
+    cache_path = Path(bootstrap_cfg_raw.get("cache_path") or "data/cache/bootstrap_ontology.json")
+    if bootstrap_nodes:
+        write_bootstrap_cache(cache_path, seed_queries=seed_queries, review_map=review_map, bootstrap_nodes=bootstrap_nodes)
+    elif cache_path.exists():
+        logger.debug("Bootstrap produced no ontology updates; cache at %s left untouched", cache_path)
+
+    enriched_config = dict(bootstrap_cfg_raw)
+    enriched_config["bootstrap_nodes"] = bootstrap_nodes
+    return enriched_config, bootstrap_nodes, review_map
 
 
 def _existing_total(retriever: LiteratureRetriever, state_prefix: str) -> int:
@@ -413,8 +491,39 @@ def main() -> None:
 
     expansion_cfg_raw = corpus_cfg.get("expansion")
     expansion_cfg = expansion_cfg_raw if isinstance(expansion_cfg_raw, Mapping) else None
-    targets = corpus_cfg.get("targets", {})
-    wants_expansion = (expansion_cfg is not None) or _has_expansion_config(targets)
+
+    base_targets = corpus_cfg.get("targets", {})
+    context: Dict[str, Any] = {"base_query": args.query, "query": args.query}
+    bootstrap_config, bootstrap_nodes, bootstrap_reviews = _run_bootstrap_phase(
+        retriever,
+        llm_client,
+        corpus_cfg,
+        context=context,
+    )
+
+    update_runtime = bool(bootstrap_config.get("update_targets", False)) if bootstrap_config else False
+    if bootstrap_nodes:
+        runtime_targets = merge_bootstrap_into_targets(
+            base_targets,
+            bootstrap_nodes,
+            inject_missing=update_runtime,
+        )
+        ontology_targets = merge_bootstrap_into_targets(
+            base_targets,
+            bootstrap_nodes,
+            inject_missing=True,
+        )
+        review_total = sum(len(items) for items in bootstrap_reviews.values())
+        logger.info(
+            "Bootstrap discovered %d root theories from %d review papers",
+            len(bootstrap_nodes),
+            review_total,
+        )
+    else:
+        runtime_targets = base_targets
+        ontology_targets = base_targets
+
+    wants_expansion = (expansion_cfg is not None) or _has_expansion_config(runtime_targets)
     default_expansion: QueryExpansionSettings | None = None
     expander: QueryExpander | None = None
     if wants_expansion:
@@ -427,13 +536,12 @@ def main() -> None:
     global_limit = args.limit or corpus_cfg.get("global_limit")
     resume = not args.no_resume
 
-    context = {"base_query": args.query}
-    ontology = TheoryOntology.from_targets_config(targets)
+    ontology = TheoryOntology.from_targets_config(ontology_targets)
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
 
     prioritized = []
-    for theory_name, theory_cfg in targets.items():
+    for theory_name, theory_cfg in runtime_targets.items():
         state_prefix = f"theory::{slugify(theory_name)}"
         existing = _existing_total(retriever, state_prefix) if resume else 0
         theory_target = theory_cfg.get("target")
