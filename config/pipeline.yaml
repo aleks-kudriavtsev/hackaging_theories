@@ -1,7 +1,17 @@
 api_keys:
-  openalex: "REPLACE_ME"
-  crossref_contact: "you@example.com"
-  pubmed: "REPLACE_ME"
+  openalex:
+    env: OPENALEX_API_KEY
+  crossref_contact:
+    env: CROSSREF_API_KEY
+    default: "you@example.com"
+  pubmed:
+    env: PUBMED_API_KEY
+  openai:
+    env: OPENAI_API_KEY
+  serpapi:
+    env: SERPAPI_KEY
+  semantic_scholar:
+    env: SEMANTIC_SCHOLAR_API_KEY
 
 data_sources:
   seed_papers: data/examples/seed_papers.json
@@ -30,8 +40,36 @@ providers:
     api_key_key: pubmed
     batch_size: 200
     rate_limit_per_sec: 3
+  - name: serpapi
+    type: serpapi_scholar
+    enabled: false
+    api_key_key: serpapi
+    batch_size: 10
+    rate_limit_per_sec: 1
+  - name: semantic_scholar
+    type: semantic_scholar
+    enabled: false
+    api_key_key: semantic_scholar
+    batch_size: 100
+    rate_limit_per_sec: 2
+
+bootstrap:
+  review_limit: 150
+  relevance_threshold: 0.35
+  min_target: 25
+  max_theories: 12
+  default_target: 300
+  cache_dir: data/cache/ontologies
 
 classification:
+  llm:
+    model: null  # Override via CLI or set a model name when ready
+    api_key_key: openai
+    batch_size: 4
+    cache_dir: data/cache/llm
+    max_retries: 3
+    retry_backoff: 2.0
+    request_timeout: 60
   keywords:
     Activity Theory:
       - activity

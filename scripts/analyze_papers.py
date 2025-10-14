@@ -24,6 +24,7 @@ from theories_pipeline import (
     classify_and_extract_parallel,
     export_question_answers,
 )
+from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
 from theories_pipeline.llm import LLMClient, LLMClientConfig
 
 try:
@@ -77,7 +78,11 @@ def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> 
     return max(1, int(default))
 
 
-def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace) -> LLMClient | None:
+def _maybe_build_llm_client(
+    config: Mapping[str, Any],
+    args: argparse.Namespace,
+    api_keys: Mapping[str, str | None],
+) -> LLMClient | None:
     classification_cfg = config.get("classification", {}) if isinstance(config, Mapping) else {}
     llm_cfg = classification_cfg.get("llm", {}) if isinstance(classification_cfg, Mapping) else {}
 
@@ -91,6 +96,11 @@ def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace)
     max_retries = llm_cfg.get("max_retries", 3)
     retry_backoff = llm_cfg.get("retry_backoff", 2.0)
     request_timeout = llm_cfg.get("request_timeout", 60.0)
+    api_key = args.llm_api_key or llm_cfg.get("api_key")
+    api_key_key = llm_cfg.get("api_key_key")
+    if (not api_key) and api_key_key:
+        api_key = api_keys.get(api_key_key)
+    api_key = api_key or None
 
     config_obj = LLMClientConfig(
         model=llm_model,
@@ -101,7 +111,7 @@ def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace)
         request_timeout=float(request_timeout),
         cache_dir=Path(cache_dir),
     )
-    return LLMClient(config_obj)
+    return LLMClient(config_obj, api_key=api_key)
 
 
 def main() -> None:
@@ -137,6 +147,10 @@ def main() -> None:
         help="Directory to cache GPT responses (default: data/cache/llm)",
     )
     parser.add_argument(
+        "--llm-api-key",
+        help="Explicit API key for GPT classification (overrides config/env)",
+    )
+    parser.add_argument(
         "--parallel-fetch",
         type=int,
         help="Number of worker threads to fetch provider pages in parallel",
@@ -148,7 +162,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    try:
+        api_keys = resolve_api_keys(
+            config.get("api_keys", {}), base_path=config_path.parent
+        )
+    except MissingSecretError as exc:
+        parser.error(str(exc))
 
     pipeline_cfg: Mapping[str, Any] = config.get("pipeline", {}) if isinstance(config.get("pipeline"), Mapping) else {}
     parallel_fetch = _resolve_workers(args.parallel_fetch, pipeline_cfg.get("parallel_fetch"), 1)
@@ -166,7 +187,7 @@ def main() -> None:
         papers = retriever.search("", limit=None)
 
     ontology = TheoryOntology.from_targets_config(config.get("corpus", {}).get("targets", {}))
-    llm_client = _maybe_build_llm_client(config, args)
+    llm_client = _maybe_build_llm_client(config, args, api_keys)
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )

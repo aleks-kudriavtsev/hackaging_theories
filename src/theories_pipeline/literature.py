@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import logging
 import re
@@ -20,12 +21,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple, Mapping
 
 try:  # pragma: no cover - optional dependency
     import requests
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     requests = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from pdfminer.high_level import extract_text as pdf_extract_text
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    pdf_extract_text = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +275,20 @@ class BaseProvider:
 
         content_type = (response.headers.get("content-type") or "").lower()
         if "pdf" in content_type or url.lower().endswith(".pdf"):
-            logger.debug("Skipping binary full text from %s (content-type=%s)", url, content_type)
-            return ""
+            if pdf_extract_text is None:
+                logger.debug(
+                    "PDF response received from %s but pdfminer.six is not installed", url
+                )
+                return ""
+            try:
+                text = pdf_extract_text(io.BytesIO(response.content))
+            except Exception as exc:  # pragma: no cover - optional dependency failure
+                logger.debug("Failed to extract text from PDF %s: %s", url, exc)
+                return ""
+            normalized = _normalize_full_text(text)
+            if len(normalized) > 500_000:
+                normalized = normalized[:500_000]
+            return normalized
 
         if "json" in content_type:
             try:
@@ -525,10 +543,134 @@ class PubMedProvider(BaseProvider):
         return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
 
 
+class SerpAPIScholarProvider(BaseProvider):
+    """Provider that queries Google Scholar via the SerpAPI service."""
+
+    DEFAULT_URL = "https://serpapi.com/search.json"
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:  # pragma: no cover - network IO
+        if not self.config.api_key:
+            raise RuntimeError("SerpAPI provider requires an API key")
+        start = int(cursor or self.config.extra.get("start", 0))
+        params = {
+            "engine": "google_scholar",
+            "q": query,
+            "start": start,
+            "api_key": self.config.api_key,
+        }
+        params.update({k: v for k, v in (self.config.extra or {}).items() if k not in {"start"}})
+        url = self.config.base_url or self.DEFAULT_URL
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        results = payload.get("organic_results", []) or []
+        papers: List[PaperMetadata] = []
+        for item in results:
+            title = item.get("title", "")
+            if not title:
+                continue
+            identifier = item.get("link") or f"serpapi:{hashlib.sha1(title.encode('utf-8')).hexdigest()}"
+            snippet = item.get("snippet", "")
+            publication = item.get("publication_info", {}) or {}
+            year = None
+            if publication.get("year"):
+                try:
+                    year = int(publication["year"])
+                except (TypeError, ValueError):
+                    year = None
+            authors = []
+            if publication.get("authors"):
+                for author in publication["authors"]:
+                    if isinstance(author, Mapping) and author.get("name"):
+                        authors.append(author["name"])
+                    elif isinstance(author, str):
+                        authors.append(author)
+            papers.append(
+                PaperMetadata(
+                    identifier=identifier,
+                    title=title,
+                    authors=tuple(authors),
+                    abstract=snippet,
+                    source="serpapi_scholar",
+                    year=year,
+                    doi=None,
+                )
+            )
+        next_start = start + len(results)
+        pagination = payload.get("serpapi_pagination", {}) or {}
+        has_next = bool(pagination.get("next"))
+        next_cursor = str(next_start) if has_next else None
+        exhausted = not has_next or not results
+        return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
+
+
+class SemanticScholarProvider(BaseProvider):
+    """Provider using the Semantic Scholar search API."""
+
+    DEFAULT_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:  # pragma: no cover - network IO
+        offset = int(cursor or 0)
+        params = {
+            "query": query,
+            "limit": self.config.batch_size,
+            "offset": offset,
+            "fields": "title,abstract,year,authors,url,externalIds",
+        }
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers["x-api-key"] = self.config.api_key
+        url = self.config.base_url or self.DEFAULT_URL
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", []) or []
+        papers: List[PaperMetadata] = []
+        for item in data:
+            identifier = item.get("paperId") or item.get("url")
+            if not identifier:
+                continue
+            abstract = item.get("abstract", "")
+            year = item.get("year")
+            external_ids = item.get("externalIds", {}) or {}
+            doi = external_ids.get("DOI")
+            authors = []
+            for author in item.get("authors", []) or []:
+                name = author.get("name") if isinstance(author, Mapping) else None
+                if name:
+                    authors.append(name)
+            candidates = []
+            url_field = item.get("url")
+            if url_field:
+                candidates.append(url_field)
+            full_text = self._resolve_full_text(identifier, doi, candidates)
+            papers.append(
+                PaperMetadata(
+                    identifier=identifier,
+                    title=item.get("title", ""),
+                    authors=tuple(authors),
+                    abstract=abstract,
+                    source="semantic_scholar",
+                    year=year,
+                    doi=doi,
+                    full_text=full_text,
+                )
+            )
+        total = int(payload.get("total", 0))
+        next_offset = offset + len(data)
+        exhausted = next_offset >= total or not data
+        next_cursor = None if exhausted else str(next_offset)
+        return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
+
+
 PROVIDER_REGISTRY: Dict[str, type[BaseProvider]] = {
     "openalex": OpenAlexProvider,
     "crossref": CrossRefProvider,
     "pubmed": PubMedProvider,
+    "serpapi_scholar": SerpAPIScholarProvider,
+    "semantic_scholar": SemanticScholarProvider,
 }
 
 

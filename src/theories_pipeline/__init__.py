@@ -8,6 +8,8 @@ from .literature import (
     RetrievalResult,
 )
 from .ontology import TheoryOntology
+from .filtering import RelevanceFilter, FilterDecision
+from .review_bootstrap import bootstrap_ontology, BootstrapSummary
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
@@ -27,8 +29,12 @@ __all__ = [
     "TheoryClassifier",
     "TheoryAssignment",
     "TheoryOntology",
+    "RelevanceFilter",
+    "FilterDecision",
     "QuestionExtractor",
     "QuestionAnswer",
+    "bootstrap_ontology",
+    "BootstrapSummary",
     "classify_and_extract_parallel",
     "export_papers",
     "export_theories",

@@ -21,11 +21,13 @@ from theories_pipeline import (
     QuestionExtractor,
     TheoryClassifier,
     TheoryOntology,
+    bootstrap_ontology,
     classify_and_extract_parallel,
     export_papers,
     export_question_answers,
     export_theories,
 )
+from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
 from theories_pipeline.llm import LLMClient, LLMClientConfig
 
 try:
@@ -53,10 +55,11 @@ def _resolve_workers(cli_value: int | None, config_value: Any, default: int) -> 
 
 
 def build_provider_configs(
-    config: Mapping[str, Any], limit_to: Iterable[str] | None
+    config: Mapping[str, Any],
+    limit_to: Iterable[str] | None,
+    api_keys: Mapping[str, str | None],
 ) -> List[ProviderConfig]:
     providers_cfg = config.get("providers", [])
-    api_keys = config.get("api_keys", {})
     selected = set(limit_to or [])
     configs: List[ProviderConfig] = []
     for item in providers_cfg:
@@ -192,7 +195,11 @@ def format_summary(name: str, summary: Mapping[str, Any], indent: int = 0) -> st
     return "\n".join(sub_lines)
 
 
-def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace) -> LLMClient | None:
+def _maybe_build_llm_client(
+    config: Mapping[str, Any],
+    args: argparse.Namespace,
+    api_keys: Mapping[str, str | None],
+) -> LLMClient | None:
     classification_cfg = config.get("classification", {}) if isinstance(config, Mapping) else {}
     llm_cfg = classification_cfg.get("llm", {}) if isinstance(classification_cfg, Mapping) else {}
 
@@ -206,6 +213,11 @@ def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace)
     max_retries = llm_cfg.get("max_retries", 3)
     retry_backoff = llm_cfg.get("retry_backoff", 2.0)
     request_timeout = llm_cfg.get("request_timeout", 60.0)
+    api_key = args.llm_api_key or llm_cfg.get("api_key")
+    api_key_key = llm_cfg.get("api_key_key")
+    if (not api_key) and api_key_key:
+        api_key = api_keys.get(api_key_key)
+    api_key = api_key or None
 
     config_obj = LLMClientConfig(
         model=llm_model,
@@ -216,7 +228,7 @@ def _maybe_build_llm_client(config: Mapping[str, Any], args: argparse.Namespace)
         request_timeout=float(request_timeout),
         cache_dir=Path(cache_dir),
     )
-    return LLMClient(config_obj)
+    return LLMClient(config_obj, api_key=api_key)
 
 
 def main() -> None:
@@ -249,6 +261,16 @@ def main() -> None:
         help="Override the retrieval state directory",
     )
     parser.add_argument(
+        "--quickstart",
+        action="store_true",
+        help="Bootstrap an ontology from review articles before collection",
+    )
+    parser.add_argument(
+        "--target-count",
+        type=int,
+        help="Approximate total paper target when running quickstart",
+    )
+    parser.add_argument(
         "--llm-model",
         help="Optional OpenAI model name for GPT-assisted classification",
     )
@@ -268,6 +290,20 @@ def main() -> None:
         help="Directory to cache GPT responses (default: data/cache/llm)",
     )
     parser.add_argument(
+        "--llm-api-key",
+        help="Explicit API key for GPT classification (overrides config/env)",
+    )
+    parser.add_argument("--openalex-api-key", help="Override the OpenAlex API key")
+    parser.add_argument("--crossref-contact", help="Override the Crossref contact email")
+    parser.add_argument("--pubmed-api-key", help="Override the PubMed API key")
+    parser.add_argument(
+        "--serpapi-key", help="Override the SerpAPI key for Google Scholar integration"
+    )
+    parser.add_argument(
+        "--semanticscholar-key",
+        help="Override the Semantic Scholar API key",
+    )
+    parser.add_argument(
         "--parallel-fetch",
         type=int,
         help="Number of worker threads to fetch provider pages in parallel",
@@ -279,7 +315,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    try:
+        api_keys = resolve_api_keys(
+            config.get("api_keys", {}), base_path=config_path.parent
+        )
+    except MissingSecretError as exc:
+        parser.error(str(exc))
+
+    overrides = {
+        "openalex": args.openalex_api_key,
+        "crossref_contact": args.crossref_contact,
+        "pubmed": args.pubmed_api_key,
+        "serpapi": args.serpapi_key,
+        "semantic_scholar": args.semanticscholar_key,
+    }
+    for key, value in overrides.items():
+        if value:
+            api_keys[key] = value
 
     corpus_cfg: Mapping[str, Any] = config.get("corpus", {})
     pipeline_cfg: Mapping[str, Any] = config.get("pipeline", {}) if isinstance(config.get("pipeline"), Mapping) else {}
@@ -288,7 +342,7 @@ def main() -> None:
         args.classification_workers, pipeline_cfg.get("classification_workers"), 1
     )
     state_dir = Path(args.state_dir or corpus_cfg.get("cache_dir") or config["outputs"].get("cache_dir", "data/cache"))
-    provider_configs = build_provider_configs(config, args.providers)
+    provider_configs = build_provider_configs(config, args.providers, api_keys)
     retriever = LiteratureRetriever(
         Path(config["data_sources"]["seed_papers"]),
         provider_configs=provider_configs,
@@ -299,11 +353,31 @@ def main() -> None:
     global_limit = args.limit or corpus_cfg.get("global_limit")
     resume = not args.no_resume
 
+    llm_client = _maybe_build_llm_client(config, args, api_keys)
+
     context = {"base_query": args.query}
     targets = corpus_cfg.get("targets", {})
+    bootstrap_summary = None
+    bootstrap_papers: List[PaperMetadata] = []
+    if args.quickstart:
+        bootstrap_cfg = config.get("bootstrap", {}) if isinstance(config.get("bootstrap"), Mapping) else {}
+        target_total = args.target_count or bootstrap_cfg.get("default_target", corpus_cfg.get("global_limit", 300))
+        targets, bootstrap_summary, bootstrap_papers = bootstrap_ontology(
+            args.query,
+            retriever,
+            llm_client=llm_client,
+            providers=args.providers,
+            resume=resume,
+            target_count=int(target_total) if target_total else 300,
+            config=bootstrap_cfg,
+        )
+
     ontology = TheoryOntology.from_targets_config(targets)
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
+
+    for paper in bootstrap_papers:
+        collected_papers.setdefault(paper.identifier, paper)
 
     prioritized = []
     for theory_name, theory_cfg in targets.items():
@@ -331,11 +405,11 @@ def main() -> None:
 
     papers = list(collected_papers.values())
 
-    validate_targets(summary_report)
+    if not args.quickstart:
+        validate_targets(summary_report)
     if global_limit is not None and len(papers) > global_limit:
         papers = papers[: global_limit]
 
-    llm_client = _maybe_build_llm_client(config, args)
     classifier = TheoryClassifier.from_config(
         config.get("classification", {}), ontology=ontology, llm_client=llm_client
     )
@@ -364,13 +438,21 @@ def main() -> None:
     export_theories(assignments, Path(outputs["theories"]))
     export_question_answers(question_answers, Path(outputs["questions"]))
 
-    retriever.state_store.write_summary(
-        {"retrieval": summary_report, "quota_status": quota_status}
-    )
+    state_summary = {"retrieval": summary_report, "quota_status": quota_status}
+    if bootstrap_summary:
+        state_summary["bootstrap"] = bootstrap_summary.to_dict()
+    retriever.state_store.write_summary(state_summary)
 
     print(f"Exported {len(papers)} papers to {outputs['papers']}")
     print(f"Exported {len(assignments)} theory assignments to {outputs['theories']}")
     print(f"Exported {len(question_answers)} question answers to {outputs['questions']}")
+
+    if bootstrap_summary:
+        print(
+            "Bootstrap ontology summary:"
+            f" accepted={bootstrap_summary.accepted}, rejected={bootstrap_summary.rejected},"
+            f" theories={bootstrap_summary.theory_count}, snapshot={bootstrap_summary.snapshot_path}"
+        )
 
     for theory_name, summary in summary_report.items():
         print(format_summary(theory_name, summary))
