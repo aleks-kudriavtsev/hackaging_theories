@@ -1,0 +1,22 @@
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID>12345678</PMID>
+      <Article>
+        <Abstract>
+          <AbstractText Label="BACKGROUND">Older adults benefit from activity engagement.</AbstractText>
+          <AbstractText>We evaluated multiple community-based interventions.</AbstractText>
+        </Abstract>
+      </Article>
+    </MedlineCitation>
+  </PubmedArticle>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID>23456789</PMID>
+      <Article>
+        <Abstract>
+        </Abstract>
+      </Article>
+    </MedlineCitation>
+  </PubmedArticle>
+</PubmedArticleSet>

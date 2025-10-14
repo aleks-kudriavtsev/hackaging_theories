@@ -18,6 +18,7 @@ import logging
 import re
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -581,6 +582,7 @@ class PubMedProvider(BaseProvider):
 
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+    FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
     def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:  # pragma: no cover - network IO
         # PubMed uses an integer offset cursor.
@@ -615,6 +617,27 @@ class PubMedProvider(BaseProvider):
         summary_response = self.session.get(self.SUMMARY_URL, params=summary_params, timeout=self.config.timeout)
         summary_response.raise_for_status()
         summary_payload = summary_response.json().get("result", {})
+
+        fetch_params = {
+            "db": "pubmed",
+            "retmode": "xml",
+            "rettype": "abstract",
+            "id": ",".join(id_list),
+        }
+        if self.config.api_key:
+            fetch_params["api_key"] = self.config.api_key
+
+        abstract_lookup: Dict[str, str] = {}
+        try:
+            self.rate_limiter.wait()
+            fetch_response = self.session.get(
+                self.FETCH_URL, params=fetch_params, timeout=self.config.timeout
+            )
+            fetch_response.raise_for_status()
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            logger.debug("Failed to retrieve PubMed abstracts for %s: %s", id_list, exc)
+        else:
+            abstract_lookup = self._parse_efetch_abstracts(fetch_response.text)
         papers: List[PaperMetadata] = []
         for pmid in id_list:
             record = summary_payload.get(pmid)
@@ -674,12 +697,13 @@ class PubMedProvider(BaseProvider):
                 normalized_pmc = pmc_id if pmc_id.lower().startswith("pmc") else f"PMC{pmc_id}"
                 candidates.append(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{normalized_pmc}/")
             full_text = self._resolve_full_text(identifier, doi, candidates)
+            abstract_text = abstract_lookup.get(pmid, "")
             papers.append(
                 PaperMetadata(
                     identifier=identifier,
                     title=record.get("title", ""),
                     authors=tuple(a for a in authors if a),
-                    abstract=record.get("elocationid", ""),
+                    abstract=abstract_text,
                     source="pubmed",
                     year=year,
                     doi=doi,
@@ -694,6 +718,46 @@ class PubMedProvider(BaseProvider):
         exhausted = next_start >= total_count
         next_cursor = None if exhausted else str(next_start)
         return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
+
+    @staticmethod
+    def _parse_efetch_abstracts(xml_text: str) -> Dict[str, str]:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as exc:  # pragma: no cover - malformed XML
+            logger.debug("Failed to parse PubMed efetch XML: %s", exc)
+            return {}
+
+        abstracts: Dict[str, str] = {}
+        for article in root.findall(".//PubmedArticle"):
+            pmid_elem = article.find(".//PMID")
+            if pmid_elem is None or pmid_elem.text is None:
+                continue
+            pmid = pmid_elem.text.strip()
+            if not pmid:
+                continue
+
+            abstract_nodes = article.findall(".//AbstractText")
+            parts: List[str] = []
+            for node in abstract_nodes:
+                if node is None:
+                    continue
+                text = "".join(node.itertext()).strip()
+                label = (node.attrib.get("Label") or node.attrib.get("NlmCategory") or "").strip()
+                if label:
+                    if text:
+                        text = f"{label}: {text}"
+                    else:
+                        text = label
+                if text:
+                    parts.append(text)
+
+            abstract = "\n".join(parts).strip()
+            if abstract:
+                abstracts[pmid] = abstract
+            else:
+                abstracts.setdefault(pmid, "")
+
+        return abstracts
 
 
 class SerpApiScholarProvider(BaseProvider):

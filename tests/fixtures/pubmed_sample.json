@@ -1,0 +1,49 @@
+{
+  "search": {
+    "esearchresult": {
+      "count": "2",
+      "idlist": [
+        "12345678",
+        "23456789"
+      ]
+    }
+  },
+  "summary": {
+    "result": {
+      "uids": [
+        "12345678",
+        "23456789"
+      ],
+      "12345678": {
+        "uid": "12345678",
+        "title": "Impact of activity engagement on aging",
+        "authors": [
+          {"name": "Smith J", "authtype": "Author"},
+          {"name": "Lee A", "authtype": "Author"}
+        ],
+        "pubdate": "2023",
+        "pmcrefcount": "12",
+        "pubtype": ["Journal Article"],
+        "articleids": [
+          {"idtype": "doi", "value": "10.1000/example"},
+          {"idtype": "pmc", "value": "PMC1234567"}
+        ],
+        "elocationid": "Epub ahead of print"
+      },
+      "23456789": {
+        "uid": "23456789",
+        "title": "Aging and community programs",
+        "authors": [
+          {"name": "Garcia M", "authtype": "Author"}
+        ],
+        "pubdate": "2022",
+        "pmcrefcount": "3",
+        "pubtype": ["Review"],
+        "articleids": [
+          {"idtype": "pmc", "value": "PMC7654321"}
+        ],
+        "elocationid": "S123-4567"
+      }
+    }
+  }
+}
