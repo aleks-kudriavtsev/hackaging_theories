@@ -13,7 +13,7 @@ listeners (for example the :class:`~theories_pipeline.theories.TheoryClassifier`
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 from pathlib import Path
@@ -30,6 +30,18 @@ class OntologyUpdate:
 
     added: Dict[str, Dict[str, Any]]
     removed: Iterable[str] = ()
+
+
+@dataclass(frozen=True)
+class RuntimeNodeSpec:
+    """Description of a runtime ontology node append operation."""
+
+    name: str
+    parent: str | None
+    config: Mapping[str, Any] = field(default_factory=dict)
+    keywords: Iterable[str] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
 class OntologyManager:
@@ -76,12 +88,18 @@ class OntologyManager:
                     continue
                 config = entry.get("config") if isinstance(entry.get("config"), Mapping) else {}
                 metadata = entry.get("metadata") if isinstance(entry.get("metadata"), Mapping) else {}
+                provenance = (
+                    entry.get("provenance")
+                    if isinstance(entry.get("provenance"), Mapping)
+                    else {}
+                )
                 keywords = entry.get("keywords")
                 self._runtime_nodes[name] = {
                     "parent": parent if isinstance(parent, str) else None,
                     "config": dict(config),
                     "keywords": list(keywords) if isinstance(keywords, list) else None,
                     "metadata": dict(metadata),
+                    "provenance": dict(provenance),
                 }
 
     def _persist(self) -> None:
@@ -92,6 +110,7 @@ class OntologyManager:
                     "parent": data.get("parent"),
                     "config": data.get("config", {}),
                     "metadata": data.get("metadata", {}),
+                    "provenance": data.get("provenance", {}),
                     "keywords": data.get("keywords"),
                 }
                 for name, data in sorted(self._runtime_nodes.items())
@@ -122,30 +141,88 @@ class OntologyManager:
         config: Mapping[str, Any] | None = None,
         keywords: Iterable[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        """Append a node to the ontology hierarchy at runtime."""
+        provenance: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Append a node to the ontology hierarchy at runtime.
+
+        Returns ``True`` when the node was added, ``False`` when it already
+        existed.
+        """
 
         if self.has_node(name):
             logger.debug("Ontology node '%s' already exists; skipping append", name)
-            return
+            return False
         if parent and not self.has_node(parent):
             raise ValueError(f"Parent node '{parent}' not found for runtime ontology append")
 
         stored_config = dict(config) if config else {}
         stored_metadata = dict(metadata) if metadata else {}
+        stored_provenance = dict(provenance) if provenance else {}
         normalized_keywords = [kw.lower() for kw in keywords] if keywords else None
         self._runtime_nodes[name] = {
             "parent": parent,
             "config": stored_config,
             "metadata": stored_metadata,
+            "provenance": stored_provenance,
             "keywords": normalized_keywords,
         }
-        self._rebuild_and_notify(added={name: {
-            "parent": parent,
-            "config": stored_config,
-            "metadata": stored_metadata,
-            "keywords": normalized_keywords,
-        }})
+        self._rebuild_and_notify(
+            added={
+                name: {
+                    "parent": parent,
+                    "config": stored_config,
+                    "metadata": stored_metadata,
+                    "provenance": stored_provenance,
+                    "keywords": normalized_keywords,
+                }
+            }
+        )
+        return True
+
+    def append_child(
+        self,
+        parent: str,
+        spec: RuntimeNodeSpec,
+    ) -> bool:
+        """Convenience wrapper to append a child node relative to ``parent``."""
+
+        parent_override = spec.parent if spec.parent is not None else parent
+        return self.append_node(
+            spec.name,
+            parent=parent_override,
+            config=spec.config,
+            keywords=spec.keywords,
+            metadata=spec.metadata,
+            provenance=spec.provenance,
+        )
+
+    def append_sibling(
+        self,
+        sibling: str,
+        spec: RuntimeNodeSpec,
+    ) -> bool:
+        """Append ``spec`` as a sibling of ``sibling`` if possible."""
+
+        parent_override = spec.parent
+        parent = None
+        try:
+            parent = self._ontology.parent(sibling)
+        except KeyError:
+            parent = None
+        if parent is None:
+            runtime_parent = self._runtime_nodes.get(sibling, {}).get("parent")
+            if isinstance(runtime_parent, str):
+                parent = runtime_parent
+        if parent_override is not None:
+            parent = parent_override
+        return self.append_node(
+            spec.name,
+            parent=parent,
+            config=spec.config,
+            keywords=spec.keywords,
+            metadata=spec.metadata,
+            provenance=spec.provenance,
+        )
 
     def rebuild(self) -> None:
         """Rebuild the ontology using the current runtime state."""
@@ -181,11 +258,23 @@ class OntologyManager:
                 config_raw = data.get("config", {})
                 config = dict(config_raw) if isinstance(config_raw, Mapping) else {}
                 metadata_raw = data.get("metadata", {})
+                provenance_raw = data.get("provenance", {})
                 metadata_payload = (
                     {str(k): deepcopy(v) for k, v in metadata_raw.items()}
                     if isinstance(metadata_raw, Mapping)
                     else {}
                 )
+                if isinstance(provenance_raw, Mapping) and provenance_raw:
+                    metadata_payload.setdefault("runtime_provenance", {})
+                    provenance_container = metadata_payload["runtime_provenance"]
+                    if isinstance(provenance_container, MutableMapping):
+                        for prov_key, prov_value in provenance_raw.items():
+                            provenance_container[str(prov_key)] = deepcopy(prov_value)
+                    else:
+                        metadata_payload["runtime_provenance"] = {
+                            str(prov_key): deepcopy(prov_value)
+                            for prov_key, prov_value in provenance_raw.items()
+                        }
                 if parent is None:
                     node_cfg = ensure_node(merged, node_name)
                     for key, value in config.items():
@@ -260,5 +349,5 @@ class OntologyManager:
                 logger.exception("Ontology listener %r failed", listener)
 
 
-__all__ = ["OntologyManager", "OntologyUpdate"]
+__all__ = ["OntologyManager", "OntologyUpdate", "RuntimeNodeSpec"]
 

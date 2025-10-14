@@ -88,6 +88,7 @@ class RecordingOntologyManager:
         config: Mapping[str, Any] | None = None,
         keywords: Sequence[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
+        provenance: Mapping[str, Any] | None = None,
     ) -> None:
         self.appended.append(
             {
@@ -96,6 +97,7 @@ class RecordingOntologyManager:
                 "config": dict(config or {}),
                 "keywords": list(keywords) if keywords else [],
                 "metadata": dict(metadata or {}),
+                "provenance": dict(provenance or {}),
             }
         )
         self._known_nodes.add(name)

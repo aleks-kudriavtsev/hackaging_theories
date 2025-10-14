@@ -23,6 +23,9 @@ from theories_pipeline import (
     PaperMetadata,
     ProviderConfig,
     QuestionExtractor,
+    RuntimeLabelRequest,
+    RuntimeOntologyBootstrapper,
+    RuntimeNodeSpec,
     TheoryClassifier,
     classify_and_extract_parallel,
     export_papers,
@@ -402,6 +405,7 @@ def collect_for_entry(
     default_expansion: QueryExpansionSettings | None,
     retrieval_options: Mapping[str, Any] | None = None,
     filter_llm_client: LLMClient | None = None,
+    label_bootstrapper: RuntimeOntologyBootstrapper | None = None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
     query_templates = config.get("queries") or [context.get("base_query", name)]
     queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
@@ -521,6 +525,7 @@ def collect_for_entry(
     enrichment_state: Dict[str, Dict[str, Any]] = {
         "new_theories": {},
         "query_shards": {},
+        "bootstrap_labels": {},
     }
     if isinstance(enrichment_state_raw, Mapping):
         stored_theories = enrichment_state_raw.get("new_theories")
@@ -535,8 +540,15 @@ def collect_for_entry(
                 str(key): dict(value) if isinstance(value, Mapping) else {"status": value}
                 for key, value in stored_shards.items()
             }
+        stored_bootstrap = enrichment_state_raw.get("bootstrap_labels")
+        if isinstance(stored_bootstrap, Mapping):
+            enrichment_state["bootstrap_labels"] = {
+                str(key): dict(value) if isinstance(value, Mapping) else {"status": value}
+                for key, value in stored_bootstrap.items()
+            }
 
     added_theories: List[Dict[str, Any]] = []
+    bootstrap_summary: Dict[str, List[str]] = {}
     used_query_shards: List[Dict[str, Any]] = []
     pruned_shards: List[Dict[str, Any]] = []
 
@@ -568,6 +580,11 @@ def collect_for_entry(
                 if isinstance(entry.get("metadata"), Mapping)
                 else {}
             )
+            provenance_payload = (
+                dict(entry.get("provenance"))
+                if isinstance(entry.get("provenance"), Mapping)
+                else {}
+            )
             keywords_raw = entry.get("keywords")
             keywords_list: List[str] | None = None
             if isinstance(keywords_raw, Iterable) and not isinstance(keywords_raw, (str, bytes)):
@@ -583,6 +600,7 @@ def collect_for_entry(
                         config=node_config,
                         keywords=keywords_list,
                         metadata=metadata_payload,
+                        provenance=provenance_payload,
                     )
                     is_new = True
                 except ValueError as exc:
@@ -594,6 +612,7 @@ def collect_for_entry(
                 "config": node_config,
                 "metadata": metadata_payload,
                 "keywords": keywords_list or [],
+                "provenance": provenance_payload,
             }
             enrichment_state["new_theories"].setdefault(entry_name, {}).update(record)
             if is_new:
@@ -760,6 +779,127 @@ def collect_for_entry(
         else:
             summary["expansion"] = {"enabled": True, "queries": []}
 
+    paper_list = list(entry_map.values())
+
+    runtime_label_cfg: Mapping[str, Any] | None = None
+    raw_runtime_cfg = config.get("runtime_labels")
+    if isinstance(raw_runtime_cfg, Mapping):
+        runtime_label_cfg = raw_runtime_cfg
+    elif isinstance(context.get("runtime_labels"), Mapping):
+        runtime_label_cfg = context.get("runtime_labels")  # type: ignore[assignment]
+
+    if (
+        runtime_label_cfg
+        and ontology_manager
+        and label_bootstrapper
+        and paper_list
+    ):
+        threshold_raw = runtime_label_cfg.get("threshold")
+        try:
+            threshold_value = (
+                int(threshold_raw)
+                if threshold_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            threshold_value = None
+        current_total = summary.get("total_unique", 0)
+        if threshold_value is None or current_total >= threshold_value:
+            modes_raw = runtime_label_cfg.get("modes") or runtime_label_cfg.get("mode") or ["child"]
+            if isinstance(modes_raw, (list, tuple, set)):
+                modes = [str(item).lower() for item in modes_raw if str(item).strip()]
+            else:
+                modes = [str(modes_raw).lower()]
+            try:
+                max_new_labels = int(runtime_label_cfg.get("max_new_labels", 1))
+            except (TypeError, ValueError):
+                max_new_labels = 1
+            bootstrap_state = enrichment_state.setdefault("bootstrap_labels", {})
+            ontology_parent: str | None = None
+            if ontology is not None:
+                try:
+                    ontology_parent = ontology.parent(name)
+                except KeyError:
+                    ontology_parent = None
+            for mode_name in (modes or ["child"]):
+                mode_key = mode_name or "child"
+                state_entry = bootstrap_state.setdefault(mode_key, {})
+                if state_entry.get("status") == "complete":
+                    continue
+                request = RuntimeLabelRequest(
+                    node=name,
+                    mode=mode_key,
+                    parent=ontology_parent,
+                    papers=paper_list,
+                    max_labels=max_new_labels,
+                )
+                response = label_bootstrapper.propose_labels(request)
+                appended: List[str] = []
+                for spec in response.proposals:
+                    provenance_payload = dict(spec.provenance)
+                    provenance_payload.setdefault("mode", mode_key)
+                    provenance_payload.setdefault("trigger", "runtime_threshold")
+                    if threshold_value is not None:
+                        provenance_payload.setdefault("threshold", threshold_value)
+                    provenance_payload.setdefault(
+                        "papers",
+                        [paper.identifier for paper in paper_list],
+                    )
+                    parent_override = spec.parent
+                    if parent_override is None:
+                        if mode_key == "child":
+                            parent_override = name
+                        elif mode_key == "sibling":
+                            parent_override = ontology_parent
+                    runtime_spec = RuntimeNodeSpec(
+                        name=spec.name,
+                        parent=parent_override,
+                        config=spec.config,
+                        keywords=spec.keywords,
+                        metadata=spec.metadata,
+                        provenance=provenance_payload,
+                    )
+                    if mode_key == "child":
+                        added = ontology_manager.append_child(name, runtime_spec)
+                    elif mode_key == "sibling":
+                        added = ontology_manager.append_sibling(name, runtime_spec)
+                    else:
+                        added = ontology_manager.append_node(
+                            runtime_spec.name,
+                            parent=runtime_spec.parent,
+                            config=runtime_spec.config,
+                            keywords=runtime_spec.keywords,
+                            metadata=runtime_spec.metadata,
+                            provenance=runtime_spec.provenance,
+                        )
+                    if not added:
+                        continue
+                    appended.append(runtime_spec.name)
+                    parent_name = runtime_spec.parent
+                    if parent_name is None:
+                        parent_name = name if mode_key == "child" else ontology_parent
+                    record = {
+                        "name": runtime_spec.name,
+                        "parent": parent_name,
+                        "config": runtime_spec.config,
+                        "metadata": runtime_spec.metadata,
+                        "keywords": list(runtime_spec.keywords),
+                        "provenance": runtime_spec.provenance,
+                    }
+                    enrichment_state["new_theories"].setdefault(runtime_spec.name, {}).update(record)
+                    added_theories.append(record)
+                state_entry.update(
+                    {
+                        "status": "complete",
+                        "updated_at": time.time(),
+                        "generated": appended,
+                    }
+                )
+                if appended:
+                    bootstrap_summary[mode_key] = appended
+            if bootstrap_summary:
+                ontology = ontology_manager.ontology
+
     timestamp = time.time()
     if state_prefix:
         state_payload = retriever.state_store.get(state_prefix)
@@ -806,6 +946,8 @@ def collect_for_entry(
         enrichment_report["queries_used"] = new_query_list
     if pruned_shards:
         enrichment_report["pruned_queries"] = [item["query"] for item in pruned_shards]
+    if bootstrap_summary:
+        enrichment_report["bootstrap_labels"] = bootstrap_summary
     if enrichment_report:
         summary["enrichment"] = enrichment_report
 
@@ -834,6 +976,7 @@ def collect_for_entry(
                 default_expansion=default_expansion,
                 retrieval_options=retrieval_options,
                 filter_llm_client=filter_llm_client,
+                label_bootstrapper=label_bootstrapper,
             )
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
@@ -1170,6 +1313,7 @@ def main() -> None:
     ontology_manager = OntologyManager(
         ontology_targets, storage_path=state_dir / "runtime_ontology.json"
     )
+    label_bootstrapper = RuntimeOntologyBootstrapper(llm_client)
     ontology = ontology_manager.ontology
     collected_papers: Dict[str, PaperMetadata] = {}
     summary_report: Dict[str, Any] = {}
@@ -1198,6 +1342,7 @@ def main() -> None:
             default_expansion=default_expansion,
             retrieval_options=retrieval_defaults,
             filter_llm_client=llm_client,
+            label_bootstrapper=label_bootstrapper,
         )
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
