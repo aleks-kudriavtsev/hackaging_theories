@@ -8,7 +8,7 @@ from .literature import (
     RetrievalResult,
 )
 from .ontology import TheoryOntology
-from .ontology_manager import OntologyManager, OntologyUpdate
+from .ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
@@ -29,6 +29,11 @@ from .review_bootstrap import (
     pull_top_cited_reviews,
     write_bootstrap_cache,
 )
+from .runtime_bootstrap import (
+    RuntimeLabelRequest,
+    RuntimeLabelResponse,
+    RuntimeOntologyBootstrapper,
+)
 
 __all__ = [
     "LiteratureRetriever",
@@ -41,6 +46,7 @@ __all__ = [
     "TheoryOntology",
     "OntologyManager",
     "OntologyUpdate",
+    "RuntimeNodeSpec",
     "QuestionExtractor",
     "QuestionAnswer",
     "classify_and_extract_parallel",
@@ -61,4 +67,7 @@ __all__ = [
     "build_bootstrap_ontology",
     "merge_bootstrap_into_targets",
     "write_bootstrap_cache",
+    "RuntimeOntologyBootstrapper",
+    "RuntimeLabelRequest",
+    "RuntimeLabelResponse",
 ]
