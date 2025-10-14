@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from theories_pipeline.literature import (
     PaperMetadata,
     ProviderPage,
     ProviderConfig,
+    PubMedProvider,
 )
 
 
@@ -83,6 +85,18 @@ def duplicate_no_doi_papers() -> list[PaperMetadata]:
             source="prov-b",
         ),
     ]
+
+
+@pytest.fixture
+def pubmed_sample_payload() -> dict[str, Any]:
+    path = Path("tests/fixtures/pubmed_sample.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def pubmed_efetch_xml() -> str:
+    path = Path("tests/fixtures/pubmed_efetch.xml")
+    return path.read_text(encoding="utf-8")
 
 
 def test_search_returns_matching_papers(tmp_path: Path) -> None:
@@ -191,6 +205,84 @@ def test_collect_queries_deduplicates_no_doi_records(
     ]
     assert len(repeat_titles) == 1
     assert repeat_result.newly_added == 0
+
+
+def test_pubmed_fetch_page_parses_true_abstract(
+    monkeypatch: pytest.MonkeyPatch,
+    pubmed_sample_payload: dict[str, Any],
+    pubmed_efetch_xml: str,
+) -> None:
+    class _Session:
+        def __init__(self) -> None:
+            self.get = lambda *args, **kwargs: None  # patched below
+
+    session = _Session()
+
+    class _RequestsStub:
+        RequestException = Exception
+
+        def Session(self) -> _Session:
+            return session
+
+    monkeypatch.setattr(literature, "requests", _RequestsStub())
+
+    config = ProviderConfig(name="pubmed", type="pubmed", batch_size=10)
+    provider = PubMedProvider(config)
+    monkeypatch.setattr(provider.rate_limiter, "wait", lambda: None)
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            *,
+            json_data: dict[str, Any] | None = None,
+            text_data: str = "",
+            status_code: int = 200,
+        ) -> None:
+            self._json = json_data
+            self._text = text_data
+            self.status_code = status_code
+
+        def json(self) -> dict[str, Any]:
+            if self._json is None:
+                raise ValueError("No JSON payload available")
+            return self._json
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"status={self.status_code}")
+
+        @property
+        def text(self) -> str:
+            return self._text
+
+    responses = [
+        _FakeResponse(json_data=pubmed_sample_payload["search"]),
+        _FakeResponse(json_data=pubmed_sample_payload["summary"]),
+        _FakeResponse(text_data=pubmed_efetch_xml),
+    ]
+
+    def fake_get(
+        url: str, params: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> _FakeResponse:
+        assert responses, "Unexpected PubMed request"
+        return responses.pop(0)
+
+    monkeypatch.setattr(provider.session, "get", fake_get)
+
+    page = provider.fetch_page("activity engagement")
+
+    assert len(page.papers) == 2
+    first, second = page.papers
+    assert (
+        first.abstract
+        == "BACKGROUND: Older adults benefit from activity engagement.\n"
+        "We evaluated multiple community-based interventions."
+    )
+    assert second.abstract == ""
+    assert (
+        second.abstract
+        != pubmed_sample_payload["summary"]["result"]["23456789"]["elocationid"]
+    )
 
 
 def test_resolve_full_text_extracts_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
