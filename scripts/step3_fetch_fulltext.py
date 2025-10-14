@@ -72,6 +72,10 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     body = root.find(".//body")
     if body is None:
         return None
+    text_chunks: List[str] = [
+        part.strip() for part in body.itertext() if part and part.strip()
+    ]
+    return " ".join(text_chunks) if text_chunks else None
     text_chunks: List[str] = []
     for elem in body.iter():
         if elem.text and elem.text.strip():
