@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
+from theories_pipeline.config_utils import (
+    MissingSecretError,
+    ensure_real_api_keys,
+    resolve_api_keys,
+)
 
 
 def test_resolve_api_keys_prefers_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,4 +43,14 @@ def test_resolve_api_keys_passes_through_plain_string() -> None:
     config = {"custom": "literal-value"}
     resolved = resolve_api_keys(config, env={})
     assert resolved["custom"] == "literal-value"
+
+
+def test_ensure_real_api_keys_raises_on_placeholders() -> None:
+    with pytest.raises(MissingSecretError):
+        ensure_real_api_keys({"pubmed": "your-pubmed-key"})
+
+
+def test_ensure_real_api_keys_keeps_real_values() -> None:
+    cleaned = ensure_real_api_keys({"pubmed": "actual-secret"})
+    assert cleaned["pubmed"] == "actual-secret"
 
