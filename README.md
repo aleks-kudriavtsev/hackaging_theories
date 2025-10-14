@@ -87,6 +87,25 @@ Each key supports fallbacks (defaults or file references) if you need a more
 specialised workflow. See `src/theories_pipeline/config_utils.py` for the
 supported descriptors and `config/pipeline.yaml` for annotated examples.
 
+### API и форматы учётных данных
+
+| API / сервис | Назначение | Переменная/флаг | Формат учётных данных |
+| --- | --- | --- | --- |
+| OpenAlex | Базовый поиск статей и обзоров | `OPENALEX_API_KEY`, `--openalex-api-key` | Строка API-токена OpenAlex |【F:config/pipeline.yaml†L1-L37】【F:scripts/collect_theories.py†L838-L841】
+| Crossref | Дополнительные метаданные и цитирования | `CROSSREF_API_KEY`, `--crossref-api-key` | Контактный email в формате `mailto:you@example.com` |【F:config/pipeline.yaml†L3-L31】【F:scripts/collect_theories.py†L841-L844】
+| PubMed | Биомедицинские обзоры и статьи | `PUBMED_API_KEY`, `--pubmed-api-key` | API-ключ NCBI (ASCII-строка) |【F:config/pipeline.yaml†L5-L37】【F:scripts/collect_theories.py†L844-L847】
+| Sci-Hub (RapidAPI) | Поиск полнотекстовых зеркал DOI | `SCIHUB_RAPIDAPI_KEY`, `--scihub-rapidapi-key` | RapidAPI token (`X-RapidAPI-Key`) |【F:config/pipeline.yaml†L11-L48】【F:src/theories_pipeline/literature.py†L684-L779】【F:scripts/collect_theories.py†L847-L852】
+| Sci-Hub (библиотечный клиент) | Альтернатива RapidAPI | `SCIHUB_EMAIL`, `--scihub-email` | Email-адрес для `scihub.py` |【F:config/pipeline.yaml†L9-L48】【F:src/theories_pipeline/literature.py†L684-L779】【F:scripts/collect_theories.py†L844-L850】
+| Anna’s Archive | Альтернативные зеркала PDF | `ANNAS_ARCHIVE_API_KEY`, `--annas-archive-api-key` | RapidAPI token (`X-RapidAPI-Key`) |【F:config/pipeline.yaml†L12-L68】【F:src/theories_pipeline/literature.py†L841-L937】【F:scripts/collect_theories.py†L850-L853】
+| OpenAI (GPT) | Классификация теорий и ответы Q1–Q9 | `OPENAI_API_KEY`, `--llm-api-key`, `--llm-model` | API-ключ OpenAI + имя модели (например, `gpt-4o-mini`) |【F:config/pipeline.yaml†L69-L142】【F:scripts/collect_theories.py†L786-L871】
+
+### Советы по устранению ошибок
+
+- **Отсутствующие ключи.** Скрипт завершается с `MissingSecretError`, если не удаётся сопоставить требуемый ключ из конфигурации с переменной окружения или аргументом. Проверьте экспорт и блок `api_keys`. 【F:scripts/collect_theories.py†L899-L915】【F:docs/bootstrap.md†L120-L139】
+- **Лимиты провайдеров (HTTP 429/503).** Снизьте `rate_limit_per_sec` для источников в конфигурации или ограничьте список провайдеров через `--providers`, затем перезапустите сбор после паузы. `--state-dir` сохраняет прогресс, чтобы не терять уже собранные результаты. 【F:config/pipeline.yaml†L19-L83】【F:docs/bootstrap.md†L132-L150】
+- **Не найдены обзоры для bootstrap.** Ослабьте фильтры (`min_citations`, `max_per_query`) или расширьте провайдеры, чтобы увеличить окно поиска. Проверяйте `data/cache/bootstrap_ontology.json` для диагностики. 【F:docs/bootstrap.md†L100-L150】
+- **Ошибки LLM или превышение квот.** Установите кэш `llm.cache_dir` / `extraction.llm.cache_dir` и уменьшите размер батчей через `--llm-batch-size`, чтобы сократить повторные обращения. При недоступности модели пайплайн автоматически переходит к эвристикам. 【F:config/pipeline.yaml†L69-L142】【F:docs/bootstrap.md†L100-L150】
+
 ### Preprint providers, rate limits, and full-text mirrors
 
 The pipeline ships with optional bioRxiv and medRxiv providers that fetch
@@ -139,6 +158,66 @@ ready to graduate to a managed ontology; see
 [`config/pipeline.yaml`](config/pipeline.yaml) for the fully managed layout and
 [`docs/bootstrap.md`](docs/bootstrap.md) / [`docs/query_expansion.md`](docs/query_expansion.md)
 for advanced enrichment strategies.
+
+### Quickstart: автоматическая генерация онтологии
+
+Follow the steps below to let the bootstrapper discover theories automatically and
+attach them to a transient ontology node generated from your CLI query.
+
+1. **Подготовьте переменные окружения и флаги.** Укажите ключи для всех задействованных
+   провайдеров через переменные окружения или одноимённые CLI-флаги (`--openalex-api-key`,
+   `--crossref-api-key`, `--pubmed-api-key`, `--scihub-rapidapi-key`, `--scihub-email`,
+   `--annas-archive-api-key`). Эти ключи сопоставляются с записями в блоке `api_keys`
+   конфигурации, поэтому подходят как токены RapidAPI, так и контактный адрес для
+   Crossref (формат `mailto:you@example.com`). Укажите также `OPENAI_API_KEY` и модель
+   через `--llm-model`, если хотите задействовать GPT для классификации и извлечения.
+   【F:config/pipeline.yaml†L1-L83】【F:scripts/collect_theories.py†L786-L871】【F:scripts/collect_theories.py†L904-L951】
+2. **Включите нужные провайдеры.** Запрос можно ограничить конкретными источниками при
+   помощи `--providers openalex crossref scihub annas_archive`, либо оставить список по
+   умолчанию из конфигурации. Полнотекстовые зеркала (Sci-Hub, Anna’s Archive) и PubMed
+   отключены по умолчанию; активируйте их в `config/pipeline.yaml` или через CLI, чтобы
+   bootstrap получил доступ к PDF и обзорам. 【F:config/pipeline.yaml†L19-L84】【F:scripts/collect_theories.py†L829-L833】【F:src/theories_pipeline/literature.py†L660-L1030】
+3. **Запустите bootstrap + сбор.** Быстрый старт генерирует временной узел онтологии,
+   выполняет bootstrap-поиск обзоров, извлекает из них теории при помощи LLM (с падением
+   обратно на детерминированные эвристики, если модель недоступна), а затем переходит к
+   основной выборке литературы. Команда ниже включает кэширование и ограничивает
+   провайдеры RapidAPI, чтобы быстрее наполнить узел:
+
+   ```bash
+   export OPENALEX_API_KEY="sk-your-openalex-key"
+   export CROSSREF_API_KEY="mailto:you@example.com"
+   export OPENAI_API_KEY="sk-your-openai-key"
+   export SCIHUB_RAPIDAPI_KEY="your-rapidapi-token"
+   export ANNAS_ARCHIVE_API_KEY="your-rapidapi-token"
+
+   python scripts/collect_theories.py "geroscience" \
+     --config config/pipeline.yaml \
+     --quickstart \
+     --target-count 60 \
+     --providers openalex crossref scihub annas_archive \
+     --llm-model gpt-4o-mini \
+     --llm-api-key "$OPENAI_API_KEY"
+   ```
+
+   Снэпшот онтологии и метаданные bootstrap сохраняются в `data/cache/bootstrap_ontology.json`,
+   а собранные статьи — в каталоге, указанном в блоке `outputs`. Повторный запуск с тем же
+   `--state-dir` продолжит наполнение узла, используя кэш. 【F:docs/bootstrap.md†L1-L119】【F:scripts/collect_theories.py†L720-L823】【F:scripts/collect_theories.py†L951-L1020】
+
+### Пример запуска: bootstrap → сбор → анализ
+
+```bash
+# 1. Bootstrap и генерация временного узла онтологии из запроса
+python scripts/collect_theories.py "geroscience" --config config/pipeline.yaml --quickstart --target-count 60
+
+# 2. Повторный сбор по обновлённой онтологии (можно включить дополнительные провайдеры)
+python scripts/collect_theories.py "activity engagement" --config config/pipeline.yaml --providers openalex crossref pubmed
+
+# 3. Аналитика и обновление сводных отчётов
+python scripts/analyze_papers.py --config config/pipeline.yaml
+```
+
+Используйте `--state-dir data/cache` для совместного кэша между командами, чтобы не
+переизвлекать уже найденные записи. 【F:scripts/collect_theories.py†L720-L823】【F:scripts/collect_theories.py†L904-L1020】【F:scripts/analyze_papers.py†L161-L196】
 
 ### Collect theories and initial Q1–Q9 answers
 
