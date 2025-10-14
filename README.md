@@ -68,6 +68,11 @@ pip install pyyaml pytest
 Install any additional providers (e.g., HTTP clients) required for your custom
 retrieval strategies in the same environment.
 
+Optional helpers:
+
+- `pdfminer.six` — enables PDF-to-text extraction when providers only expose
+  binary downloads for full texts.
+
 ### Environment variables
 
 External API keys are declared in the configuration under `api_keys`, and the
