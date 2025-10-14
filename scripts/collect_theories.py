@@ -193,6 +193,26 @@ def _persist_quickstart_node(node: Mapping[str, Any], slug: str) -> Path:
     return path
 
 
+def _load_quickstart_snapshot(slug: str) -> Dict[str, Any] | None:
+    cache_path = PROJECT_ROOT / "data" / "cache" / "ontologies" / f"{slug}.json"
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.warning(
+            "Failed to decode quickstart ontology snapshot at %s; ignoring", cache_path
+        )
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    payload = dict(payload)
+    sub_map = payload.get("subtheories")
+    if not isinstance(sub_map, Mapping):
+        payload["subtheories"] = {}
+    return payload
+
+
 def _prepare_bootstrap_enrichment(
     root_name: str,
     bootstrap_nodes: Mapping[str, Any],
@@ -946,12 +966,24 @@ def main() -> None:
             parser.error(
                 "--target-count is required when --quickstart is used or corpus.targets is empty"
             )
-        quickstart_node = _build_quickstart_node(args.query, args.target_count)
         quickstart_slug = slugify(args.query)
+        cached_node = _load_quickstart_snapshot(quickstart_slug)
+        if cached_node:
+            logger.info(
+                "Loaded existing quickstart ontology snapshot from %s",
+                PROJECT_ROOT / "data" / "cache" / "ontologies" / f"{quickstart_slug}.json",
+            )
+            quickstart_node = cached_node
+            quickstart_node.setdefault("name", args.query)
+            quickstart_node.setdefault("queries", [args.query])
+            quickstart_node.setdefault("metadata", {})
+            quickstart_node["target"] = int(args.target_count)
+        else:
+            quickstart_node = _build_quickstart_node(args.query, args.target_count)
         quickstart_node.setdefault("metadata", {}).setdefault("slug", quickstart_slug)
         quickstart_cache_path = _persist_quickstart_node(quickstart_node, quickstart_slug)
         logger.info(
-            "Quickstart mode active; generated ontology node persisted to %s",
+            "Quickstart mode active; ontology node persisted to %s",
             quickstart_cache_path,
         )
         base_targets = _quickstart_config(quickstart_node)

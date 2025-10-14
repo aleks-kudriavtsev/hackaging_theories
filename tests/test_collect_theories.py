@@ -338,3 +338,59 @@ def test_quickstart_bootstrap_enrichment_updates_cache(monkeypatch, tmp_path):
     payload = json.loads(slug_path.read_text(encoding="utf-8"))
     assert "Activity Theory" in payload["subtheories"]
     assert payload["subtheories"]["Activity Theory"]["bootstrap"]["citations"] == 150
+
+
+def test_quickstart_reuses_cached_snapshot(monkeypatch, tmp_path):
+    config_path = _write_config(tmp_path, {})
+    args = _prepare_args(tmp_path, config_path, quickstart=True, target_count=15)
+
+    cache_dir = tmp_path / "data" / "cache" / "ontologies"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_payload = {
+        "name": "Test Query",
+        "target": 9,
+        "queries": ["Test Query"],
+        "metadata": {"source": "quickstart"},
+        "subtheories": {
+            "Activity Theory": {
+                "target": 5,
+                "subtheories": {
+                    "Engagement": {"target": 2, "subtheories": {}},
+                },
+            }
+        },
+    }
+    cache_path = cache_dir / "test-query.json"
+    cache_path.write_text(json.dumps(cached_payload), encoding="utf-8")
+
+    collect_calls: List[Dict[str, Any]] = []
+
+    def capture_collect(*_a, **kwargs):
+        collect_calls.append(
+            {
+                "name": kwargs.get("name"),
+                "config": kwargs.get("config"),
+            }
+        )
+        return {"providers": {}}, []
+
+    validate_calls: list[dict] = []
+    _patch_runtime(
+        monkeypatch,
+        tmp_path,
+        args=args,
+        validate_calls=validate_calls,
+        collect_hook=capture_collect,
+    )
+
+    collect_theories.main()
+
+    assert collect_calls, "collect_for_entry should run"
+    config_payload = collect_calls[0]["config"]
+    subs = config_payload.get("subtheories", {})
+    assert "Activity Theory" in subs, "Cached subtheories should be reused"
+    engagement = subs["Activity Theory"].get("subtheories", {})
+    assert "Engagement" in engagement, "Nested cached nodes should persist"
+    slug_path = tmp_path / "data" / "cache" / "ontologies" / "test-query.json"
+    persisted = json.loads(slug_path.read_text(encoding="utf-8"))
+    assert persisted["target"] == 15, "Target should be updated from CLI flag"
