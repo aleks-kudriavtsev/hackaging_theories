@@ -8,6 +8,7 @@ the same structured payload.
 Environment variables
 ---------------------
 - ``PUBMED_API_KEY`` — optional, increases the request quota and rate limits.
+- ``PUBMED_TOOL`` and ``PUBMED_EMAIL`` — recommended by NCBI for contact info.
 
 Usage
 -----
@@ -34,6 +35,11 @@ from typing import Iterable, List
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+DEFAULT_QUERY = (
+    '(("aging theory"[TIAB] OR "ageing theory"[TIAB] '
+    'OR "theories of aging"[TIAB]) AND review[PTYP])'
+)
 
 
 @dataclass
@@ -187,6 +193,11 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Collect PubMed reviews on aging theory")
     parser.add_argument(
         "--query",
+        default=DEFAULT_QUERY,
+        help=(
+            "PubMed search query to execute (defaults to a Title/Abstract search for "
+            "aging theories limited to review publication type)."
+        ),
         default='"Aging Theory" AND review[Publication Type]',
         help="PubMed search query to execute (defaults to review articles on aging theory).",
     )
@@ -197,6 +208,11 @@ def main(argv: List[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    try:
+        ids = esearch_ids(args.query)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     ids = esearch_ids(args.query)
     if not ids:
         print("No PubMed records found for query", file=sys.stderr)
