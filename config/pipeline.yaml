@@ -152,6 +152,26 @@ classification:
       - detach
 
 corpus:
+  bootstrap:
+    enabled: true
+    queries:
+      reviews:
+        query: "{base_query} review"
+        providers:
+          - pubmed
+        min_citations: 25
+        max_reviews: 6
+    providers:
+      - pubmed
+      - openalex
+    min_citations: 20
+    limit_per_query: 40
+    max_per_query: 8
+    resume: true
+    state_prefix: "bootstrap::reviews"
+    max_theories: 8
+    cache_path: data/cache/bootstrap_ontology.json
+    update_targets: false
   cache_dir: data/cache/literature
   min_citation_count: 5
   prefer_reviews: true
