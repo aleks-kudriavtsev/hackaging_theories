@@ -6,6 +6,10 @@ api_keys:
     default: "you@example.com"
   pubmed:
     env: PUBMED_API_KEY
+  serpapi:
+    env: SERPAPI_KEY
+  semantic_scholar:
+    env: SEMANTIC_SCHOLAR_KEY
   openai:
     env: OPENAI_API_KEY
   scihub_email:
@@ -36,6 +40,34 @@ providers:
     rate_limit_per_sec: 10
     query_shards:
       - "{query}"
+  - name: serpapi_scholar
+    type: serpapi_scholar
+    enabled: false
+    api_key_key: serpapi
+    base_url: https://serpapi.com/search.json
+    batch_size: 10
+    rate_limit_per_sec: 0.5
+    extra:
+      engine: google_scholar
+      max_page_size: 10
+  - name: semantic_scholar
+    type: semantic_scholar
+    enabled: false
+    api_key_key: semantic_scholar
+    base_url: https://api.semanticscholar.org/graph/v1/paper/search
+    batch_size: 100
+    rate_limit_per_sec: 4
+    extra:
+      fields:
+        - title
+        - abstract
+        - authors
+        - year
+        - externalIds
+        - openAccessPdf
+        - url
+        - citationCount
+        - influentialCitationIds
   - name: pubmed
     type: pubmed
     enabled: false

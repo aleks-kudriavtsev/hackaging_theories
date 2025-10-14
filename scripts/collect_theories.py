@@ -65,6 +65,8 @@ _API_KEY_OVERRIDE_MAP = {
     "openalex_api_key": "openalex",
     "crossref_api_key": "crossref_contact",
     "pubmed_api_key": "pubmed",
+    "serpapi_key": "serpapi",
+    "semantic_scholar_key": "semantic_scholar",
     "scihub_email": "scihub_email",
     "scihub_rapidapi_key": "scihub_rapidapi",
     "annas_archive_api_key": "annas_archive",
@@ -948,6 +950,14 @@ def main() -> None:
     parser.add_argument(
         "--pubmed-api-key",
         help=precedence_note.format(name="PubMed"),
+    )
+    parser.add_argument(
+        "--serpapi-key",
+        help=precedence_note.format(name="SerpApi"),
+    )
+    parser.add_argument(
+        "--semantic-scholar-key",
+        help=precedence_note.format(name="Semantic Scholar"),
     )
     parser.add_argument(
         "--scihub-email",
