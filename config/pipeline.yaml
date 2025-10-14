@@ -34,7 +34,7 @@ providers:
       - "{query} aging"
   - name: crossref
     type: crossref
-    enabled: false
+    enabled: false  # Crossref remains optional; PubMed powers quickstart by default
     api_key_key: crossref_contact
     batch_size: 100
     rate_limit_per_sec: 10
