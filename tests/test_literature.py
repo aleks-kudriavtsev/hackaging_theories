@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from theories_pipeline.literature import (
     PaperMetadata,
     ProviderPage,
     ProviderConfig,
+    OpenAlexProvider,
     PubMedProvider,
 )
 
@@ -25,6 +27,17 @@ class _StaticProvider:
 
     def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
         return ProviderPage(papers=list(self._papers), next_cursor=None, exhausted=True)
+
+
+class _DummyResponse:
+    def __init__(self, payload: dict[str, Any]):
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+    def raise_for_status(self) -> None:  # pragma: no cover - nothing to raise in tests
+        return None
 
 
 def _write_seed(tmp_path: Path) -> Path:
@@ -65,6 +78,36 @@ def _write_seed(tmp_path: Path) -> Path:
     path = tmp_path / "seed.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def test_openalex_provider_uses_query_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_requests = SimpleNamespace(Session=lambda: SimpleNamespace())
+    monkeypatch.setattr(literature, "requests", dummy_requests, raising=False)
+    config = ProviderConfig(
+        name="openalex",
+        type="openalex",
+        api_key="test-openalex",
+        batch_size=25,
+        extra={"mailto": "contact@example.com"},
+    )
+    provider = OpenAlexProvider(config)
+
+    captured: dict[str, Any] = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        return _DummyResponse({"results": [], "meta": {"next_cursor": None}})
+
+    monkeypatch.setattr(provider, "session", SimpleNamespace(get=fake_get))
+
+    page = provider.fetch_page("aging populations")
+    assert captured["params"]["api_key"] == "test-openalex"
+    assert captured["params"]["mailto"] == "contact@example.com"
+    assert captured["headers"] in (None, {})
+    assert page.exhausted is True
+    assert page.papers == []
 
 
 @pytest.fixture
