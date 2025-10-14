@@ -155,8 +155,8 @@ to avoid overwhelming upstream mirrors.
 
 1. **Set provider credentials.** Export environment variables (or prepare to
    supply the CLI overrides) for every API you intend to call during the
-   bootstrap run. The quickstart workflow depends on PubMed search to find
-   review articles, so make sure those credentials are available before
+   bootstrap run. The quickstart workflow currently relies on PubMed search to
+   find review articles, so make sure those credentials are available before
    running:
    - `OPENALEX_API_KEY` / `--openalex-api-key`
    - `PUBMED_API_KEY` / `--pubmed-api-key`
@@ -168,9 +168,9 @@ to avoid overwhelming upstream mirrors.
     - `OPENAI_API_KEY` / `--llm-api-key` (plus `--llm-model` when you opt into GPT
       classification)
 
-Crossref remains supported as an optional metadata source—pass
-`--providers crossref` (and the related contact email) if you need it for your
-run.
+Crossref remains supported as an optional metadata source—include it only when
+necessary by adding `--providers crossref` along with the corresponding
+credential from the provider table if your run requires that metadata.
 2. **Run the bootstrapper and enrichment pipeline.** The command below assumes
    the default configuration file already contains a `corpus.bootstrap` block
    and writes the ontology snapshot to
@@ -191,9 +191,8 @@ run.
    ```
 
    Add the other overrides from the list above whenever you enable the
-   associated providers in your configuration. Include `--providers crossref`
-   (and the relevant contact email) only when you need Crossref metadata for a
-   given run. 【F:docs/bootstrap.md†L78-L114】
+   associated providers in your configuration. Include Crossref only if needed
+   by extending `--providers` and supplying its contact credential. 【F:docs/bootstrap.md†L78-L114】
 
 ### Quickstart without a seed ontology
 
