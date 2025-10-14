@@ -34,7 +34,7 @@ providers:
       - "{query} aging"
   - name: crossref
     type: crossref
-    enabled: true
+    enabled: false
     api_key_key: crossref_contact
     batch_size: 100
     rate_limit_per_sec: 10
@@ -70,7 +70,7 @@ providers:
         - influentialCitationIds
   - name: pubmed
     type: pubmed
-    enabled: false
+    enabled: true
     api_key_key: pubmed
     batch_size: 200
     rate_limit_per_sec: 3
