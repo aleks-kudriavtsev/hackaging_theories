@@ -21,6 +21,9 @@ def test_collect_theories_cli_override_applies_to_provider_config(monkeypatch):
         openalex_api_key="cli-openalex",
         crossref_api_key=None,
         pubmed_api_key=None,
+        scihub_email=None,
+        scihub_rapidapi_key=None,
+        annas_archive_api_key=None,
     )
 
     def fake_resolve(config, base_path=None):  # pragma: no cover - patched in test
@@ -55,6 +58,9 @@ def test_analyze_papers_cli_override_updates_api_keys(monkeypatch):
         openalex_api_key=None,
         crossref_api_key="cli-crossref",
         pubmed_api_key="cli-pubmed",
+        scihub_email=None,
+        scihub_rapidapi_key=None,
+        annas_archive_api_key=None,
     )
 
     def fake_resolve(config, base_path=None):  # pragma: no cover - patched in test
