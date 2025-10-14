@@ -198,7 +198,6 @@ def main(argv: List[str] | None = None) -> int:
             "PubMed search query to execute (defaults to a Title/Abstract search for "
             "aging theories limited to review publication type)."
         ),
-        help="PubMed search query to execute (defaults to review articles on aging theory).",
     )
     parser.add_argument(
         "--output",
