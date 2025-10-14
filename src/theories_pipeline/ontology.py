@@ -11,8 +11,9 @@ observed paper counts.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 
 @dataclass
@@ -23,10 +24,17 @@ class OntologyNode:
     target: Optional[int] = None
     parent: Optional[str] = None
     children: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def add_child(self, child: str) -> None:
         if child not in self.children:
             self.children.append(child)
+
+    def merge_metadata(self, extra: Mapping[str, Any]) -> None:
+        """Attach arbitrary metadata to the ontology node."""
+
+        for key, value in extra.items():
+            self.metadata[key] = deepcopy(value)
 
 
 @dataclass(frozen=True)
@@ -149,6 +157,17 @@ class TheoryOntology:
             node.parent = parent
             if parent:
                 ensure(parent).add_child(name)
+            metadata_payload: Dict[str, Any] = {}
+            for key, value in node_cfg.items():
+                if key in {"target", "subtheories"}:
+                    continue
+                if key == "metadata" and isinstance(value, Mapping):
+                    for meta_key, meta_value in value.items():
+                        metadata_payload[str(meta_key)] = deepcopy(meta_value)
+                    continue
+                metadata_payload[key] = deepcopy(value)
+            if metadata_payload:
+                node.merge_metadata(metadata_payload)
             sub_config = node_cfg.get("subtheories")
             for child_name, child_data in iter_entries(sub_config):
                 visit(child_name, child_data, name)

@@ -12,6 +12,7 @@ listeners (for example the :class:`~theories_pipeline.theories.TheoryClassifier`
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import logging
@@ -165,25 +166,42 @@ class OntologyManager:
 
         def ensure_node(path: MutableMapping[str, Any], node_name: str) -> MutableMapping[str, Any]:
             node_cfg = path.get(node_name)
-            if isinstance(node_cfg, MutableMapping):
-                return node_cfg
-            node_cfg = {"target": None, "subtheories": {}}
-            path[node_name] = node_cfg
+            if not isinstance(node_cfg, MutableMapping):
+                node_cfg = {}
+                path[node_name] = node_cfg
+            sub_map = node_cfg.get("subtheories")
+            if not isinstance(sub_map, MutableMapping):
+                node_cfg["subtheories"] = {}
             return node_cfg
 
         while pending:
             progress = False
             for node_name, data in list(pending.items()):
                 parent = data.get("parent")
-                config = dict(data.get("config", {}))
+                config_raw = data.get("config", {})
+                config = dict(config_raw) if isinstance(config_raw, Mapping) else {}
+                metadata_raw = data.get("metadata", {})
+                metadata_payload = (
+                    {str(k): deepcopy(v) for k, v in metadata_raw.items()}
+                    if isinstance(metadata_raw, Mapping)
+                    else {}
+                )
                 if parent is None:
-                    ensure_node(merged, node_name)
-                    merged[node_name] = {
-                        key: value
-                        for key, value in (config.items())
-                        if key != "subtheories"
-                    }
-                    merged[node_name].setdefault("subtheories", {})
+                    node_cfg = ensure_node(merged, node_name)
+                    for key, value in config.items():
+                        if key == "subtheories":
+                            continue
+                        if key == "metadata" and isinstance(value, Mapping):
+                            for meta_key, meta_value in value.items():
+                                metadata_payload[str(meta_key)] = deepcopy(meta_value)
+                            continue
+                        node_cfg[key] = deepcopy(value)
+                    if metadata_payload:
+                        existing_meta = node_cfg.get("metadata")
+                        if isinstance(existing_meta, MutableMapping):
+                            existing_meta.update(metadata_payload)
+                        elif metadata_payload:
+                            node_cfg["metadata"] = dict(metadata_payload)
                     pending.pop(node_name)
                     progress = True
                     continue
@@ -193,8 +211,20 @@ class OntologyManager:
                     continue
                 sub_map = parent_cfg.setdefault("subtheories", {})
                 child_cfg = ensure_node(sub_map, node_name)
-                child_cfg.update({k: v for k, v in config.items() if k != "subtheories"})
-                child_cfg.setdefault("subtheories", {})
+                for key, value in config.items():
+                    if key == "subtheories":
+                        continue
+                    if key == "metadata" and isinstance(value, Mapping):
+                        for meta_key, meta_value in value.items():
+                            metadata_payload[str(meta_key)] = deepcopy(meta_value)
+                        continue
+                    child_cfg[key] = deepcopy(value)
+                if metadata_payload:
+                    existing_meta = child_cfg.get("metadata")
+                    if isinstance(existing_meta, MutableMapping):
+                        existing_meta.update(metadata_payload)
+                    elif metadata_payload:
+                        child_cfg["metadata"] = dict(metadata_payload)
                 pending.pop(node_name)
                 progress = True
             if not progress:
