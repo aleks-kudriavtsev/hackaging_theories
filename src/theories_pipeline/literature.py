@@ -24,6 +24,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Sequence, Tuple
+from urllib.parse import parse_qs, urlparse
 
 try:  # pragma: no cover - optional dependency
     import requests
@@ -659,6 +660,389 @@ class PubMedProvider(BaseProvider):
         return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
 
 
+class SerpApiScholarProvider(BaseProvider):
+    """Provider backed by SerpApi's Google Scholar engine."""
+
+    DEFAULT_BASE_URL = "https://serpapi.com/search.json"
+    SOURCE_NAME = "serpapi_scholar"
+    DOI_PATTERN = re.compile(r"10\.[0-9]{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        extra = config.extra or {}
+        self.engine = str(extra.get("engine", "google_scholar"))
+        self.query_param = str(extra.get("query_param", "q"))
+        self.start_param = str(extra.get("start_param", "start"))
+        self.limit_param = str(extra.get("limit_param", "num"))
+        self.result_key = str(extra.get("result_key", "organic_results"))
+        max_page_size = extra.get("max_page_size", 10)
+        try:
+            self.page_size = max(1, min(int(max_page_size), int(config.batch_size)))
+        except (TypeError, ValueError):
+            self.page_size = min(10, config.batch_size)
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        if not self.config.api_key:
+            raise RuntimeError("SerpApi requires an API key to be provided")
+
+        url = self.config.base_url or self.DEFAULT_BASE_URL
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "hackaging-theories-pipeline/1.0",
+        }
+        params: Dict[str, Any] = {
+            "engine": self.engine,
+            self.query_param: query,
+            self.limit_param: self.page_size,
+            "api_key": self.config.api_key,
+        }
+        try:
+            start_value = int(cursor) if cursor is not None else 0
+        except (TypeError, ValueError):
+            start_value = 0
+        params[self.start_param] = max(0, start_value)
+
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+
+        items = payload.get(self.result_key) or []
+        papers: List[PaperMetadata] = []
+        for item in items:
+            metadata = self._record_to_metadata(item)
+            if metadata:
+                papers.append(metadata)
+
+        next_cursor = self._parse_next_cursor(payload.get("serpapi_pagination"))
+        exhausted = not next_cursor
+        return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
+
+    def _record_to_metadata(self, record: Any) -> PaperMetadata | None:
+        if not isinstance(record, Mapping):
+            return None
+        title = str(record.get("title") or "").strip()
+        if not title:
+            return None
+
+        abstract = str(
+            record.get("snippet")
+            or record.get("publication_info", {}).get("summary")
+            or ""
+        ).strip()
+        pub_info = record.get("publication_info") or {}
+        authors = self._parse_authors(pub_info.get("authors"))
+        year = self._parse_year(
+            pub_info.get("year")
+            or record.get("publication_date")
+            or record.get("year")
+            or pub_info.get("summary")
+        )
+        raw_identifier = record.get("result_id") or record.get("link") or record.get("id")
+        if raw_identifier:
+            identifier = f"serpapi:{str(raw_identifier)}"
+        else:
+            digest_source = f"{title}|{record.get('link', '')}|{year or ''}"
+            identifier = f"serpapi:{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()}"
+        candidates = self._fulltext_candidates(record)
+        doi = self._find_doi(candidates)
+        citation_count = self._parse_int(
+            record.get("inline_links", {}).get("cited_by", {}).get("total")
+        )
+        full_text = self._resolve_full_text(identifier, doi, candidates)
+        return PaperMetadata(
+            identifier=identifier,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            source=self.SOURCE_NAME,
+            year=year,
+            doi=doi,
+            full_text=full_text,
+            citation_count=citation_count,
+            is_review=None,
+            influential_citations=(),
+        )
+
+    def _parse_next_cursor(self, pagination: Any) -> str | None:
+        if not isinstance(pagination, Mapping):
+            return None
+        next_url = pagination.get("next")
+        if not next_url:
+            return None
+        try:
+            parsed = urlparse(str(next_url))
+        except Exception:  # pragma: no cover - defensive parsing
+            return None
+        params = parse_qs(parsed.query)
+        start_values = params.get(self.start_param)
+        if not start_values:
+            return None
+        return start_values[0]
+
+    def _parse_authors(self, value: Any) -> Tuple[str, ...]:
+        if not value:
+            return ()
+        authors: List[str] = []
+        if isinstance(value, Mapping):
+            for entry in value.values():
+                authors.extend(self._parse_authors(entry))
+            return tuple(authors)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for entry in value:
+                if isinstance(entry, Mapping):
+                    name = entry.get("name") or entry.get("author")
+                else:
+                    name = entry
+                if not name:
+                    continue
+                name_str = str(name).strip()
+                if name_str:
+                    authors.append(name_str)
+            return tuple(authors)
+        parts = str(value).split(",")
+        return tuple(part.strip() for part in parts if part.strip())
+
+    def _parse_year(self, value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        match = re.search(r"(19|20)[0-9]{2}", text)
+        if not match:
+            return None
+        try:
+            return int(match.group(0))
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_int(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _fulltext_candidates(self, record: Mapping[str, Any]) -> List[str]:
+        candidates: List[str] = []
+        link = record.get("link")
+        if link:
+            candidates.append(str(link))
+        inline_links = record.get("inline_links") or {}
+        if isinstance(inline_links, Mapping):
+            for key in ("resources", "serpapi_scholar_fulltext", "versions", "serpapi_links"):
+                value = inline_links.get(key)
+                candidates.extend(self._extract_urls(value))
+        for key in ("resources", "versions"):
+            value = record.get(key)
+            candidates.extend(self._extract_urls(value))
+        seen: set[str] = set()
+        unique: List[str] = []
+        for url in candidates:
+            normalized = str(url).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(normalized)
+        return unique
+
+    def _extract_urls(self, value: Any) -> List[str]:
+        urls: List[str] = []
+        if not value:
+            return urls
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                urls.extend(self._extract_urls(item))
+            return urls
+        if isinstance(value, Mapping):
+            for key in ("link", "url", "href"):
+                if key in value:
+                    urls.extend(self._extract_urls(value[key]))
+            return urls
+        text = str(value).strip()
+        if text:
+            urls.append(text)
+        return urls
+
+    def _find_doi(self, candidates: Sequence[str]) -> str | None:
+        for url in candidates:
+            if not url:
+                continue
+            match = self.DOI_PATTERN.search(url)
+            if match:
+                return match.group(0).lower()
+        return None
+
+
+class SemanticScholarProvider(BaseProvider):
+    """Provider for the Semantic Scholar Graph API."""
+
+    DEFAULT_BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+    SOURCE_NAME = "semantic_scholar"
+    DEFAULT_FIELDS = (
+        "title,abstract,authors,year,externalIds,openAccessPdf,url,citationCount,"
+        "influentialCitationIds"
+    )
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        extra = config.extra or {}
+        fields = extra.get("fields")
+        if isinstance(fields, Sequence) and not isinstance(fields, (str, bytes)):
+            field_values = [str(field).strip() for field in fields if str(field).strip()]
+            self.fields = ",".join(field_values) if field_values else self.DEFAULT_FIELDS
+        elif isinstance(fields, str) and fields.strip():
+            self.fields = fields.strip()
+        else:
+            self.fields = self.DEFAULT_FIELDS
+        self.query_param = str(extra.get("query_param", "query"))
+        self.offset_param = str(extra.get("offset_param", "offset"))
+        self.limit_param = str(extra.get("limit_param", "limit"))
+        self.data_key = str(extra.get("data_key", "data"))
+        self.next_key = str(extra.get("next_key", "next"))
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        url = self.config.base_url or self.DEFAULT_BASE_URL
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "hackaging-theories-pipeline/1.0",
+        }
+        if self.config.api_key:
+            headers["x-api-key"] = self.config.api_key
+        params: Dict[str, Any] = {
+            self.query_param: query,
+            self.limit_param: self.config.batch_size,
+            "fields": self.fields,
+        }
+        if cursor is not None:
+            params[self.offset_param] = cursor
+
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        records = payload.get(self.data_key) or []
+        papers: List[PaperMetadata] = []
+        for record in records:
+            metadata = self._record_to_metadata(record)
+            if metadata:
+                papers.append(metadata)
+
+        next_cursor = payload.get(self.next_key)
+        next_value = str(next_cursor) if next_cursor not in {None, ""} else None
+        exhausted = not next_value
+        return ProviderPage(papers=papers, next_cursor=next_value, exhausted=exhausted)
+
+    def _record_to_metadata(self, record: Any) -> PaperMetadata | None:
+        if not isinstance(record, Mapping):
+            return None
+        title = str(record.get("title") or "").strip()
+        if not title:
+            return None
+        abstract = str(record.get("abstract") or record.get("tldr", {}).get("text") or "").strip()
+        paper_id = record.get("paperId")
+        if paper_id:
+            identifier = f"semanticscholar:{paper_id}"
+        else:
+            external_ids = record.get("externalIds") if isinstance(record.get("externalIds"), Mapping) else {}
+            fallback = (
+                (external_ids or {}).get("CorpusId")
+                or (external_ids or {}).get("DOI")
+                or record.get("url")
+            )
+            if fallback:
+                identifier = f"semanticscholar:{fallback}"
+            else:
+                digest_source = f"{title}|{record.get('year', '')}|{abstract[:80]}"
+                identifier = f"semanticscholar:{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()}"
+        authors = self._parse_authors(record.get("authors"))
+        year = self._parse_year(record.get("year"))
+        external_ids = record.get("externalIds") if isinstance(record.get("externalIds"), Mapping) else {}
+        doi = external_ids.get("DOI") if isinstance(external_ids, Mapping) else None
+        if isinstance(doi, str):
+            doi = doi.strip() or None
+        candidates = self._fulltext_candidates(record, doi)
+        citation_count = self._parse_int(record.get("citationCount"))
+        influential_ids = record.get("influentialCitationIds")
+        if isinstance(influential_ids, Sequence) and not isinstance(influential_ids, (str, bytes)):
+            influential = tuple(str(value) for value in influential_ids if value)
+        else:
+            influential = ()
+        full_text = self._resolve_full_text(identifier, doi, candidates)
+        return PaperMetadata(
+            identifier=identifier,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            source=self.SOURCE_NAME,
+            year=year,
+            doi=doi,
+            full_text=full_text,
+            citation_count=citation_count,
+            is_review=None,
+            influential_citations=influential,
+        )
+
+    def _parse_authors(self, value: Any) -> Tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            authors: List[str] = []
+            for entry in value:
+                if isinstance(entry, Mapping):
+                    name = entry.get("name") or entry.get("authorId")
+                else:
+                    name = entry
+                if not name:
+                    continue
+                name_str = str(name).strip()
+                if name_str:
+                    authors.append(name_str)
+            return tuple(authors)
+        parts = str(value).split(",")
+        return tuple(part.strip() for part in parts if part.strip())
+
+    def _parse_year(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_int(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _fulltext_candidates(self, record: Mapping[str, Any], doi: str | None) -> List[str]:
+        candidates: List[str] = []
+        open_access = record.get("openAccessPdf")
+        if isinstance(open_access, Mapping):
+            pdf_url = open_access.get("url") or open_access.get("pdfUrl")
+            if pdf_url:
+                candidates.append(str(pdf_url))
+        url_value = record.get("url")
+        if url_value:
+            candidates.append(str(url_value))
+        if doi:
+            candidates.append(f"https://doi.org/{doi}")
+        seen: set[str] = set()
+        unique: List[str] = []
+        for candidate in candidates:
+            normalized = str(candidate).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(normalized)
+        return unique
+
+
 class SciHubProvider(BaseProvider):
     """Provider for retrieving full-text access metadata from Sci-Hub services."""
 
@@ -1135,6 +1519,8 @@ PROVIDER_REGISTRY: Dict[str, type[BaseProvider]] = {
     "openalex": OpenAlexProvider,
     "crossref": CrossRefProvider,
     "pubmed": PubMedProvider,
+    "serpapi_scholar": SerpApiScholarProvider,
+    "semantic_scholar": SemanticScholarProvider,
     "scihub": SciHubProvider,
     "annas_archive": AnnasArchiveProvider,
     "biorxiv": BioRxivProvider,
