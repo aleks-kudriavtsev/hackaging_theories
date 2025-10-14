@@ -28,6 +28,7 @@ from theories_pipeline import (
     export_papers,
     export_question_answers,
     export_theories,
+    RelevanceFilter,
 )
 from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
 from theories_pipeline.llm import LLMClient, LLMClientConfig
@@ -398,6 +399,7 @@ def collect_for_entry(
     expander: QueryExpander | None,
     default_expansion: QueryExpansionSettings | None,
     retrieval_options: Mapping[str, Any] | None = None,
+    filter_llm_client: LLMClient | None = None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
     query_templates = config.get("queries") or [context.get("base_query", name)]
     queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
@@ -440,6 +442,48 @@ def collect_for_entry(
             existing_state = retriever.state_store.get(state_prefix)
         except AttributeError:
             existing_state = {}
+
+    filter_state_raw = existing_state.get("filtering") if isinstance(existing_state, Mapping) else {}
+    filter_state: Dict[str, Dict[str, Any]] = {}
+    if isinstance(filter_state_raw, Mapping):
+        for key, value in filter_state_raw.items():
+            if isinstance(value, Mapping):
+                filter_state[str(key)] = dict(value)
+
+    filter_cfg_raw = config.get("filtering") if isinstance(config.get("filtering"), Mapping) else {}
+    filter_keywords = filter_cfg_raw.get("keywords")
+    if isinstance(filter_keywords, Mapping):
+        filter_keywords_list = [str(item).strip() for item in filter_keywords.values() if str(item).strip()]
+    elif isinstance(filter_keywords, (list, tuple, set)):
+        filter_keywords_list = [str(item).strip() for item in filter_keywords if str(item).strip()]
+    elif isinstance(filter_keywords, str):
+        filter_keywords_list = [filter_keywords.strip()]
+    else:
+        filter_keywords_list = []
+
+    try:
+        threshold_value = float(filter_cfg_raw.get("threshold", 0.0))
+    except (TypeError, ValueError):
+        threshold_value = 0.0
+
+    llm_cfg_raw = filter_cfg_raw.get("llm") if isinstance(filter_cfg_raw.get("llm"), Mapping) else {}
+    llm_enabled = bool(llm_cfg_raw.get("enabled", True))
+    llm_weight = llm_cfg_raw.get("weight", 0.5)
+    llm_prompt = llm_cfg_raw.get("prompt") if isinstance(llm_cfg_raw.get("prompt"), str) else None
+    max_chars = llm_cfg_raw.get("max_chars", 2000)
+    try:
+        max_chars_int = int(max_chars)
+    except (TypeError, ValueError):
+        max_chars_int = 2000
+
+    relevance_filter = RelevanceFilter(
+        keywords=filter_keywords_list,
+        threshold=threshold_value,
+        llm_client=filter_llm_client if (filter_llm_client and llm_enabled) else None,
+        llm_weight=llm_weight,
+        llm_prompt=llm_prompt,
+        max_text_chars=max_chars_int,
+    )
 
     enrichment_sources: List[Mapping[str, Any]] = []
     config_enrichment = config.get("enrichment")
@@ -607,9 +651,31 @@ def collect_for_entry(
         prefer_reviews=prefer_reviews_flag,
         sort_by_citations=sort_by_citations_flag,
     )
+    context_payload = {
+        "name": name,
+        "theory": context.get("theory", name),
+        "topic": context.get("theory", name),
+        "query": context.get("query", ""),
+        "base_query": context.get("base_query", ""),
+        "queries": queries,
+    }
 
-    entry_map = {paper.identifier: paper for paper in result.papers}
+    accepted_papers, filter_decisions = relevance_filter.apply(
+        result.papers,
+        context=context_payload,
+        existing_decisions=filter_state,
+    )
+
     summary = dict(result.summary)
+    summary["retrieved_total"] = summary.get("total_unique", len(result.papers))
+    summary["total_unique"] = len(accepted_papers)
+    summary["filtering"] = {
+        "accepted": sum(1 for decision in filter_decisions if decision.accepted),
+        "rejected": sum(1 for decision in filter_decisions if not decision.accepted),
+        "threshold": relevance_filter.threshold,
+    }
+
+    entry_map = {paper.identifier: paper for paper in accepted_papers}
 
     node = None
     if ontology is not None:
@@ -640,7 +706,7 @@ def collect_for_entry(
         expansion_session = expander.expand(
             node,
             base_queries=queries,
-            papers=result.papers,
+            papers=accepted_papers,
             settings=expansion_settings,
             context={"current_total": summary.get("total_unique", 0)},
         )
@@ -660,7 +726,19 @@ def collect_for_entry(
                 )
                 before_total = summary.get("total_unique", 0)
                 summary = dict(rerun.summary)
-                entry_map = {paper.identifier: paper for paper in rerun.papers}
+                summary["retrieved_total"] = summary.get("total_unique", len(rerun.papers))
+                accepted_papers, filter_decisions = relevance_filter.apply(
+                    rerun.papers,
+                    context=context_payload,
+                    existing_decisions=filter_state,
+                )
+                summary["total_unique"] = len(accepted_papers)
+                summary["filtering"] = {
+                    "accepted": sum(1 for decision in filter_decisions if decision.accepted),
+                    "rejected": sum(1 for decision in filter_decisions if not decision.accepted),
+                    "threshold": relevance_filter.threshold,
+                }
+                entry_map = {paper.identifier: paper for paper in accepted_papers}
                 new_unique = max(0, summary.get("total_unique", 0) - before_total)
                 summary["expansion"] = {
                     "enabled": True,
@@ -708,7 +786,14 @@ def collect_for_entry(
                 )
                 shard_state["status"] = "pruned"
                 shard_state["updated_at"] = timestamp
+        filter_timestamp = time.time()
+        for decision in filter_decisions:
+            record = filter_state.setdefault(decision.identifier, {})
+            record.update(decision.to_record(threshold=relevance_filter.threshold))
+            record["updated_at"] = filter_timestamp
         state_payload["enrichment"] = enrichment_state
+        if filter_state:
+            state_payload["filtering"] = filter_state
         retriever.state_store.set(state_prefix, state_payload)
 
     enrichment_report: Dict[str, Any] = {}
@@ -746,6 +831,7 @@ def collect_for_entry(
                 expander=expander,
                 default_expansion=default_expansion,
                 retrieval_options=retrieval_options,
+                filter_llm_client=filter_llm_client,
             )
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
@@ -1101,6 +1187,7 @@ def main() -> None:
             expander=expander,
             default_expansion=default_expansion,
             retrieval_options=retrieval_defaults,
+            filter_llm_client=llm_client,
         )
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
