@@ -92,17 +92,36 @@ Each key supports fallbacks (defaults or file references) if you need a more
 specialised workflow. See `src/theories_pipeline/config_utils.py` for the
 supported descriptors and `config/pipeline.yaml` for annotated examples.
 
-### API и форматы учётных данных
+### Credential reference tables
 
-| API / сервис | Назначение | Переменная/флаг | Формат учётных данных |
+Use the tables below to map each supported provider to its credential source and
+the configuration or CLI hook that consumes it. All variables live under the
+`api_keys` block in [`config/pipeline.yaml`](config/pipeline.yaml) and can be
+overridden via the collector flags shown in the last column.
+
+#### Scholarly metadata and search APIs
+
+| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
 | --- | --- | --- | --- |
-| OpenAlex | Базовый поиск статей и обзоров | `OPENALEX_API_KEY`, `--openalex-api-key` | Строка API-токена OpenAlex |【F:config/pipeline.yaml†L1-L37】【F:scripts/collect_theories.py†L838-L841】
-| Crossref | Дополнительные метаданные и цитирования | `CROSSREF_API_KEY`, `--crossref-api-key` | Контактный email в формате `mailto:you@example.com` |【F:config/pipeline.yaml†L3-L31】【F:scripts/collect_theories.py†L841-L844】
-| PubMed | Биомедицинские обзоры и статьи | `PUBMED_API_KEY`, `--pubmed-api-key` | API-ключ NCBI (ASCII-строка) |【F:config/pipeline.yaml†L5-L37】【F:scripts/collect_theories.py†L844-L847】
-| Sci-Hub (RapidAPI) | Поиск полнотекстовых зеркал DOI | `SCIHUB_RAPIDAPI_KEY`, `--scihub-rapidapi-key` | RapidAPI token (`X-RapidAPI-Key`) |【F:config/pipeline.yaml†L11-L48】【F:src/theories_pipeline/literature.py†L684-L779】【F:scripts/collect_theories.py†L847-L852】
-| Sci-Hub (библиотечный клиент) | Альтернатива RapidAPI | `SCIHUB_EMAIL`, `--scihub-email` | Email-адрес для `scihub.py` |【F:config/pipeline.yaml†L9-L48】【F:src/theories_pipeline/literature.py†L684-L779】【F:scripts/collect_theories.py†L844-L850】
-| Anna’s Archive | Альтернативные зеркала PDF | `ANNAS_ARCHIVE_API_KEY`, `--annas-archive-api-key` | RapidAPI token (`X-RapidAPI-Key`) |【F:config/pipeline.yaml†L12-L68】【F:src/theories_pipeline/literature.py†L841-L937】【F:scripts/collect_theories.py†L850-L853】
-| OpenAI (GPT) | Классификация теорий и ответы Q1–Q9 | `OPENAI_API_KEY`, `--llm-api-key`, `--llm-model` | API-ключ OpenAI + имя модели (например, `gpt-4o-mini`) |【F:config/pipeline.yaml†L69-L142】【F:scripts/collect_theories.py†L786-L871】
+| OpenAlex | Free account at [https://docs.openalex.org/](https://docs.openalex.org/) to generate a personal access token. | `api_keys.openalex.env: OPENALEX_API_KEY`; provider `openalex.api_key_key: openalex`. 【F:config/pipeline.yaml†L1-L29】 | `--openalex-api-key` |【F:scripts/collect_theories.py†L1080-L1091】
+| Crossref | Register a mailto-style contact per the [Crossref polite usage policy](https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-metadata-service-guidelines/). | `api_keys.crossref_contact.env: CROSSREF_API_KEY`; provider `crossref.api_key_key: crossref_contact`. 【F:config/pipeline.yaml†L3-L35】 | `--crossref-api-key` |【F:scripts/collect_theories.py†L1091-L1095】
+| PubMed (NCBI E-utilities) | Request an API key via the NCBI account dashboard. | `api_keys.pubmed.env: PUBMED_API_KEY`; provider `pubmed.api_key_key: pubmed`. 【F:config/pipeline.yaml†L5-L61】 | `--pubmed-api-key` |【F:scripts/collect_theories.py†L1095-L1099】
+| SerpApi (Google Scholar bridge) | Subscribe at [https://serpapi.com/](https://serpapi.com/) for a private API key. | `api_keys.serpapi.env: SERPAPI_KEY`; provider `serpapi_scholar.api_key_key: serpapi`. 【F:config/pipeline.yaml†L7-L49】 | `--serpapi-key` |【F:scripts/collect_theories.py†L1099-L1103】
+| Semantic Scholar | Apply for a research API key through the Semantic Scholar portal. | `api_keys.semantic_scholar.env: SEMANTIC_SCHOLAR_KEY`; provider `semantic_scholar.api_key_key: semantic_scholar`. 【F:config/pipeline.yaml†L9-L57】 | `--semantic-scholar-key` |【F:scripts/collect_theories.py†L1103-L1107】
+
+#### Full-text resolvers and mirrors
+
+| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
+| --- | --- | --- | --- |
+| Sci-Hub email (community client) | Supply the contact address permitted by your institutional access policy. | `api_keys.scihub_email.env: SCIHUB_EMAIL`; provider `scihub.extra.email_key: scihub_email`. 【F:config/pipeline.yaml†L11-L66】 | `--scihub-email` |【F:scripts/collect_theories.py†L1107-L1111】
+| Sci-Hub RapidAPI | Purchase a subscription through [https://rapidapi.com/](https://rapidapi.com/). | `api_keys.scihub_rapidapi.env: SCIHUB_RAPIDAPI_KEY`; provider `scihub.api_key_key: scihub_rapidapi`. 【F:config/pipeline.yaml†L11-L66】 | `--scihub-rapidapi-key` |【F:scripts/collect_theories.py†L1111-L1115】
+| Anna's Archive | Subscribe to the Anna's Archive RapidAPI product for a token. | `api_keys.annas_archive.env: ANNAS_ARCHIVE_API_KEY`; provider `annas_archive.api_key_key: annas_archive`. 【F:config/pipeline.yaml†L12-L68】 | `--annas-archive-api-key` |【F:scripts/collect_theories.py†L1115-L1119】
+
+#### Language models
+
+| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
+| --- | --- | --- | --- |
+| OpenAI | Create an API key via the [OpenAI dashboard](https://platform.openai.com/account/api-keys). | `api_keys.openai.env: OPENAI_API_KEY`; `classification.llm.model` and `api_key_key: openai`. 【F:config/pipeline.yaml†L13-L92】 | `--llm-api-key`, `--llm-model` |【F:scripts/collect_theories.py†L1119-L1149】
 
 ### Советы по устранению ошибок
 
@@ -131,6 +150,43 @@ shared full-text cache under `data/cache/fulltext` and should be rate limited
 to avoid overwhelming upstream mirrors.
 
 ## Running the pipelines
+
+### Quickstart: Generate an ontology from reviews
+
+1. **Set provider credentials.** Export environment variables (or prepare to
+   supply the CLI overrides) for every API you intend to call during the
+   bootstrap run:
+   - `OPENALEX_API_KEY` / `--openalex-api-key`
+   - `CROSSREF_API_KEY` / `--crossref-api-key`
+   - `PUBMED_API_KEY` / `--pubmed-api-key`
+   - `SERPAPI_KEY` / `--serpapi-key`
+   - `SEMANTIC_SCHOLAR_KEY` / `--semantic-scholar-key`
+   - `SCIHUB_EMAIL` / `--scihub-email`
+   - `SCIHUB_RAPIDAPI_KEY` / `--scihub-rapidapi-key`
+   - `ANNAS_ARCHIVE_API_KEY` / `--annas-archive-api-key`
+   - `OPENAI_API_KEY` / `--llm-api-key` (plus `--llm-model` when you opt into GPT
+     classification)
+2. **Run the bootstrapper and enrichment pipeline.** The command below assumes
+   the default configuration file already contains a `corpus.bootstrap` block
+   and writes the ontology snapshot to
+   `data/cache/bootstrap_ontology.json`:
+
+   ```bash
+   export OPENALEX_API_KEY="sk-your-openalex-key"
+   export CROSSREF_API_KEY="mailto:you@example.com"
+   export OPENAI_API_KEY="sk-your-openai-key"
+
+   python scripts/collect_theories.py "geroscience" \
+     --config config/pipeline.yaml \
+     --quickstart \
+     --target-count 60 \
+     --openalex-api-key "$OPENALEX_API_KEY" \
+     --crossref-api-key "$CROSSREF_API_KEY" \
+     --llm-api-key "$OPENAI_API_KEY"
+   ```
+
+   Add the other overrides from the list above whenever you enable the
+   associated providers in your configuration. 【F:docs/bootstrap.md†L78-L114】
 
 ### Quickstart without a seed ontology
 
@@ -207,6 +263,21 @@ attach them to a transient ontology node generated from your CLI query.
    Снэпшот онтологии и метаданные bootstrap сохраняются в `data/cache/bootstrap_ontology.json`,
    а собранные статьи — в каталоге, указанном в блоке `outputs`. Повторный запуск с тем же
    `--state-dir` продолжит наполнение узла, используя кэш. 【F:docs/bootstrap.md†L1-L119】【F:scripts/collect_theories.py†L720-L823】【F:scripts/collect_theories.py†L951-L1020】
+
+### Work with the cached bootstrap ontology
+
+- **Inspect.** Pretty-print the snapshot with `python -m json.tool data/cache/bootstrap_ontology.json`
+  or `jq '.' data/cache/bootstrap_ontology.json` to review the generated queries,
+  review metadata, and ontology fragment. 【F:docs/bootstrap.md†L116-L120】
+- **Amend.** Edit the `ontology` block directly (for example, to tweak theory
+  labels or citation counts) and copy the adjusted mapping into
+  `corpus.targets` when you are ready to manage the hierarchy manually. 【F:docs/bootstrap.md†L129-L134】
+- **Reuse.** Keep the cache under version control or a shared working directory
+  so subsequent runs with the same `--state-dir` and `corpus.bootstrap.resume:
+  true` reuse review identifiers instead of hitting provider APIs again. Disable
+  the bootstrap block (`corpus.bootstrap.enabled: false`) to run enrichment
+  purely from the cached ontology, or re-enable it to refresh the snapshot on
+  demand. 【F:docs/bootstrap.md†L124-L137】【F:scripts/collect_theories.py†L1230-L1276】
 
 ### Пример запуска: bootstrap → сбор → анализ
 
