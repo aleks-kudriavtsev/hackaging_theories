@@ -17,6 +17,7 @@ from .outputs import (
     export_question_answers,
 )
 from .pipeline_utils import classify_and_extract_parallel
+from .filtering import RelevanceFilter, FilterDecision
 from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
 from .review_bootstrap import (
     BootstrapResult,
@@ -43,6 +44,8 @@ __all__ = [
     "QuestionExtractor",
     "QuestionAnswer",
     "classify_and_extract_parallel",
+    "RelevanceFilter",
+    "FilterDecision",
     "export_papers",
     "export_theories",
     "export_question_answers",

@@ -153,4 +153,9 @@ def test_collect_for_entry_enrichment(tmp_path: Path) -> None:
     assert statuses["digital aging seniors"] == "consumed"
     assert statuses["outdated technology"] == "pruned"
     assert "digital aging seniors" in retriever.last_queries
+    filtering_state = state.get("filtering")
+    assert filtering_state, "Filter decisions should be stored in state"
+    paper_state = filtering_state["p1"]
+    assert paper_state["accepted"] is True
+    assert paper_state["score"] >= 1.0
 
