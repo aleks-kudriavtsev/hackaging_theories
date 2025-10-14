@@ -422,12 +422,15 @@ class OpenAlexProvider(BaseProvider):
             "per-page": self.config.batch_size,
             "cursor": cursor or "*",
         }
-        headers: Dict[str, str] = {}
         if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
+            params["api_key"] = self.config.api_key
+        if self.config.extra:
+            mailto = self.config.extra.get("mailto")
+            if mailto:
+                params.setdefault("mailto", mailto)
         url = self.config.base_url or self.DEFAULT_URL
         self.rate_limiter.wait()
-        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response = self.session.get(url, params=params, timeout=self.config.timeout)
         response.raise_for_status()
         payload = response.json()
         papers: List[PaperMetadata] = []

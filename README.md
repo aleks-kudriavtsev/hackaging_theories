@@ -109,6 +109,8 @@ overridden via the collector flags shown in the last column.
 | SerpApi (Google Scholar bridge) | Subscribe at [https://serpapi.com/](https://serpapi.com/) for a private API key. | `api_keys.serpapi.env: SERPAPI_KEY`; provider `serpapi_scholar.api_key_key: serpapi`. 【F:config/pipeline.yaml†L7-L49】 | `--serpapi-key` |【F:scripts/collect_theories.py†L1099-L1103】
 | Semantic Scholar | Apply for a research API key through the Semantic Scholar portal. | `api_keys.semantic_scholar.env: SEMANTIC_SCHOLAR_KEY`; provider `semantic_scholar.api_key_key: semantic_scholar`. 【F:config/pipeline.yaml†L9-L57】 | `--semantic-scholar-key` |【F:scripts/collect_theories.py†L1103-L1107】
 
+OpenAlex tokens are appended to requests as an `api_key` query parameter (rather than a bearer header) alongside an optional `mailto` contact when configured. 【F:src/theories_pipeline/literature.py†L430-L436】
+
 #### Full-text resolvers and mirrors
 
 | Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
