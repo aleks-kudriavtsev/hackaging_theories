@@ -4,6 +4,7 @@ import json
 
 from theories_pipeline.literature import PaperMetadata
 from theories_pipeline.ontology import TheoryOntology
+from theories_pipeline.ontology_manager import OntologyManager
 from theories_pipeline.theories import TheoryAssignment, TheoryClassifier
 from theories_pipeline.llm import LLMResponse, LLMRateLimitError
 
@@ -139,3 +140,56 @@ def test_classifier_falls_back_to_keywords_on_rate_limit() -> None:
     )
     assignments = classifier.classify(paper)
     assert any(assignment.theory == "Activity Theory" for assignment in assignments)
+
+
+def test_ontology_preserves_dynamic_metadata() -> None:
+    config = {
+        "Quickstart Query": {
+            "target": None,
+            "metadata": {"source": "quickstart"},
+            "queries": ["aging review"],
+            "subtheories": {
+                "Activity Theory": {
+                    "bootstrap": {"citations": 150, "reviews": ["rev-1"]},
+                    "subtheories": {},
+                }
+            },
+        }
+    }
+    ontology = TheoryOntology.from_targets_config(config)
+    root_node = ontology.get("Quickstart Query")
+    assert root_node.metadata["source"] == "quickstart"
+    assert root_node.metadata["queries"] == ["aging review"]
+    activity = ontology.get("Activity Theory")
+    assert activity.parent == "Quickstart Query"
+    assert activity.metadata["bootstrap"]["citations"] == 150
+
+
+def test_classifier_handles_runtime_appended_nodes(tmp_path) -> None:
+    manager = OntologyManager({"Quickstart Query": {"metadata": {"source": "quickstart"}}}, storage_path=tmp_path / "ontology.json")
+    classifier = TheoryClassifier({"Quickstart Query": ["quickstart"]}, manager.ontology)
+    classifier.attach_manager(manager)
+
+    manager.append_node(
+        "Activity Theory",
+        parent="Quickstart Query",
+        config={"bootstrap": {"citations": 120}},
+        keywords=["activity"],
+        metadata={"source": "review_bootstrap"},
+    )
+
+    paper = PaperMetadata(
+        identifier="dyn-1",
+        title="Activity theory insights",
+        authors=["Author"],
+        abstract="Explores activity participation among older adults.",
+        source="Test",
+    )
+    assignments = classifier.classify(paper)
+    theories = {assignment.theory for assignment in assignments}
+    assert "Activity Theory" in theories
+    assert "Quickstart Query" in theories
+    assert classifier.keyword_map["Activity Theory"] == ["activity"]
+    runtime_node = classifier.ontology.get("Activity Theory")
+    assert runtime_node.metadata["bootstrap"]["citations"] == 120
+    assert runtime_node.metadata["source"] == "review_bootstrap"
