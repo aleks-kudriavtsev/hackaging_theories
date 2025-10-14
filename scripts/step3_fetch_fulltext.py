@@ -76,6 +76,11 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
         part.strip() for part in body.itertext() if part and part.strip()
     ]
     return " ".join(text_chunks) if text_chunks else None
+    text_chunks: List[str] = []
+    for elem in body.iter():
+        if elem.text and elem.text.strip():
+            text_chunks.append(elem.text.strip())
+    return "\n\n".join(text_chunks) if text_chunks else None
 
 
 def enrich_records(records: Iterable[Dict]) -> List[Dict]:
