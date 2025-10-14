@@ -45,7 +45,7 @@ corpus:
         providers: ["openalex"]
         min_citations: 30
         max_reviews: 5
-    providers: ["openalex", "crossref"]
+    providers: ["openalex", "pubmed"]
     min_citations: 20
     limit_per_query: 40
     max_per_query: 8
@@ -86,7 +86,7 @@ command. The example assumes you are starting from
 
    ```bash
    export OPENALEX_API_KEY="sk-your-openalex-key"
-   export CROSSREF_API_KEY="mailto:you@example.com"
+   export PUBMED_API_KEY="your-pubmed-key"
    export OPENAI_API_KEY="sk-your-openai-key"  # Only needed when GPT extraction is enabled
 
    python scripts/collect_theories.py "geroscience" \
@@ -94,11 +94,11 @@ command. The example assumes you are starting from
      --quickstart \
      --target-count 60 \
      --openalex-api-key "$OPENALEX_API_KEY" \
-     --crossref-api-key "$CROSSREF_API_KEY" \
+     --pubmed-api-key "$PUBMED_API_KEY" \
      --llm-api-key "$OPENAI_API_KEY"
    ```
 
-   The `--openalex-api-key`, `--crossref-api-key`, and `--llm-api-key` flags let
+   The `--openalex-api-key`, `--pubmed-api-key`, and `--llm-api-key` flags let
    you inject credentials without altering configuration files; omit any keys
    you exported as environment variables.
 
