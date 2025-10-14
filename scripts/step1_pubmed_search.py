@@ -115,15 +115,9 @@ def entrez_request(path: str, params: dict[str, str | int]) -> bytes:
     """Execute an HTTP GET against the NCBI E-utilities API."""
 
     api_key = os.environ.get("PUBMED_API_KEY")
-    tool = os.environ.get("PUBMED_TOOL")
-    email = os.environ.get("PUBMED_EMAIL")
     query = params.copy()
     if api_key:
         query.setdefault("api_key", api_key)
-    if tool:
-        query.setdefault("tool", tool)
-    if email:
-        query.setdefault("email", email)
     url = f"{EUTILS_BASE}/{path}?{urllib.parse.urlencode(query)}"
     with urllib.request.urlopen(url) as response:  # nosec: trusted host
         return response.read()
@@ -145,17 +139,6 @@ def esearch_ids(term: str, batch_size: int = 500) -> List[str]:
         }
         data = entrez_request("esearch.fcgi", payload)
         root = ET.fromstring(data)
-        # Surface any query issues flagged by the ESearch service.
-        errors = [
-            err.text.strip()
-            for err in root.findall(".//ErrorList/*")
-            if (err.text or "").strip()
-        ]
-        if errors:
-            raise ValueError(
-                "PubMed rejected the search term: " + "; ".join(errors)
-            )
-
         if total_count is None:
             total_count_text = root.findtext(".//Count")
             total_count = int(total_count_text or 0)
@@ -215,6 +198,8 @@ def main(argv: List[str] | None = None) -> int:
             "PubMed search query to execute (defaults to a Title/Abstract search for "
             "aging theories limited to review publication type)."
         ),
+        default='"Aging Theory" AND review[Publication Type]',
+        help="PubMed search query to execute (defaults to review articles on aging theory).",
     )
     parser.add_argument(
         "--output",
@@ -228,6 +213,7 @@ def main(argv: List[str] | None = None) -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
+    ids = esearch_ids(args.query)
     if not ids:
         print("No PubMed records found for query", file=sys.stderr)
         return 1
