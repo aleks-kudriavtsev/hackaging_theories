@@ -13,11 +13,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Mapping, MutableMapping
+from typing import Any, Dict, Iterable, Mapping, MutableMapping
 
 
 class MissingSecretError(RuntimeError):
     """Raised when a required secret cannot be resolved."""
+
+
+_PLACEHOLDER_API_KEYS: Mapping[str, Iterable[str]] = {
+    "openalex": ("sk-your-openalex-key",),
+    "pubmed": ("your-pubmed-key",),
+    "openai": ("sk-your-openai-key",),
+    "scihub_rapidapi": ("your-rapidapi-token",),
+    "annas_archive": ("your-rapidapi-token",),
+}
 
 
 def resolve_api_keys(
@@ -49,6 +58,37 @@ def resolve_api_keys(
     for name, descriptor in config.items():
         resolved[name] = _resolve_single_secret(name, descriptor, environment, root)
     return resolved
+
+
+def ensure_real_api_keys(values: Mapping[str, str | None]) -> Dict[str, str | None]:
+    """Ensure configured API keys are not left at documented placeholder values.
+
+    The README uses human-friendly placeholder strings (for example,
+    ``"your-pubmed-key"``) when demonstrating how to export credentials.  In
+    practice users must replace those values with their real secrets.  When the
+    placeholders leak into the runtime configuration the external services
+    reject our requests, which can be difficult to diagnose from the network
+    trace alone.  This helper validates the final configuration and raises a
+    :class:`MissingSecretError` with a descriptive message if any placeholder is
+    detected.
+    """
+
+    cleaned: Dict[str, str | None] = dict(values)
+    offenders: list[tuple[str, str]] = []
+    for name, raw_value in cleaned.items():
+        if not raw_value:
+            continue
+        normalized = raw_value.strip().lower()
+        placeholders = {value.lower() for value in _PLACEHOLDER_API_KEYS.get(name, ())}
+        if normalized in placeholders:
+            offenders.append((name, raw_value))
+    if offenders:
+        examples = ", ".join(f"{name}='{value}'" for name, value in offenders)
+        raise MissingSecretError(
+            "Placeholder API key detected. Replace the example value with your real "
+            f"credentials for: {examples}"
+        )
+    return cleaned
 
 
 def _resolve_single_secret(
@@ -106,5 +146,5 @@ def _resolve_single_secret(
     return None
 
 
-__all__ = ["MissingSecretError", "resolve_api_keys"]
+__all__ = ["MissingSecretError", "ensure_real_api_keys", "resolve_api_keys"]
 

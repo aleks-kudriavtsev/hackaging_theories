@@ -33,7 +33,11 @@ from theories_pipeline import (
     export_theories,
     RelevanceFilter,
 )
-from theories_pipeline.config_utils import MissingSecretError, resolve_api_keys
+from theories_pipeline.config_utils import (
+    MissingSecretError,
+    ensure_real_api_keys,
+    resolve_api_keys,
+)
 from theories_pipeline.llm import LLMClient, LLMClientConfig
 from theories_pipeline.ontology import OntologyNode
 from theories_pipeline.query_expansion import QueryExpander, QueryExpansionSettings
@@ -91,6 +95,7 @@ def _load_api_keys(
     base_path: Path | None,
 ) -> Dict[str, str | None]:
     resolved = resolve_api_keys(config_api_keys, base_path=base_path)
+    resolved = ensure_real_api_keys(resolved)
     overrides = {
         target_key: getattr(args, cli_attr)
         for cli_attr, target_key in _API_KEY_OVERRIDE_MAP.items()
@@ -98,6 +103,7 @@ def _load_api_keys(
     }
     if overrides:
         resolved = {**resolved, **overrides}
+        resolved = ensure_real_api_keys(resolved)
     return resolved
 
 
