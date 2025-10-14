@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from theories_pipeline.literature import LiteratureRetriever, PaperMetadata, ProviderPage
+import theories_pipeline.literature as literature
+from theories_pipeline.literature import (
+    BaseProvider,
+    LiteratureRetriever,
+    PaperMetadata,
+    ProviderPage,
+    ProviderConfig,
+)
 
 
 class _StaticProvider:
@@ -184,3 +191,55 @@ def test_collect_queries_deduplicates_no_doi_records(
     ]
     assert len(repeat_titles) == 1
     assert repeat_result.newly_added == 0
+
+
+def test_resolve_full_text_extracts_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("pdfminer.high_level")
+
+    pdf_bytes = (Path("tests/fixtures/hello.pdf")).read_bytes()
+
+    class _Response:
+        headers = {"content-type": "application/pdf"}
+
+        def raise_for_status(self) -> None:  # pragma: no cover - always succeeds
+            return None
+
+        @property
+        def content(self) -> bytes:
+            return pdf_bytes
+
+    class _Session:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, url: str, headers: dict[str, str], timeout: float | None) -> _Response:
+            self.calls += 1
+            return _Response()
+
+    cache_dir = tmp_path / "cache"
+    session = _Session()
+
+    class _RequestsStub:
+        def Session(self) -> _Session:
+            return session
+
+    monkeypatch.setattr(literature, "requests", _RequestsStub())
+    config = ProviderConfig(name="test", type="static", extra={"fulltext_cache_dir": str(cache_dir)})
+    provider = BaseProvider(config)
+    provider.session = session  # type: ignore[assignment]
+
+    url = "https://example.test/paper.pdf"
+    text = provider._resolve_full_text("paper-1", None, [url])
+    assert "Hello from PDF fixture" in text
+    assert "Second line of text" in text
+    cache_file = provider._fulltext_cache_path("paper-1", None)
+    assert cache_file.exists()
+    cached_text = cache_file.read_text(encoding="utf-8")
+    assert cached_text == text
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("cache should satisfy second call")
+
+    provider.session.get = _fail  # type: ignore[assignment]
+    cached_again = provider._resolve_full_text("paper-1", None, [url])
+    assert cached_again == text

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import logging
 import re
@@ -35,6 +36,11 @@ try:  # pragma: no cover - optional dependency
     from scihub import SciHub as _SciHubClient  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     _SciHubClient = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from pdfminer.high_level import extract_text as _pdf_extract_text
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _pdf_extract_text = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +326,7 @@ class BaseProvider:
         except OSError as exc:  # pragma: no cover - filesystem edge case
             logger.debug("Failed to write cached full text for %s: %s", identifier, exc)
 
-    def _download_text(self, url: str) -> str:
+    def _download_text(self, url: str) -> tuple[str, bytes | None]:
         headers = {
             "Accept": "text/plain, text/html;q=0.9, application/json;q=0.1",
             "User-Agent": "hackaging-theories-pipeline/1.0",
@@ -331,12 +337,16 @@ class BaseProvider:
             response.raise_for_status()
         except requests.RequestException as exc:  # pragma: no cover - network failure
             logger.debug("Failed to download full text from %s: %s", url, exc)
-            return ""
+            return "", None
 
         content_type = (response.headers.get("content-type") or "").lower()
         if "pdf" in content_type or url.lower().endswith(".pdf"):
-            logger.debug("Skipping binary full text from %s (content-type=%s)", url, content_type)
-            return ""
+            try:
+                data = response.content
+            except OSError as exc:  # pragma: no cover - requests edge case
+                logger.debug("Failed to read PDF content from %s: %s", url, exc)
+                return "", None
+            return "", data
 
         if "json" in content_type:
             try:
@@ -344,14 +354,35 @@ class BaseProvider:
             except ValueError:
                 payload = None
             if payload is None:
-                return ""
+                return "", None
             text = json.dumps(payload, ensure_ascii=False, indent=2)
         else:
             try:
                 text = response.text
             except UnicodeDecodeError:
                 logger.debug("Failed to decode text response from %s", url)
-                return ""
+                return "", None
+
+        normalized = _normalize_full_text(text)
+        if len(normalized) > 500_000:
+            normalized = normalized[:500_000]
+        return normalized, None
+
+    def _extract_pdf_text(self, data: bytes, source: str) -> str:
+        if not data:
+            return ""
+        if _pdf_extract_text is None:
+            logger.debug(
+                "Skipping PDF text extraction for %s because pdfminer.six is not installed",
+                source,
+            )
+            return ""
+        try:
+            with io.BytesIO(data) as buffer:
+                text = _pdf_extract_text(buffer)
+        except Exception as exc:  # pragma: no cover - pdf parsing edge case
+            logger.debug("Failed to extract text from PDF %s: %s", source, exc)
+            return ""
 
         normalized = _normalize_full_text(text)
         if len(normalized) > 500_000:
@@ -367,10 +398,15 @@ class BaseProvider:
         for url in candidates:
             if not url:
                 continue
-            text = self._download_text(url)
+            text, pdf_payload = self._download_text(url)
             if text:
                 self._write_full_text_cache(identifier, doi, text)
                 return text
+            if pdf_payload:
+                pdf_text = self._extract_pdf_text(pdf_payload, url)
+                if pdf_text:
+                    self._write_full_text_cache(identifier, doi, pdf_text)
+                    return pdf_text
         return ""
 
 
