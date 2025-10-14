@@ -64,6 +64,9 @@ _API_KEY_OVERRIDE_MAP = {
     "openalex_api_key": "openalex",
     "crossref_api_key": "crossref_contact",
     "pubmed_api_key": "pubmed",
+    "scihub_email": "scihub_email",
+    "scihub_rapidapi_key": "scihub_rapidapi",
+    "annas_archive_api_key": "annas_archive",
 }
 
 
@@ -112,6 +115,13 @@ def build_provider_configs(
         for key in ("categories", "date_window", "window_days", "server"):
             if key in item and key not in extra_cfg:
                 extra_cfg[key] = item[key]
+        for extra_key, target_key in list(extra_cfg.items()):
+            if extra_key.endswith("_key") and isinstance(target_key, str):
+                resolved_value = api_keys.get(target_key)
+                plain_key = extra_key[:-4]
+                if plain_key:
+                    extra_cfg.setdefault(plain_key, resolved_value)
+                del extra_cfg[extra_key]
         configs.append(
             ProviderConfig(
                 name=name,
@@ -832,6 +842,18 @@ def main() -> None:
     parser.add_argument(
         "--pubmed-api-key",
         help=precedence_note.format(name="PubMed"),
+    )
+    parser.add_argument(
+        "--scihub-email",
+        help=precedence_note.format(name="Sci-Hub email"),
+    )
+    parser.add_argument(
+        "--scihub-rapidapi-key",
+        help=precedence_note.format(name="Sci-Hub RapidAPI"),
+    )
+    parser.add_argument(
+        "--annas-archive-api-key",
+        help=precedence_note.format(name="Anna's Archive"),
     )
     parser.add_argument(
         "--no-resume",

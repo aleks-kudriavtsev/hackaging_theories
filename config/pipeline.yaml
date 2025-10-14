@@ -8,6 +8,12 @@ api_keys:
     env: PUBMED_API_KEY
   openai:
     env: OPENAI_API_KEY
+  scihub_email:
+    env: SCIHUB_EMAIL
+  scihub_rapidapi:
+    env: SCIHUB_RAPIDAPI_KEY
+  annas_archive:
+    env: ANNAS_ARCHIVE_API_KEY
 
 data_sources:
   seed_papers: data/examples/seed_papers.json
@@ -36,6 +42,37 @@ providers:
     api_key_key: pubmed
     batch_size: 200
     rate_limit_per_sec: 3
+  - name: scihub
+    type: scihub
+    enabled: false
+    api_key_key: scihub_rapidapi
+    base_url: https://sci-hub2.p.rapidapi.com/search
+    batch_size: 20
+    rate_limit_per_sec: 1
+    extra:
+      mode: rapidapi
+      rapidapi_host: sci-hub2.p.rapidapi.com
+      email_key: scihub_email
+      params:
+        type: doi
+      fulltext_keys:
+        - fullTextUrl
+        - url
+        - pdfUrl
+  - name: annas_archive
+    type: annas_archive
+    enabled: false
+    api_key_key: annas_archive
+    base_url: https://annas-archive-api.p.rapidapi.com/search
+    batch_size: 25
+    rate_limit_per_sec: 1
+    extra:
+      rapidapi_host: annas-archive-api.p.rapidapi.com
+      link_keys:
+        - mirrors
+        - files
+      params:
+        category: scimag
   - name: biorxiv
     type: biorxiv
     enabled: false  # Enable once you have confirmed <=1 req/sec with your deployment

@@ -79,12 +79,15 @@ secrets out of version control:
 - `CROSSREF_API_KEY`
 - `PUBMED_API_KEY`
 - `OPENAI_API_KEY`
+- `SCIHUB_EMAIL` (used when delegating lookups to the optional `scihub.py` client)
+- `SCIHUB_RAPIDAPI_KEY`
+- `ANNAS_ARCHIVE_API_KEY`
 
 Each key supports fallbacks (defaults or file references) if you need a more
 specialised workflow. See `src/theories_pipeline/config_utils.py` for the
 supported descriptors and `config/pipeline.yaml` for annotated examples.
 
-### Preprint providers and rate limits
+### Preprint providers, rate limits, and full-text mirrors
 
 The pipeline ships with optional bioRxiv and medRxiv providers that fetch
 preprint metadata via the public JSON endpoints. These sources are disabled by
@@ -93,6 +96,15 @@ conservative rate limit (≤ 1 request/second is recommended by the operators)
 and a manageable date window. Category filters can further narrow the feed so
 the retriever only inspects relevant domains. Refer to the inline comments in
 `config/pipeline.yaml` for example settings.
+
+Two additional providers help resolve full texts when primary APIs only supply
+metadata. The Sci-Hub integration works with either RapidAPI or the community
+`scihub.py` client—configure the relevant credentials via
+`SCIHUB_RAPIDAPI_KEY`/`SCIHUB_EMAIL` and tune request headers by editing the
+`providers[].extra` section. Anna's Archive is exposed through RapidAPI and
+accepts custom link keys for grabbing mirror URLs. Both providers respect the
+shared full-text cache under `data/cache/fulltext` and should be rate limited
+to avoid overwhelming upstream mirrors.
 
 ## Running the pipelines
 

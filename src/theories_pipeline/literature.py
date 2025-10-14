@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -28,6 +29,11 @@ try:  # pragma: no cover - optional dependency
     import requests
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     requests = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from scihub import SciHub as _SciHubClient  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _SciHubClient = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +659,324 @@ class PubMedProvider(BaseProvider):
         return ProviderPage(papers=papers, next_cursor=next_cursor, exhausted=exhausted)
 
 
+class SciHubProvider(BaseProvider):
+    """Provider for retrieving full-text access metadata from Sci-Hub services."""
+
+    DEFAULT_BASE_URL = "https://sci-hub2.p.rapidapi.com/search"
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        extra = config.extra or {}
+        self.mode = str(extra.get("mode") or "rapidapi").lower()
+        self.rapidapi_host = extra.get("rapidapi_host")
+        self.query_param = str(extra.get("query_param", "query"))
+        self.cursor_param = str(extra.get("cursor_param", "cursor"))
+        self.limit_param = str(extra.get("limit_param", "limit"))
+        self.result_key = str(extra.get("result_key", "result"))
+        self.cursor_key = str(extra.get("cursor_key", "next"))
+        self.id_prefix = str(extra.get("id_prefix", "scihub"))
+        params = extra.get("params")
+        self.additional_params = dict(params) if isinstance(params, Mapping) else {}
+        fulltext_keys = extra.get("fulltext_keys") or (
+            "fullTextUrl",
+            "fulltext",
+            "pdfUrl",
+            "pdf",
+            "url",
+        )
+        if isinstance(fulltext_keys, (str, bytes)):
+            fulltext_keys = [fulltext_keys]
+        self.fulltext_keys = tuple(str(key) for key in fulltext_keys if str(key).strip())
+        self.library_domain = extra.get("domain")
+        self.library_email = extra.get("email") or config.api_key
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        if self.mode == "rapidapi":
+            return self._fetch_via_rapidapi(query, cursor)
+        return self._fetch_via_library(query, cursor)
+
+    def _fetch_via_rapidapi(self, query: str, cursor: str | None) -> ProviderPage:
+        url = self.config.base_url or self.DEFAULT_BASE_URL
+        headers: Dict[str, str] = {
+            "Accept": "application/json",
+            "User-Agent": "hackaging-theories-pipeline/1.0",
+        }
+        if self.config.api_key:
+            headers["X-RapidAPI-Key"] = self.config.api_key
+        if self.rapidapi_host:
+            headers["X-RapidAPI-Host"] = str(self.rapidapi_host)
+        params: Dict[str, Any] = {self.query_param: query, self.limit_param: self.config.batch_size}
+        params.update(self.additional_params)
+        if cursor:
+            params[self.cursor_param] = cursor
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        records = payload.get(self.result_key) or []
+        papers: List[PaperMetadata] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            metadata = self._record_from_mapping(record)
+            if metadata:
+                papers.append(metadata)
+        next_cursor = payload.get(self.cursor_key)
+        if isinstance(next_cursor, Mapping):  # pragma: no cover - defensive
+            next_cursor = next_cursor.get("cursor")
+        next_value = str(next_cursor) if next_cursor else None
+        exhausted = not next_value
+        return ProviderPage(papers=papers, next_cursor=next_value, exhausted=exhausted)
+
+    def _fetch_via_library(self, query: str, cursor: str | None) -> ProviderPage:  # pragma: no cover - optional dependency
+        if _SciHubClient is None:
+            raise RuntimeError("The 'scihub' package is required for library mode")
+        if cursor:
+            raise ValueError("SciHub library mode does not support cursor-based pagination")
+        client = _SciHubClient()
+        if self.library_email and hasattr(client, "email"):
+            try:
+                setattr(client, "email", str(self.library_email))
+            except Exception:
+                logger.debug("Unable to set Sci-Hub client email override")
+        if self.library_domain and hasattr(client, "base_url"):
+            try:
+                setattr(client, "base_url", str(self.library_domain))
+            except Exception:
+                logger.debug("Unable to set Sci-Hub client domain override")
+        self.rate_limiter.wait()
+        try:
+            results = client.search(query)
+        except Exception as exc:
+            raise RuntimeError(f"Sci-Hub library search failed: {exc}") from exc
+        papers: List[PaperMetadata] = []
+        for record in results or []:
+            if not isinstance(record, Mapping):
+                continue
+            metadata = self._record_from_mapping(record)
+            if metadata:
+                papers.append(metadata)
+        return ProviderPage(papers=papers, next_cursor=None, exhausted=True)
+
+    def _record_from_mapping(self, record: Mapping[str, Any]) -> PaperMetadata | None:
+        title = str(record.get("title") or "").strip()
+        abstract = str(record.get("abstract") or record.get("description") or "")
+        doi = str(record.get("doi") or "").strip() or None
+        identifier = str(
+            record.get("identifier")
+            or record.get("id")
+            or record.get("url")
+            or (f"{self.id_prefix}:{doi}" if doi else "")
+        ).strip()
+        if not identifier:
+            digest_source = f"{title}|{doi}|{record.get('year', '')}"
+            identifier = f"{self.id_prefix}:{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()}"
+        authors_raw = record.get("authors") or record.get("author")
+        authors = self._parse_authors(authors_raw)
+        year = self._parse_year(record.get("year") or record.get("publication_year"))
+        candidates: List[str] = []
+        for key in self.fulltext_keys:
+            value = record.get(key)
+            candidates.extend(self._extract_urls(value))
+        if doi:
+            doi_url = f"https://doi.org/{doi}"
+            if doi_url not in candidates:
+                candidates.append(doi_url)
+        full_text = self._resolve_full_text(identifier, doi, candidates)
+        return PaperMetadata(
+            identifier=identifier,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            source="scihub",
+            year=year,
+            doi=doi,
+            full_text=full_text,
+            citation_count=None,
+            is_review=None,
+            influential_citations=(),
+        )
+
+    def _parse_authors(self, value: Any) -> Tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, (list, tuple)):
+            return tuple(str(item).strip() for item in value if str(item).strip())
+        text = str(value)
+        if ";" in text:
+            parts = text.split(";")
+        elif "|" in text:
+            parts = text.split("|")
+        else:
+            parts = text.split(",")
+        return tuple(part.strip() for part in parts if part.strip())
+
+    def _parse_year(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(str(value).strip()[:4])
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_urls(self, value: Any) -> List[str]:
+        urls: List[str] = []
+        if not value:
+            return urls
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                urls.extend(self._extract_urls(item))
+            return urls
+        if isinstance(value, Mapping):
+            for key in ("url", "href", "link"):
+                if key in value:
+                    urls.extend(self._extract_urls(value[key]))
+            return urls
+        url = str(value).strip()
+        if url:
+            urls.append(url)
+        return urls
+
+
+class AnnasArchiveProvider(BaseProvider):
+    """Provider that queries Anna's Archive mirrors for open-access full texts."""
+
+    DEFAULT_BASE_URL = "https://annas-archive-api.p.rapidapi.com/search"
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        extra = config.extra or {}
+        self.rapidapi_host = extra.get("rapidapi_host")
+        self.query_param = str(extra.get("query_param", "q"))
+        self.cursor_param = str(extra.get("cursor_param", "cursor"))
+        self.limit_param = str(extra.get("limit_param", "limit"))
+        self.result_key = str(extra.get("result_key", "results"))
+        self.cursor_key = str(extra.get("cursor_key", "cursor"))
+        params = extra.get("params")
+        self.additional_params = dict(params) if isinstance(params, Mapping) else {}
+        link_keys = extra.get("link_keys") or ("mirrors", "files", "urls")
+        if isinstance(link_keys, (str, bytes)):
+            link_keys = [link_keys]
+        self.link_keys = tuple(str(key) for key in link_keys if str(key).strip())
+        self.id_prefix = str(extra.get("id_prefix", "annas"))
+
+    def fetch_page(self, query: str, cursor: str | None = None) -> ProviderPage:
+        url = self.config.base_url or self.DEFAULT_BASE_URL
+        headers: Dict[str, str] = {
+            "Accept": "application/json",
+            "User-Agent": "hackaging-theories-pipeline/1.0",
+        }
+        if self.config.api_key:
+            headers["X-RapidAPI-Key"] = self.config.api_key
+        if self.rapidapi_host:
+            headers["X-RapidAPI-Host"] = str(self.rapidapi_host)
+        params: Dict[str, Any] = {self.query_param: query, self.limit_param: self.config.batch_size}
+        params.update(self.additional_params)
+        if cursor:
+            params[self.cursor_param] = cursor
+        self.rate_limiter.wait()
+        response = self.session.get(url, params=params, headers=headers, timeout=self.config.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        records = payload.get(self.result_key) or []
+        papers: List[PaperMetadata] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            metadata = self._record_from_mapping(record)
+            if metadata:
+                papers.append(metadata)
+        next_cursor = payload.get(self.cursor_key)
+        next_value = str(next_cursor) if next_cursor else None
+        exhausted = not next_value
+        return ProviderPage(papers=papers, next_cursor=next_value, exhausted=exhausted)
+
+    def _record_from_mapping(self, record: Mapping[str, Any]) -> PaperMetadata | None:
+        title = str(record.get("title") or "").strip()
+        abstract = str(record.get("description") or record.get("abstract") or "")
+        identifiers = record.get("identifiers") if isinstance(record.get("identifiers"), Mapping) else {}
+        doi = str(
+            record.get("doi")
+            or (identifiers or {}).get("doi")
+            or (identifiers or {}).get("doi_plain")
+            or ""
+        ).strip() or None
+        identifier = str(
+            record.get("md5")
+            or record.get("id")
+            or (identifiers or {}).get("md5")
+            or (identifiers or {}).get("isbn")
+            or ""
+        ).strip()
+        if not identifier:
+            digest_source = f"{title}|{doi}|{record.get('year', '')}"
+            identifier = f"{self.id_prefix}:{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()}"
+        authors = self._parse_authors(record.get("authors") or record.get("author"))
+        year = self._parse_year(record.get("year"))
+        candidates: List[str] = []
+        for key in self.link_keys:
+            value = record.get(key)
+            candidates.extend(self._extract_urls(value))
+        if doi:
+            doi_url = f"https://doi.org/{doi}"
+            if doi_url not in candidates:
+                candidates.append(doi_url)
+        full_text = self._resolve_full_text(identifier, doi, candidates)
+        return PaperMetadata(
+            identifier=identifier,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            source="annas_archive",
+            year=year,
+            doi=doi,
+            full_text=full_text,
+            citation_count=None,
+            is_review=None,
+            influential_citations=(),
+        )
+
+    def _parse_authors(self, value: Any) -> Tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, (list, tuple)):
+            return tuple(str(item).strip() for item in value if str(item).strip())
+        text = str(value)
+        if ";" in text:
+            parts = text.split(";")
+        elif "|" in text:
+            parts = text.split("|")
+        else:
+            parts = text.split(",")
+        return tuple(part.strip() for part in parts if part.strip())
+
+    def _parse_year(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(str(value).strip()[:4])
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_urls(self, value: Any) -> List[str]:
+        urls: List[str] = []
+        if not value:
+            return urls
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                urls.extend(self._extract_urls(item))
+            return urls
+        if isinstance(value, Mapping):
+            for key in ("url", "href", "mirror", "link"):
+                if key in value:
+                    urls.extend(self._extract_urls(value[key]))
+            return urls
+        url = str(value).strip()
+        if url:
+            urls.append(url)
+        return urls
+
+
 class _RxivProvider(BaseProvider):
     """Shared implementation for the bioRxiv and medRxiv JSON APIs."""
 
@@ -811,6 +1135,8 @@ PROVIDER_REGISTRY: Dict[str, type[BaseProvider]] = {
     "openalex": OpenAlexProvider,
     "crossref": CrossRefProvider,
     "pubmed": PubMedProvider,
+    "scihub": SciHubProvider,
+    "annas_archive": AnnasArchiveProvider,
     "biorxiv": BioRxivProvider,
     "medrxiv": MedRxivProvider,
 }
