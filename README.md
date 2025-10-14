@@ -155,17 +155,22 @@ to avoid overwhelming upstream mirrors.
 
 1. **Set provider credentials.** Export environment variables (or prepare to
    supply the CLI overrides) for every API you intend to call during the
-   bootstrap run:
+   bootstrap run. The quickstart workflow depends on PubMed search to find
+   review articles, so make sure those credentials are available before
+   running:
    - `OPENALEX_API_KEY` / `--openalex-api-key`
-   - `CROSSREF_API_KEY` / `--crossref-api-key`
    - `PUBMED_API_KEY` / `--pubmed-api-key`
    - `SERPAPI_KEY` / `--serpapi-key`
    - `SEMANTIC_SCHOLAR_KEY` / `--semantic-scholar-key`
    - `SCIHUB_EMAIL` / `--scihub-email`
    - `SCIHUB_RAPIDAPI_KEY` / `--scihub-rapidapi-key`
    - `ANNAS_ARCHIVE_API_KEY` / `--annas-archive-api-key`
-   - `OPENAI_API_KEY` / `--llm-api-key` (plus `--llm-model` when you opt into GPT
-     classification)
+    - `OPENAI_API_KEY` / `--llm-api-key` (plus `--llm-model` when you opt into GPT
+      classification)
+
+Crossref remains supported as an optional metadata source—pass
+`--providers crossref` (and the related contact email) if you need it for your
+run.
 2. **Run the bootstrapper and enrichment pipeline.** The command below assumes
    the default configuration file already contains a `corpus.bootstrap` block
    and writes the ontology snapshot to
@@ -173,7 +178,7 @@ to avoid overwhelming upstream mirrors.
 
    ```bash
    export OPENALEX_API_KEY="sk-your-openalex-key"
-   export CROSSREF_API_KEY="mailto:you@example.com"
+   export PUBMED_API_KEY="your-pubmed-key"
    export OPENAI_API_KEY="sk-your-openai-key"
 
    python scripts/collect_theories.py "geroscience" \
@@ -181,28 +186,31 @@ to avoid overwhelming upstream mirrors.
      --quickstart \
      --target-count 60 \
      --openalex-api-key "$OPENALEX_API_KEY" \
-     --crossref-api-key "$CROSSREF_API_KEY" \
+     --pubmed-api-key "$PUBMED_API_KEY" \
      --llm-api-key "$OPENAI_API_KEY"
    ```
 
    Add the other overrides from the list above whenever you enable the
-   associated providers in your configuration. 【F:docs/bootstrap.md†L78-L114】
+   associated providers in your configuration. Include `--providers crossref`
+   (and the relevant contact email) only when you need Crossref metadata for a
+   given run. 【F:docs/bootstrap.md†L78-L114】
 
 ### Quickstart without a seed ontology
 
 You can explore the pipeline without curating an ontology file up front. Export
 any required provider credentials (or pass them inline with the CLI overrides)
-and invoke the collector in quickstart mode:
+and invoke the collector in quickstart mode. As above, PubMed powers the
+default review discovery:
 
 ```bash
 export OPENALEX_API_KEY="sk-your-openalex-key"
-export CROSSREF_API_KEY="mailto:you@example.com"
+export PUBMED_API_KEY="your-pubmed-key"
 
 python scripts/collect_theories.py "Aging Theory" \
   --quickstart \
   --target-count 75 \
   --openalex-api-key "$OPENALEX_API_KEY" \
-  --crossref-api-key "$CROSSREF_API_KEY"
+  --pubmed-api-key "$PUBMED_API_KEY"
 ```
 
 This command renders an ad-hoc ontology node named after the query, writes the
@@ -218,7 +226,8 @@ saved ontology JSON into `corpus.targets` in your configuration when you are
 ready to graduate to a managed ontology; see
 [`config/pipeline.yaml`](config/pipeline.yaml) for the fully managed layout and
 [`docs/bootstrap.md`](docs/bootstrap.md) / [`docs/query_expansion.md`](docs/query_expansion.md)
-for advanced enrichment strategies.
+for advanced enrichment strategies. Add Crossref to the provider list only when
+you require its metadata for follow-up runs.
 
 ### Quickstart: автоматическая генерация онтологии
 
@@ -227,17 +236,18 @@ attach them to a transient ontology node generated from your CLI query.
 
 1. **Подготовьте переменные окружения и флаги.** Укажите ключи для всех задействованных
    провайдеров через переменные окружения или одноимённые CLI-флаги (`--openalex-api-key`,
-   `--crossref-api-key`, `--pubmed-api-key`, `--scihub-rapidapi-key`, `--scihub-email`,
-   `--annas-archive-api-key`). Эти ключи сопоставляются с записями в блоке `api_keys`
-   конфигурации, поэтому подходят как токены RapidAPI, так и контактный адрес для
-   Crossref (формат `mailto:you@example.com`). Укажите также `OPENAI_API_KEY` и модель
-   через `--llm-model`, если хотите задействовать GPT для классификации и извлечения.
+   `--pubmed-api-key`, `--scihub-rapidapi-key`, `--scihub-email`, `--annas-archive-api-key`).
+   Быстрый старт использует PubMed для поиска обзорных статей, поэтому убедитесь, что
+   ключ `PUBMED_API_KEY` доступен. Эти ключи сопоставляются с записями в блоке `api_keys`
+   конфигурации. Укажите также `OPENAI_API_KEY` и модель через `--llm-model`, если хотите
+   задействовать GPT для классификации и извлечения.
    【F:config/pipeline.yaml†L1-L83】【F:scripts/collect_theories.py†L786-L871】【F:scripts/collect_theories.py†L904-L951】
 2. **Включите нужные провайдеры.** Запрос можно ограничить конкретными источниками при
-   помощи `--providers openalex crossref scihub annas_archive`, либо оставить список по
+   помощи `--providers openalex pubmed scihub annas_archive`, либо оставить список по
    умолчанию из конфигурации. Полнотекстовые зеркала (Sci-Hub, Anna’s Archive) и PubMed
    отключены по умолчанию; активируйте их в `config/pipeline.yaml` или через CLI, чтобы
-   bootstrap получил доступ к PDF и обзорам. 【F:config/pipeline.yaml†L19-L84】【F:scripts/collect_theories.py†L829-L833】【F:src/theories_pipeline/literature.py†L660-L1030】
+   bootstrap получил доступ к PDF и обзорам. Crossref можно подключить дополнительно,
+   если вам нужна эта метадата. 【F:config/pipeline.yaml†L19-L84】【F:scripts/collect_theories.py†L829-L833】【F:src/theories_pipeline/literature.py†L660-L1030】
 3. **Запустите bootstrap + сбор.** Быстрый старт генерирует временной узел онтологии,
    выполняет bootstrap-поиск обзоров, извлекает из них теории при помощи LLM (с падением
    обратно на детерминированные эвристики, если модель недоступна), а затем переходит к
@@ -246,7 +256,7 @@ attach them to a transient ontology node generated from your CLI query.
 
    ```bash
    export OPENALEX_API_KEY="sk-your-openalex-key"
-   export CROSSREF_API_KEY="mailto:you@example.com"
+   export PUBMED_API_KEY="your-pubmed-key"
    export OPENAI_API_KEY="sk-your-openai-key"
    export SCIHUB_RAPIDAPI_KEY="your-rapidapi-token"
    export ANNAS_ARCHIVE_API_KEY="your-rapidapi-token"
@@ -255,7 +265,7 @@ attach them to a transient ontology node generated from your CLI query.
      --config config/pipeline.yaml \
      --quickstart \
      --target-count 60 \
-     --providers openalex crossref scihub annas_archive \
+     --providers openalex pubmed scihub annas_archive \
      --llm-model gpt-4o-mini \
      --llm-api-key "$OPENAI_API_KEY"
    ```
@@ -286,7 +296,7 @@ attach them to a transient ontology node generated from your CLI query.
 python scripts/collect_theories.py "geroscience" --config config/pipeline.yaml --quickstart --target-count 60
 
 # 2. Повторный сбор по обновлённой онтологии (можно включить дополнительные провайдеры)
-python scripts/collect_theories.py "activity engagement" --config config/pipeline.yaml --providers openalex crossref pubmed
+python scripts/collect_theories.py "activity engagement" --config config/pipeline.yaml --providers openalex pubmed
 
 # 3. Аналитика и обновление сводных отчётов
 python scripts/analyze_papers.py --config config/pipeline.yaml
