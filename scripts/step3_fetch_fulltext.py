@@ -1,9 +1,11 @@
-"""Retrieve full texts for filtered PubMed reviews when available.
+"""Retrieve full texts for filtered reviews when available.
 
 For each review retained after the OpenAI filtering stage the script attempts to
-download an open-access full text from PubMed Central (PMC). If the article does
-not have a PMC entry, the script preserves the record but sets ``full_text`` to
-``null`` so downstream consumers can decide how to handle missing content.
+download an open-access full text from PubMed Central (PMC). When PMC content is
+unavailable the script inspects OpenAlex metadata for hosted PDFs and downloads
+them, extracting plain text via ``pdfminer.six`` (digital PDFs) or OCR using
+``pdf2image`` + ``pytesseract`` for scanned documents. Fallback attempts and
+failures are captured in a companion log for easier troubleshooting.
 
 Environment variables
 ---------------------
@@ -21,16 +23,18 @@ python scripts/step3_fetch_fulltext.py \
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import logging
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import re
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -127,14 +131,156 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     return normalized or None
 
 
-def enrich_records(records: Iterable[Dict]) -> List[Dict]:
+try:  # pragma: no cover - optional dependency
+    from pdfminer.high_level import extract_text as _pdf_extract_text
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _pdf_extract_text = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from pdf2image import convert_from_bytes as _convert_from_bytes
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _convert_from_bytes = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    import pytesseract as _pytesseract
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _pytesseract = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_text(text: str) -> str:
+    normalized = re.sub(r"[ \t\r\f\v]+", " ", text)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r" ?\n", "\n", normalized)
+    return normalized.strip()
+
+
+def _find_openalex_pdf_url(record: Dict) -> Optional[str]:
+    links = record.get("fulltext_links")
+    candidates: List[str] = []
+    if isinstance(links, dict):
+        for key in ("pdf", "oa_url", "landing_page"):
+            value = links.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+    open_access = record.get("open_access")
+    if isinstance(open_access, dict):
+        for key in ("oa_url", "pdf_url"):
+            value = open_access.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+    if isinstance(record.get("open_access_pdf"), str):
+        candidates.append(record["open_access_pdf"].strip())
+
+    for url in candidates:
+        if url.lower().endswith(".pdf"):
+            return url
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "hackaging-theories-fulltext/1.0",
+            "Accept": "application/pdf, */*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec - trusted endpoint
+            return response.read()
+    except urllib.error.URLError as exc:  # pragma: no cover - network failure
+        logger.debug("Failed to download %s: %s", url, exc)
+        return None
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> Tuple[Optional[str], Dict[str, Optional[str]]]:
+    if not pdf_bytes:
+        return None, {
+            "digital_status": "empty_payload",
+            "ocr_status": "not_attempted",
+            "failure_reason": "empty_payload",
+            "method": None,
+        }
+
+    metadata: Dict[str, Optional[str]] = {
+        "digital_status": None,
+        "ocr_status": "not_attempted",
+        "failure_reason": None,
+        "method": None,
+    }
+
+    if _pdf_extract_text is not None:
+        try:
+            with io.BytesIO(pdf_bytes) as buffer:
+                text = _pdf_extract_text(buffer)
+        except Exception as exc:  # pragma: no cover - pdf parsing edge case
+            metadata["digital_status"] = "error"
+            metadata["failure_reason"] = "pdfminer_error"
+            logger.debug("pdfminer failed: %s", exc)
+        else:
+            normalized = _normalize_text(text)
+            if normalized:
+                metadata["digital_status"] = "success"
+                metadata["ocr_status"] = "not_required"
+                metadata["method"] = "pdfminer"
+                return normalized, metadata
+            metadata["digital_status"] = "empty"
+    else:
+        metadata["digital_status"] = "unavailable"
+        logger.debug("pdfminer.six is not installed; skipping native PDF extraction")
+
+    if _convert_from_bytes is None or _pytesseract is None:
+        metadata["ocr_status"] = "missing_dependency"
+        metadata["failure_reason"] = "ocr_missing_dependency"
+        return None, metadata
+
+    metadata["ocr_status"] = "performed"
+    try:
+        images = _convert_from_bytes(pdf_bytes)
+    except Exception as exc:  # pragma: no cover - pdf rendering edge case
+        logger.debug("pdf2image conversion failed: %s", exc)
+        metadata["ocr_status"] = "performed_failed"
+        metadata["failure_reason"] = "ocr_conversion_failed"
+        return None, metadata
+
+    text_chunks: List[str] = []
+    for image in images:
+        try:
+            extracted = _pytesseract.image_to_string(image)
+        except Exception as exc:  # pragma: no cover - ocr edge case
+            logger.debug("pytesseract failed: %s", exc)
+            continue
+        if extracted:
+            text_chunks.append(extracted)
+    combined = _normalize_text("\n".join(text_chunks))
+    if combined:
+        metadata["ocr_status"] = "performed_success"
+        metadata["method"] = "ocr"
+        return combined, metadata
+
+    metadata["ocr_status"] = "performed_no_text"
+    metadata["failure_reason"] = "ocr_no_text"
+    return None, metadata
+
+
+def enrich_records(records: Iterable[Dict]) -> Tuple[List[Dict], List[Dict]]:
     records_list = list(records)
     total = len(records_list)
     enriched: List[Dict] = []
+    failures: List[Dict] = []
     for idx, record in enumerate(records_list, start=1):
         pmid = record.get("pmid")
         full_text = None
         pmcid = None
+        ocr_status = "not_applicable"
+        full_text_source = None
+        openalex_pdf_url = None
+        record.pop("pdf_processing", None)
         if pmid:
             article_xml = fetch_pubmed_xml(pmid)
             if article_xml is not None:
@@ -142,21 +288,91 @@ def enrich_records(records: Iterable[Dict]) -> List[Dict]:
                 record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
         if pmcid:
             full_text = fetch_pmc_fulltext(pmcid)
+            if full_text:
+                full_text_source = "pmc"
         record["pmcid"] = pmcid
+        extraction_meta: Dict[str, Optional[str]] | None = None
+        if not full_text:
+            openalex_pdf_url = _find_openalex_pdf_url(record) or None
+            record["openalex_pdf_url"] = openalex_pdf_url
+            if openalex_pdf_url:
+                pdf_bytes = _download_binary(openalex_pdf_url)
+                if pdf_bytes:
+                    pdf_text, extraction_meta = _extract_pdf_text(pdf_bytes)
+                    if extraction_meta:
+                        record["pdf_processing"] = extraction_meta
+                        ocr_status = extraction_meta.get("ocr_status") or ocr_status
+                    if pdf_text:
+                        full_text = pdf_text
+                        method = extraction_meta.get("method") if extraction_meta else None
+                        if method == "pdfminer":
+                            full_text_source = "openalex_pdf_digital"
+                        elif method == "ocr":
+                            full_text_source = "openalex_pdf_ocr"
+                        else:
+                            full_text_source = "openalex_pdf"
+                else:
+                    ocr_status = "pdf_download_failed"
+                    record["pdf_processing"] = {
+                        "digital_status": None,
+                        "ocr_status": "not_attempted",
+                        "failure_reason": "pdf_download_failed",
+                        "method": None,
+                    }
+            else:
+                ocr_status = "no_pdf_url"
+                record["pdf_processing"] = {
+                    "digital_status": None,
+                    "ocr_status": "not_attempted",
+                    "failure_reason": "no_pdf_url",
+                    "method": None,
+                }
+        else:
+            record["openalex_pdf_url"] = None
+        failure_reason = None
+        if extraction_meta and extraction_meta.get("failure_reason"):
+            failure_reason = extraction_meta["failure_reason"]
+        elif extraction_meta and extraction_meta.get("digital_status"):
+            failure_reason = extraction_meta["digital_status"]
+        elif ocr_status not in {"not_applicable", "not_required", "performed_success"}:
+            failure_reason = ocr_status
+        if not full_text and openalex_pdf_url and failure_reason:
+            failures.append(
+                {
+                    "pmid": pmid,
+                    "pmcid": pmcid,
+                    "reason": failure_reason,
+                    "url": openalex_pdf_url,
+                    "metadata": extraction_meta,
+                }
+            )
+        record["ocr_status"] = ocr_status
+        record["full_text_source"] = full_text_source
         record["full_text"] = full_text
         enriched.append(record)
+        source_label = full_text_source or "missing"
         print(
-            f"Processed {idx}/{total} records — PMC {'found' if full_text else 'missing'}",
+            f"Processed {idx}/{total} records — full text {source_label}",
             flush=True,
         )
         time.sleep(0.34)
-    return enriched
+    return enriched, failures
 
 
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fetch PMC full texts for filtered reviews")
+    parser = argparse.ArgumentParser(
+        description="Fetch full texts for filtered reviews from PMC and OpenAlex"
+    )
     parser.add_argument("--input", default="data/pipeline/filtered_reviews.json")
     parser.add_argument("--output", default="data/pipeline/filtered_reviews_fulltext.json")
+    parser.add_argument(
+        "--failures",
+        default=None,
+        help=(
+            "Optional path for logging failed PDF/Full text retrieval attempts. "
+            "Defaults to <output>.failures.json when omitted."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.input):
@@ -166,7 +382,7 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
-    enriched = enrich_records(records)
+    enriched, failures = enrich_records(records)
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
@@ -175,6 +391,17 @@ def main(argv: List[str] | None = None) -> int:
         json.dump(enriched, fh, ensure_ascii=False, indent=2)
 
     print(f"Saved enriched metadata to {args.output}")
+
+    failure_path = args.failures or f"{args.output}.failures.json"
+    if failures:
+        fail_dir = os.path.dirname(failure_path)
+        if fail_dir:
+            os.makedirs(fail_dir, exist_ok=True)
+        with open(failure_path, "w", encoding="utf-8") as fh:
+            json.dump(failures, fh, ensure_ascii=False, indent=2)
+        print(f"Logged {len(failures)} retrieval failures to {failure_path}")
+    else:
+        print("No retrieval failures recorded")
     return 0
 
 
