@@ -46,7 +46,7 @@ the requests within NCBI's polite-use guidelines.
 export PUBMED_API_KEY="your-ncbi-key"        # optional but recommended
 export PUBMED_TOOL="your-app-name"           # optional tool identifier for NCBI
 export PUBMED_EMAIL="you@example.com"        # optional contact email for NCBI
-export OPENAI_API_KEY="sk-your-openai-token" # required for steps 2 and 4
+export OPENAI_API_KEY="sk-your-openai-token" # required for steps 2, 4, and 5
 ```
 
 ### 2. Run the orchestrated pipeline
@@ -69,10 +69,13 @@ By default this performs:
 4. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
    (full) texts, plus aggregation of unique theory names in
    `aging_theories.json`.
+5. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
+   theories into multi-level ontology clusters saved as `aging_ontology.json`.
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
-supplied. Use `--query`, `--filter-model`, `--theory-model`, or
-`--max-chars` to customise individual stages.
+supplied. Use `--query`, `--filter-model`, `--theory-model`, `--max-chars`, or
+the ontology arguments (`--ontology-model`, `--ontology-top-n`,
+`--ontology-examples`) to customise individual stages.
 
 ### 3. Run stages individually (optional)
 
@@ -91,6 +94,9 @@ python scripts/step3_fetch_fulltext.py --input data/pipeline/filtered_reviews.js
 
 # Step 4 – Theory extraction
 python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json
+
+# Step 5 – Ontology generation
+python scripts/step5_generate_ontology.py --input data/pipeline/aging_theories.json --output data/pipeline/aging_ontology.json
 ```
 
 All scripts validate their inputs and surface helpful error messages when the

@@ -1,4 +1,4 @@
-"""Convenience wrapper to execute the four-stage aging theory pipeline."""
+"""Convenience wrapper to execute the aging theory pipeline."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ class PipelinePaths:
     filtered_reviews: str
     fulltext_reviews: str
     theories: str
+    ontology: str
 
 
 def build_paths(workdir: str) -> PipelinePaths:
@@ -25,6 +26,7 @@ def build_paths(workdir: str) -> PipelinePaths:
         filtered_reviews=os.path.join(workdir, "filtered_reviews.json"),
         fulltext_reviews=os.path.join(workdir, "filtered_reviews_fulltext.json"),
         theories=os.path.join(workdir, "aging_theories.json"),
+        ontology=os.path.join(workdir, "aging_ontology.json"),
     )
 
 
@@ -44,7 +46,7 @@ def ensure_env(var: str, step: str) -> None:
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the four-step PubMed → OpenAI aging theory pipeline",
+        description="Run the end-to-end PubMed → OpenAI aging theory pipeline",
     )
     parser.add_argument(
         "--workdir",
@@ -83,6 +85,23 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=int,
         default=12000,
         help="Maximum characters from each review to send to the LLM (step 4).",
+    )
+    parser.add_argument(
+        "--ontology-model",
+        default="gpt-4o-mini",
+        help="OpenAI model used for ontology generation (step 5).",
+    )
+    parser.add_argument(
+        "--ontology-top-n",
+        type=int,
+        default=60,
+        help="Maximum number of theories to summarise when prompting step 5.",
+    )
+    parser.add_argument(
+        "--ontology-examples",
+        type=int,
+        default=3,
+        help="Number of representative titles to pass for each theory in step 5.",
     )
     parser.add_argument(
         "--force",
@@ -183,11 +202,37 @@ def main(argv: List[str] | None = None) -> int:
             "Extract theories from reviews",
         )
 
+    # Step 5 – Ontology generation
+    ensure_env("OPENAI_API_KEY", "Step 5")
+    if not maybe_skip(paths.ontology, args.force, "step 5"):
+        if not os.path.exists(paths.theories):
+            raise SystemExit(
+                f"Step 5 requires the output from step 4 ({paths.theories}) to exist."
+            )
+        run_step(
+            [
+                sys.executable,
+                "scripts/step5_generate_ontology.py",
+                "--input",
+                paths.theories,
+                "--output",
+                paths.ontology,
+                "--model",
+                args.ontology_model,
+                "--top-n",
+                str(args.ontology_top_n),
+                "--examples-per-theory",
+                str(args.ontology_examples),
+            ],
+            "Generate ontology from theories",
+        )
+
     print("\nPipeline completed. Results available at:")
     print(f"  Step 1 metadata: {paths.start_reviews}")
     print(f"  Step 2 filtered: {paths.filtered_reviews}")
     print(f"  Step 3 full texts: {paths.fulltext_reviews}")
     print(f"  Step 4 theories: {paths.theories}")
+    print(f"  Step 5 ontology: {paths.ontology}")
     return 0
 
 

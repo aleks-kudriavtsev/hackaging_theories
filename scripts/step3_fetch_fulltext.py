@@ -94,47 +94,28 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     body = root.find(".//body")
     if body is None:
         return None
-    text_chunks: List[str] = []
 
-    def strip_namespace(tag: str) -> str:
-        return tag.split("}", 1)[1] if "}" in tag else tag
-
-    block_tags = {
-        "p",
-        "sec",
-        "title",
-        "abstract",
-        "list",
-        "list-item",
-        "def-item",
-        "caption",
-        "fig",
-        "table-wrap",
-    }
-
-    for elem in body.iter():
-        pieces: List[str] = []
-        if elem.text:
-            text = elem.text.strip()
-            if text:
-                pieces.append(text)
-        if elem.tail:
-            tail = elem.tail.strip()
-            if tail:
-                pieces.append(tail)
-        if not pieces:
+    paragraphs: List[str] = []
+    for node in body.findall(".//p"):
+        fragments = [
+            part.strip()
+            for part in node.itertext()
+            if part and part.strip()
+        ]
+        if not fragments:
             continue
+        paragraphs.append(" ".join(" ".join(fragments).split()))
 
-        tag = strip_namespace(elem.tag)
-        content = " ".join(pieces)
-        if tag in block_tags:
-            text_chunks.append(content)
-        elif text_chunks:
-            text_chunks[-1] = f"{text_chunks[-1]} {content}".strip()
-        else:
-            text_chunks.append(content)
+    if not paragraphs:
+        # Fallback: flatten the entire body text when paragraph tags are absent.
+        text_chunks = [
+            part.strip() for part in body.itertext() if part and part.strip()
+        ]
+        if not text_chunks:
+            return None
+        return " ".join(text_chunks)
 
-    return "\n\n".join(text_chunks) if text_chunks else None
+    return "\n\n".join(paragraphs)
 
 
 def enrich_records(records: Iterable[Dict]) -> List[Dict]:
