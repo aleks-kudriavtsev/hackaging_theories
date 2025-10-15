@@ -163,8 +163,13 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--workdir",
+        "--output-dir",
+        dest="workdir",
         default="data/pipeline",
-        help="Directory to store intermediate and final JSON artefacts.",
+        help=(
+            "Directory to store intermediate and final JSON artefacts. "
+            "(--output-dir is accepted for backwards compatibility.)"
+        ),
     )
     parser.add_argument(
         "--query",
@@ -184,20 +189,35 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--theory-model",
+        "--extract-model",
+        dest="theory_model",
         default="gpt-4o-mini",
-        help="OpenAI model used for theory extraction (step 4).",
+        help=(
+            "OpenAI model used for theory extraction (step 4). "
+            "(--extract-model is accepted for backwards compatibility.)"
+        ),
     )
     parser.add_argument(
         "--theory-delay",
+        "--extract-delay",
+        dest="theory_delay",
         type=float,
         default=0.5,
-        help="Delay between OpenAI calls during theory extraction (seconds).",
+        help=(
+            "Delay between OpenAI calls during theory extraction (seconds). "
+            "(--extract-delay is accepted for backwards compatibility.)"
+        ),
     )
     parser.add_argument(
         "--max-chars",
+        "--extract-max-chars",
+        dest="max_chars",
         type=int,
         default=12000,
-        help="Maximum characters from each review to send to the LLM (step 4).",
+        help=(
+            "Maximum characters from each review to send to the LLM (step 4). "
+            "(--extract-max-chars is accepted for backwards compatibility.)"
+        ),
     )
     parser.add_argument(
         "--ontology-model",
