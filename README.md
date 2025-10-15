@@ -1,13 +1,16 @@
-# Hackaging Theories Pipeline
+# Aging Theory Literature Pipeline
 
-The Hackaging challenge asks teams to map the gerontological theory landscape by
-collecting literature, tagging each paper with the theories it engages, and
-answering a standard set of nine analytical questions (Q1–Q9). This repository
-packages that workflow into a reproducible Python toolkit so contributors can
-run the end-to-end pipeline, extend individual modules, or plug the outputs into
-their own analysis stack.
+This repository bundles a lightweight, four-stage workflow for harvesting PubMed
+reviews about aging theories, curating the relevant subset with OpenAI, pulling
+open-access full texts, and extracting the theories they discuss. Each stage is
+implemented as a standalone script so you can inspect or extend the behaviour in
+isolation, and a convenience runner (`scripts/run_full_pipeline.py`) chains them
+into a single command for day-to-day use.
 
-## Challenge overview
+> **Note**  
+> The project ships without vendored credentials. Export the API keys you are
+> authorised to use before running the scripts. Example placeholders are shown
+> below—replace them with your own secrets.
 
 The pipeline focuses on three pillars of the challenge:
 
@@ -25,6 +28,74 @@ The pipeline focuses on three pillars of the challenge:
 
 Sample inputs and outputs in `data/examples/` illustrate the expected artefacts
 that the Hackaging organisers require for leaderboard submissions.
+
+## Aging theory review bootstrap pipeline
+
+The repository now includes a four-stage bootstrap that focuses specifically on
+aging-theory review articles retrieved from PubMed. The helper scripts live in
+`scripts/step[1-4]_*.py`, and a convenience orchestrator
+(`scripts/run_pipeline.py`) runs the entire sequence end-to-end.
+
+### 1. Configure credentials
+
+Export the API keys used throughout the pipeline. Only the OpenAI key is
+strictly required, but providing your PubMed key and contact metadata will keep
+the requests within NCBI's polite-use guidelines.
+
+```bash
+export PUBMED_API_KEY="your-ncbi-key"        # optional but recommended
+export PUBMED_TOOL="your-app-name"           # optional tool identifier for NCBI
+export PUBMED_EMAIL="you@example.com"        # optional contact email for NCBI
+export OPENAI_API_KEY="sk-your-openai-token" # required for steps 2 and 4
+```
+
+### 2. Run the orchestrated pipeline
+
+```bash
+python scripts/run_pipeline.py --workdir data/pipeline
+```
+
+By default this performs:
+
+1. `step1_pubmed_search.py` – exhaustive PubMed search for review articles
+   matching the query `(aging theory OR ageing theory OR theories of aging)` in
+   titles/abstracts, saving metadata to `start_reviews.json`.
+2. `step2_filter_reviews.py` – OpenAI-powered screening of each record's title
+   and abstract to discard off-topic material, storing decisions in
+   `filtered_reviews.json`.
+3. `step3_fetch_fulltext.py` – PMC full-text enrichment when an article has a
+   matching PubMed Central entry, preserving paragraph boundaries so downstream
+   models see intact sentences.
+4. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
+   (full) texts, plus aggregation of unique theory names in
+   `aging_theories.json`.
+
+The orchestrator skips steps whose outputs already exist unless `--force` is
+supplied. Use `--query`, `--filter-model`, `--theory-model`, or
+`--max-chars` to customise individual stages.
+
+### 3. Run stages individually (optional)
+
+Each script doubles as a standalone CLI should you need to debug or tweak a
+particular step:
+
+```bash
+# Step 1 – PubMed search
+python scripts/step1_pubmed_search.py --output data/pipeline/start_reviews.json
+
+# Step 2 – LLM relevance filtering
+python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json --output data/pipeline/filtered_reviews.json
+
+# Step 3 – Full-text enrichment
+python scripts/step3_fetch_fulltext.py --input data/pipeline/filtered_reviews.json --output data/pipeline/filtered_reviews_fulltext.json
+
+# Step 4 – Theory extraction
+python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json
+```
+
+All scripts validate their inputs and surface helpful error messages when the
+remote APIs reject a query or return malformed data, making it easier to spot
+credential issues or intermittent network problems.
 
 ## Repository structure
 
@@ -53,321 +124,105 @@ local testing tips.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
+pip install --upgrade pip
 ```
 
-### Install dependencies
+The pipeline only relies on the Python standard library, so no additional
+packages are required unless you plan to build optional extensions.
 
-The project only depends on the standard library plus a small set of helper
-packages used for configuration parsing and tests:
+### 1. Configure credentials
 
 ```bash
-pip install pyyaml pytest
+export PUBMED_API_KEY="your-ncbi-eutilities-key"
+export OPENAI_API_KEY="your-openai-key"
 ```
 
-Install any additional providers (e.g., HTTP clients) required for your custom
-retrieval strategies in the same environment.
-
-Optional helpers:
-
-- `pdfminer.six` — enables PDF-to-text extraction when providers only expose
-  binary downloads for full texts.
-
-### Environment variables
-
-External API keys are declared in the configuration under `api_keys`, and the
-CLI entry points resolve them lazily via environment variables or external
-files. Export the following variables before running the pipeline to keep
-secrets out of version control:
-
-- `OPENALEX_API_KEY`
-- `CROSSREF_API_KEY`
-- `PUBMED_API_KEY`
-- `OPENAI_API_KEY`
-- `SCIHUB_EMAIL` (used when delegating lookups to the optional `scihub.py` client)
-- `SCIHUB_RAPIDAPI_KEY`
-- `ANNAS_ARCHIVE_API_KEY`
-
-Each key supports fallbacks (defaults or file references) if you need a more
-specialised workflow. See `src/theories_pipeline/config_utils.py` for the
-supported descriptors and `config/pipeline.yaml` for annotated examples.
-
-### Credential reference tables
-
-Use the tables below to map each supported provider to its credential source and
-the configuration or CLI hook that consumes it. All variables live under the
-`api_keys` block in [`config/pipeline.yaml`](config/pipeline.yaml) and can be
-overridden via the collector flags shown in the last column.
-
-#### Scholarly metadata and search APIs
-
-| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
-| --- | --- | --- | --- |
-| OpenAlex | Free account at [https://docs.openalex.org/](https://docs.openalex.org/) to generate a personal access token. | `api_keys.openalex.env: OPENALEX_API_KEY`; provider `openalex.api_key_key: openalex`. 【F:config/pipeline.yaml†L1-L29】 | `--openalex-api-key` |【F:scripts/collect_theories.py†L1080-L1091】
-| Crossref | Register a mailto-style contact per the [Crossref polite usage policy](https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-metadata-service-guidelines/). | `api_keys.crossref_contact.env: CROSSREF_API_KEY`; provider `crossref.api_key_key: crossref_contact`. 【F:config/pipeline.yaml†L3-L35】 | `--crossref-api-key` |【F:scripts/collect_theories.py†L1091-L1095】
-| PubMed (NCBI E-utilities) | Request an API key via the NCBI account dashboard. | `api_keys.pubmed.env: PUBMED_API_KEY`; provider `pubmed.api_key_key: pubmed`. 【F:config/pipeline.yaml†L5-L61】 | `--pubmed-api-key` |【F:scripts/collect_theories.py†L1095-L1099】
-| SerpApi (Google Scholar bridge) | Subscribe at [https://serpapi.com/](https://serpapi.com/) for a private API key. | `api_keys.serpapi.env: SERPAPI_KEY`; provider `serpapi_scholar.api_key_key: serpapi`. 【F:config/pipeline.yaml†L7-L49】 | `--serpapi-key` |【F:scripts/collect_theories.py†L1099-L1103】
-| Semantic Scholar | Apply for a research API key through the Semantic Scholar portal. | `api_keys.semantic_scholar.env: SEMANTIC_SCHOLAR_KEY`; provider `semantic_scholar.api_key_key: semantic_scholar`. 【F:config/pipeline.yaml†L9-L57】 | `--semantic-scholar-key` |【F:scripts/collect_theories.py†L1103-L1107】
-
-OpenAlex tokens are appended to requests as an `api_key` query parameter (rather than a bearer header) alongside an optional `mailto` contact when configured. 【F:src/theories_pipeline/literature.py†L430-L436】
-
-#### Full-text resolvers and mirrors
-
-| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
-| --- | --- | --- | --- |
-| Sci-Hub email (community client) | Supply the contact address permitted by your institutional access policy. | `api_keys.scihub_email.env: SCIHUB_EMAIL`; provider `scihub.extra.email_key: scihub_email`. 【F:config/pipeline.yaml†L11-L66】 | `--scihub-email` |【F:scripts/collect_theories.py†L1107-L1111】
-| Sci-Hub RapidAPI | Purchase a subscription through [https://rapidapi.com/](https://rapidapi.com/). | `api_keys.scihub_rapidapi.env: SCIHUB_RAPIDAPI_KEY`; provider `scihub.api_key_key: scihub_rapidapi`. 【F:config/pipeline.yaml†L11-L66】 | `--scihub-rapidapi-key` |【F:scripts/collect_theories.py†L1111-L1115】
-| Anna's Archive | Subscribe to the Anna's Archive RapidAPI product for a token. | `api_keys.annas_archive.env: ANNAS_ARCHIVE_API_KEY`; provider `annas_archive.api_key_key: annas_archive`. 【F:config/pipeline.yaml†L12-L68】 | `--annas-archive-api-key` |【F:scripts/collect_theories.py†L1115-L1119】
-
-#### Language models
-
-| Provider | Credential & where to request it legitimately | Configuration reference | CLI override |
-| --- | --- | --- | --- |
-| OpenAI | Create an API key via the [OpenAI dashboard](https://platform.openai.com/account/api-keys). | `api_keys.openai.env: OPENAI_API_KEY`; `classification.llm.model` and `api_key_key: openai`. 【F:config/pipeline.yaml†L13-L92】 | `--llm-api-key`, `--llm-model` |【F:scripts/collect_theories.py†L1119-L1149】
-
-### Советы по устранению ошибок
-
-- **Отсутствующие ключи.** Скрипт завершается с `MissingSecretError`, если не удаётся сопоставить требуемый ключ из конфигурации с переменной окружения или аргументом. Проверьте экспорт и блок `api_keys`. 【F:scripts/collect_theories.py†L899-L915】【F:docs/bootstrap.md†L120-L139】
-- **Лимиты провайдеров (HTTP 429/503).** Снизьте `rate_limit_per_sec` для источников в конфигурации или ограничьте список провайдеров через `--providers`, затем перезапустите сбор после паузы. `--state-dir` сохраняет прогресс, чтобы не терять уже собранные результаты. 【F:config/pipeline.yaml†L19-L83】【F:docs/bootstrap.md†L132-L150】
-- **Не найдены обзоры для bootstrap.** Ослабьте фильтры (`min_citations`, `max_per_query`) или расширьте провайдеры, чтобы увеличить окно поиска. Проверяйте `data/cache/bootstrap_ontology.json` для диагностики. 【F:docs/bootstrap.md†L100-L150】
-- **Ошибки LLM или превышение квот.** Установите кэш `llm.cache_dir` / `extraction.llm.cache_dir` и уменьшите размер батчей через `--llm-batch-size`, чтобы сократить повторные обращения. При недоступности модели пайплайн автоматически переходит к эвристикам. 【F:config/pipeline.yaml†L69-L142】【F:docs/bootstrap.md†L100-L150】
-
-### Preprint providers, rate limits, and full-text mirrors
-
-The pipeline ships with optional bioRxiv and medRxiv providers that fetch
-preprint metadata via the public JSON endpoints. These sources are disabled by
-default; enable them in `config/pipeline.yaml` once you have configured a
-conservative rate limit (≤ 1 request/second is recommended by the operators)
-and a manageable date window. Category filters can further narrow the feed so
-the retriever only inspects relevant domains. Refer to the inline comments in
-`config/pipeline.yaml` for example settings.
-
-Two additional providers help resolve full texts when primary APIs only supply
-metadata. The Sci-Hub integration works with either RapidAPI or the community
-`scihub.py` client—configure the relevant credentials via
-`SCIHUB_RAPIDAPI_KEY`/`SCIHUB_EMAIL` and tune request headers by editing the
-`providers[].extra` section. Anna's Archive is exposed through RapidAPI and
-accepts custom link keys for grabbing mirror URLs. Both providers respect the
-shared full-text cache under `data/cache/fulltext` and should be rate limited
-to avoid overwhelming upstream mirrors.
-
-## Running the pipelines
-
-### Quickstart: Generate an ontology from reviews
-
-1. **Set provider credentials.** Export environment variables (or prepare to
-   supply the CLI overrides) for every API you intend to call during the
-   bootstrap run. The quickstart workflow currently relies on PubMed search to
-   find review articles, so make sure those credentials are available before
-   running:
-   - `OPENALEX_API_KEY` / `--openalex-api-key`
-   - `PUBMED_API_KEY` / `--pubmed-api-key`
-   - `SERPAPI_KEY` / `--serpapi-key`
-   - `SEMANTIC_SCHOLAR_KEY` / `--semantic-scholar-key`
-   - `SCIHUB_EMAIL` / `--scihub-email`
-   - `SCIHUB_RAPIDAPI_KEY` / `--scihub-rapidapi-key`
-   - `ANNAS_ARCHIVE_API_KEY` / `--annas-archive-api-key`
-    - `OPENAI_API_KEY` / `--llm-api-key` (plus `--llm-model` when you opt into GPT
-      classification)
-
-Crossref remains supported as an optional metadata source—include it only when
-necessary by adding `--providers crossref` along with the corresponding
-credential from the provider table if your run requires that metadata.
-2. **Run the bootstrapper and enrichment pipeline.** The command below assumes
-   the default configuration file already contains a `corpus.bootstrap` block
-   and writes the ontology snapshot to
-   `data/cache/bootstrap_ontology.json`:
-
-   ```bash
-   export OPENALEX_API_KEY="sk-your-openalex-key"
-   export PUBMED_API_KEY="your-pubmed-key"
-   export OPENAI_API_KEY="sk-your-openai-key"
-
-   python scripts/collect_theories.py "geroscience" \
-     --config config/pipeline.yaml \
-     --quickstart \
-     --target-count 60 \
-     --openalex-api-key "$OPENALEX_API_KEY" \
-     --pubmed-api-key "$PUBMED_API_KEY" \
-     --llm-api-key "$OPENAI_API_KEY"
-   ```
-
-   Add the other overrides from the list above whenever you enable the
-   associated providers in your configuration. Include Crossref only if needed
-   by extending `--providers` and supplying its contact credential. 【F:docs/bootstrap.md†L78-L114】
-
-### Quickstart without a seed ontology
-
-You can explore the pipeline without curating an ontology file up front. Export
-any required provider credentials (or pass them inline with the CLI overrides)
-and invoke the collector in quickstart mode. As above, PubMed powers the
-default review discovery:
+Providing a contact identity to PubMed is recommended by NCBI:
 
 ```bash
-export OPENALEX_API_KEY="sk-your-openalex-key"
-export PUBMED_API_KEY="your-pubmed-key"
-
-python scripts/collect_theories.py "Aging Theory" \
-  --quickstart \
-  --target-count 75 \
-  --openalex-api-key "$OPENALEX_API_KEY" \
-  --pubmed-api-key "$PUBMED_API_KEY"
+export PUBMED_TOOL="your-tool-name"
+export PUBMED_EMAIL="maintainer@example.org"
 ```
 
-This command renders an ad-hoc ontology node named after the query, writes the
-definition to `data/cache/ontologies/aging-theory.json`, and then resumes the
-standard retrieval → classification → extraction flow. Outputs are emitted to
-the paths configured under `outputs` in `config/pipeline.yaml`
-(`data/examples/papers.csv`, `data/examples/theories.csv`, and
-`data/examples/questions.csv` by default). Subsequent enrichment runs reuse the
-same cache directories (`data/cache/literature` for provider state and
-`data/cache/ontologies/` for the generated node), so re-running the command will
-continue filling the target quota unless `--no-resume` is supplied. Promote the
-saved ontology JSON into `corpus.targets` in your configuration when you are
-ready to graduate to a managed ontology; see
-[`config/pipeline.yaml`](config/pipeline.yaml) for the fully managed layout and
-[`docs/bootstrap.md`](docs/bootstrap.md) / [`docs/query_expansion.md`](docs/query_expansion.md)
-for advanced enrichment strategies. Add Crossref to the provider list only when
-you require its metadata for follow-up runs.
+### 2. Run the full pipeline
 
-### Quickstart: автоматическая генерация онтологии
-
-Follow the steps below to let the bootstrapper discover theories automatically and
-attach them to a transient ontology node generated from your CLI query.
-
-1. **Подготовьте переменные окружения и флаги.** Укажите ключи для всех задействованных
-   провайдеров через переменные окружения или одноимённые CLI-флаги (`--openalex-api-key`,
-   `--pubmed-api-key`, `--scihub-rapidapi-key`, `--scihub-email`, `--annas-archive-api-key`).
-   Быстрый старт использует PubMed для поиска обзорных статей, поэтому убедитесь, что
-   ключ `PUBMED_API_KEY` доступен. Эти ключи сопоставляются с записями в блоке `api_keys`
-   конфигурации. Укажите также `OPENAI_API_KEY` и модель через `--llm-model`, если хотите
-   задействовать GPT для классификации и извлечения.
-   【F:config/pipeline.yaml†L1-L83】【F:scripts/collect_theories.py†L786-L871】【F:scripts/collect_theories.py†L904-L951】
-2. **Включите нужные провайдеры.** Запрос можно ограничить конкретными источниками при
-   помощи `--providers openalex pubmed scihub annas_archive`, либо оставить список по
-   умолчанию из конфигурации. Полнотекстовые зеркала (Sci-Hub, Anna’s Archive) и PubMed
-   отключены по умолчанию; активируйте их в `config/pipeline.yaml` или через CLI, чтобы
-   bootstrap получил доступ к PDF и обзорам. Crossref можно подключить дополнительно,
-   если вам нужна эта метадата. 【F:config/pipeline.yaml†L19-L84】【F:scripts/collect_theories.py†L829-L833】【F:src/theories_pipeline/literature.py†L660-L1030】
-3. **Запустите bootstrap + сбор.** Быстрый старт генерирует временной узел онтологии,
-   выполняет bootstrap-поиск обзоров, извлекает из них теории при помощи LLM (с падением
-   обратно на детерминированные эвристики, если модель недоступна), а затем переходит к
-   основной выборке литературы. Команда ниже включает кэширование и ограничивает
-   провайдеры RapidAPI, чтобы быстрее наполнить узел:
-
-   ```bash
-   export OPENALEX_API_KEY="sk-your-openalex-key"
-   export PUBMED_API_KEY="your-pubmed-key"
-   export OPENAI_API_KEY="sk-your-openai-key"
-   export SCIHUB_RAPIDAPI_KEY="your-rapidapi-token"
-   export ANNAS_ARCHIVE_API_KEY="your-rapidapi-token"
-
-   python scripts/collect_theories.py "geroscience" \
-     --config config/pipeline.yaml \
-     --quickstart \
-     --target-count 60 \
-     --providers openalex pubmed scihub annas_archive \
-     --llm-model gpt-4o-mini \
-     --llm-api-key "$OPENAI_API_KEY"
-   ```
-
-   Снэпшот онтологии и метаданные bootstrap сохраняются в `data/cache/bootstrap_ontology.json`,
-   а собранные статьи — в каталоге, указанном в блоке `outputs`. Повторный запуск с тем же
-   `--state-dir` продолжит наполнение узла, используя кэш. 【F:docs/bootstrap.md†L1-L119】【F:scripts/collect_theories.py†L720-L823】【F:scripts/collect_theories.py†L951-L1020】
-
-### Work with the cached bootstrap ontology
-
-- **Inspect.** Pretty-print the snapshot with `python -m json.tool data/cache/bootstrap_ontology.json`
-  or `jq '.' data/cache/bootstrap_ontology.json` to review the generated queries,
-  review metadata, and ontology fragment. 【F:docs/bootstrap.md†L116-L120】
-- **Amend.** Edit the `ontology` block directly (for example, to tweak theory
-  labels or citation counts) and copy the adjusted mapping into
-  `corpus.targets` when you are ready to manage the hierarchy manually. 【F:docs/bootstrap.md†L129-L134】
-- **Reuse.** Keep the cache under version control or a shared working directory
-  so subsequent runs with the same `--state-dir` and `corpus.bootstrap.resume:
-  true` reuse review identifiers instead of hitting provider APIs again. Disable
-  the bootstrap block (`corpus.bootstrap.enabled: false`) to run enrichment
-  purely from the cached ontology, or re-enable it to refresh the snapshot on
-  demand. 【F:docs/bootstrap.md†L124-L137】【F:scripts/collect_theories.py†L1230-L1276】
-
-### Пример запуска: bootstrap → сбор → анализ
+The helper script orchestrates the four stages and stores intermediate JSON
+artefacts in `data/pipeline/` by default:
 
 ```bash
-# 1. Bootstrap и генерация временного узла онтологии из запроса
-python scripts/collect_theories.py "geroscience" --config config/pipeline.yaml --quickstart --target-count 60
-
-# 2. Повторный сбор по обновлённой онтологии (можно включить дополнительные провайдеры)
-python scripts/collect_theories.py "activity engagement" --config config/pipeline.yaml --providers openalex pubmed
-
-# 3. Аналитика и обновление сводных отчётов
-python scripts/analyze_papers.py --config config/pipeline.yaml
+python scripts/run_full_pipeline.py \
+  --query '(("aging theory"[TIAB] OR "ageing theory"[TIAB]) AND review[PTYP])' \
+  --output-dir data/pipeline
 ```
 
-Используйте `--state-dir data/cache` для совместного кэша между командами, чтобы не
-переизвлекать уже найденные записи. 【F:scripts/collect_theories.py†L720-L823】【F:scripts/collect_theories.py†L904-L1020】【F:scripts/analyze_papers.py†L161-L196】
+Override `--filter-model`, `--extract-model`, or the request delays if you need
+custom OpenAI models or throttling for quota management. When the command
+completes successfully you should see four files:
 
-### Collect theories and initial Q1–Q9 answers
+- `start_reviews.json` – raw PubMed review metadata
+- `filtered_reviews.json` – records that passed the LLM relevance filter
+- `filtered_reviews_fulltext.json` – filtered records augmented with PubMed
+  Central full texts where available
+- `aging_theories.json` – the final catalogue with extracted theories
+
+## Running stages manually
+
+Each script accepts CLI flags so you can plug in alternate inputs/outputs or run
+only part of the workflow while debugging. They can be executed independently:
 
 ```bash
-python scripts/collect_theories.py "activity engagement" --config config/pipeline.yaml
+# Step 1 — PubMed review search
+python scripts/step1_pubmed_search.py \
+  --output data/pipeline/start_reviews.json
+
+# Step 2 — LLM-based relevance filtering
+python scripts/step2_filter_reviews.py \
+  --input data/pipeline/start_reviews.json \
+  --output data/pipeline/filtered_reviews.json \
+  --model gpt-4o-mini
+
+# Step 3 — PubMed Central full-text enrichment
+python scripts/step3_fetch_fulltext.py \
+  --input data/pipeline/filtered_reviews.json \
+  --output data/pipeline/filtered_reviews_fulltext.json
+
+# Step 4 — Theory extraction from curated corpus
+python scripts/step4_extract_theories.py \
+  --input data/pipeline/filtered_reviews_fulltext.json \
+  --output data/pipeline/aging_theories.json \
+  --model gpt-4o-mini
 ```
 
-This command
+All scripts share the following expectations:
 
-1. Loads seed papers from `config/pipeline.yaml` via
-   `LiteratureRetriever.search()`.
-2. Classifies each paper with `TheoryClassifier.from_config()`.
-3. Extracts question responses using `QuestionExtractor.extract()`.
-4. Writes CSVs using the helpers in `src/theories_pipeline/outputs.py`.
+- When an input path is supplied it must point to a UTF-8 encoded JSON file that
+  matches the schema produced by the preceding step.
+- `OPENAI_API_KEY` is required for steps 2 and 4; `PUBMED_API_KEY` is optional
+  but highly recommended for steps 1 and 3.
+- Network failures and HTTP errors are surfaced directly so you can retry or
+  adjust rate limits as needed.
 
-The resulting CSVs land in `data/examples/` by default.
+## Troubleshooting tips
 
-### Refresh question answers and generate a summary cache
+- **PubMed rejects the query.** The collector validates the ESearch response and
+  raises a helpful error message if NCBI reports query syntax issues. Double
+  check the field tags in `--query` and ensure parentheses are balanced.
+- **No PMC full text available.** Articles without a PubMed Central ID will have
+  `"full_text": null` in `filtered_reviews_fulltext.json`. Supplement these
+  manually if you have alternate access.
+- **LLM quota exceeded.** Reduce `--filter-delay` / `--extract-delay` or run in
+  smaller batches by splitting the input file before invoking the scripts.
 
-```bash
-python scripts/analyze_papers.py --config config/pipeline.yaml
+## Repository layout
+
+```
+.
+├── scripts/                  # Command-line entry points for each pipeline step
+├── data/                     # Default output directory for pipeline artefacts
+├── src/                      # Original hackathon toolkit (not required here)
+└── tests/                    # Legacy pytest suite
 ```
 
-This utility reads an existing papers CSV (or falls back to the seed data),
-recomputes theory counts, re-exports Q1–Q9 answers, and emits
-`data/cache/analysis_summary.json` for downstream dashboards.
-
-## CSV schemas
-
-The exporter utilities in `src/theories_pipeline/outputs.py` enforce consistent
-headers for every CSV artefact. Expect the following columns:
-
-| File | Function | Columns |
-| --- | --- | --- |
-| `data/examples/papers.csv` | `export_papers` | `identifier`, `title`, `authors`, `abstract`, `source`, `year`, `doi` |
-| `data/examples/theories.csv` | `export_theories` | `paper_id`, `theory`, `score` (stringified to three decimal places) |
-| `data/examples/questions.csv` | `export_question_answers` | `paper_id`, `question_id`, `question`, `answer`, `confidence`, `evidence` |
-
-Each row in the questions export corresponds to one of the nine constants in
-`src/theories_pipeline/extraction.py::QUESTIONS`, ensuring the Q1–Q9 prompts stay
-aligned across runs.
-
-## Contributor guide
-
-We welcome contributions that improve coverage, extraction accuracy, and data
-quality. Before opening a pull request:
-
-1. Format code with the default Python style (PEP 8 / `black` conventions are
-   acceptable; avoid introducing new dependencies for styling).
-2. Run the unit tests:
-   ```bash
-   pytest
-   ```
-3. Execute the collection script against the sample dataset to confirm the CSVs
-   update without errors:
-   ```bash
-   python scripts/collect_theories.py "activity engagement"
-   ```
-4. Document notable changes in `docs/` if they alter module behaviour or the
-   data contract. Reference the new materials from this README to keep the entry
-   point up to date.
-
-For more detailed development notes, see
-[`docs/development.md`](docs/development.md). If you create additional deep dives
-(e.g., architecture diagrams or benchmarking results), place them under `docs/`
-and link them from this section so future contributors can discover them easily.
+Feel free to adapt the pipeline to ingest additional data sources (e.g.,
+OpenAlex, Google Scholar, Sci-Hub mirrors). The modular structure is intended to
+make it easy to slot in new providers or analysis stages.

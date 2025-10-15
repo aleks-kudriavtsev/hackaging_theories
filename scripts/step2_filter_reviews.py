@@ -33,6 +33,25 @@ import urllib.parse
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
+def _coerce_bool(value: object) -> bool | None:
+    """Interpret truthy strings/ints returned by the model."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "y", "1"}:
+            return True
+        if normalized in {"false", "no", "n", "0"}:
+            return False
+    return None
+
+
 def call_openai(prompt: str, api_key: str, model: str) -> Dict:
     payload = json.dumps(
         {
@@ -74,7 +93,19 @@ def call_openai(prompt: str, api_key: str, model: str) -> Dict:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as err:  # pragma: no cover - defensive guard
         raise RuntimeError(f"Unexpected OpenAI response: {data!r}") from err
-    return json.loads(content)
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as err:
+        raise RuntimeError(
+            "OpenAI returned invalid JSON payload: " + content
+        ) from err
+
+    relevant = _coerce_bool(parsed.get("relevant"))
+    if relevant is not None:
+        parsed["relevant"] = relevant
+
+    return parsed
 
 
 def build_prompt(record: Dict) -> str:
