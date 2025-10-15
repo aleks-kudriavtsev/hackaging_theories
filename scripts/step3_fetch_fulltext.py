@@ -74,6 +74,13 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     if body is None:
         return None
 
+    def local_name(tag: str) -> str:
+        """Return the local element name without any namespace prefix."""
+
+        if "}" in tag:
+            return tag.rsplit("}", 1)[-1]
+        return tag
+
     block_tags = {
         "p",
         "sec",
@@ -90,7 +97,7 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
             chunks.append(node.text)
         for child in node:
             collect_text(child, chunks)
-        if node.tag in block_tags:
+        if local_name(node.tag) in block_tags:
             chunks.append("\n\n")
         if node.tail:
             chunks.append(node.tail)
