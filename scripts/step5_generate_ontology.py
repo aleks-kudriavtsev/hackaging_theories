@@ -1,11 +1,22 @@
-"""Synthesize a hierarchical ontology from extracted aging theories.
+"""Synthesize a hierarchical ontology from the canonical theory registry.
 
 This script consumes the output of ``step4_extract_theories.py`` (the list of
 articles with their per-review theory annotations) and asks an OpenAI model to
-bootstrap a multi-level ontology.  The model receives a condensed summary of
-every discovered theory together with article counts and representative review
-titles.  It responds with grouped theory clusters that may include nested
-subtheories when a parent node accumulates substantial literature support.
+bootstrap a multi-level ontology.  Instead of prompting on raw theory strings
+it now relies on the canonical theory registry produced during step 4.  Each
+canonical theory is summarised with its identifier, preferred label, aliases
+and the exact list of supporting article IDs.  The LLM is asked to organise the
+registry into groups and subgroups while *preserving* theory identifiers and
+the associated article references in its response.
+
+Once the LLM proposes a hierarchical layout the script performs a
+post-processing reconciliation step.  Every article→theory link is validated
+against the registry, stray assignments are removed, missing articles are
+reinstated and any theories the LLM omitted are appended to a dedicated
+"Ungrouped" cluster.  The final payload therefore contains both the original
+LLM structure (for transparency) and the reconciled ontology with explicit
+group/subgroup/theory nodes embedding the verified supporting article IDs.
+A reconciliation report summarises all adjustments for downstream audit.
 
 Environment variables
 ---------------------
@@ -30,7 +41,7 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
-from typing import Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -68,8 +79,9 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
                         "and create subtheories for popular themes. Use the supplied "
                         "statistics to decide when to elevate a parent group. "
                         "Return JSON with a top-level 'groups' list. Each group "
-                        "must contain 'name', optional 'description', and a "
-                        "'theories' list. Theories may include nested 'children'."
+                        "must contain 'name', optional 'description', optional "
+                        "'subgroups', and a 'theories' list. Theories may include "
+                        "nested 'children'."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -108,56 +120,35 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
     return _normalise_groups(parsed)
 
 
-def _summarise_theories(
-    articles: Iterable[Mapping[str, object]],
+def _summarise_registry(
+    registry: Mapping[str, Mapping[str, object]],
     *,
     limit: int,
-    max_examples: int,
 ) -> List[Dict[str, object]]:
-    counts: Dict[str, int] = {}
-    examples: Dict[str, List[str]] = {}
-
-    for record in articles:
-        title = record.get("title") if isinstance(record, Mapping) else None
-        if not isinstance(title, str):
-            title = ""
-        theories = (
-            record.get("theory_extraction", {})
-            if isinstance(record, Mapping)
-            else {}
-        )
-        if not isinstance(theories, Mapping):
-            continue
-        labels = theories.get("theories")
-        if not isinstance(labels, Sequence) or isinstance(labels, (str, bytes)):
-            continue
-        seen: set[str] = set()
-        for raw in labels:
-            if not isinstance(raw, str):
-                continue
-            name = raw.strip()
-            if not name or name.lower() in seen:
-                continue
-            seen.add(name.lower())
-            counts[name] = counts.get(name, 0) + 1
-            if name not in examples:
-                examples[name] = []
-            if title and len(examples[name]) < max_examples:
-                examples[name].append(title)
-
-    sorted_theories = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
-    if limit > 0:
-        sorted_theories = sorted_theories[:limit]
-
     summary: List[Dict[str, object]] = []
-    for name, count in sorted_theories:
+    for theory_id, payload in registry.items():
+        if not isinstance(payload, Mapping):
+            continue
+        label = payload.get("label") if isinstance(payload.get("label"), str) else None
+        aliases = [alias for alias in payload.get("aliases", []) if isinstance(alias, str)]
+        articles = [
+            str(article_id)
+            for article_id in payload.get("supporting_articles", [])
+            if isinstance(article_id, str)
+        ]
         summary.append(
             {
-                "name": name,
-                "article_count": count,
-                "sample_titles": examples.get(name, [])[:max_examples],
+                "theory_id": theory_id,
+                "label": label or theory_id,
+                "aliases": aliases,
+                "article_count": len(articles),
+                "supporting_articles": articles,
             }
         )
+
+    summary.sort(key=lambda item: (-item["article_count"], item["label"].lower()))
+    if limit > 0:
+        summary = summary[:limit]
     return summary
 
 
@@ -166,30 +157,255 @@ def _build_prompt(summary: Sequence[Mapping[str, object]], total_unique: int) ->
     return textwrap.dedent(
         f"""
         You are designing an ontology for theories of aging based on literature
-        review evidence. There are {total_unique} unique theories overall. The
-        JSON list below summarises the most frequently cited theories with their
-        article counts and representative review titles.
+        review evidence. There are {total_unique} canonical theories in total.
+        The JSON list below summarises each theory with its identifier, label,
+        aliases and supporting article IDs.
 
         Instructions:
         - Group related theories under a higher-level "group" when they share a
           conceptual theme (e.g., damage accumulation, programmed aging,
           sociocultural perspectives).
-        - Within each group, list individual theories ordered from most to least
-          supported by article_count.
-        - When a theory itself covers many articles or naturally decomposes into
-          multiple variants, include a "children" list to capture the
-          subtheories.
-        - Provide concise "description" fields for groups and for any theory
-          that has children so downstream analysts understand the distinctions.
-        - Preserve the exact theory names as they appear in the summary whenever
-          they are used as nodes.
+        - A group may optionally contain nested "subgroups" to provide a
+          hierarchy deeper than two levels.
+        - Within each group, include a "theories" array.  Each theory entry must
+          reference a canonical ``theory_id`` provided in the summary and may
+          optionally provide a "preferred_label" and "description".
+        - You may include nested "children" arrays inside a theory to capture
+          subtheories, but those child theories must also reference valid
+          ``theory_id`` values.
+        - **Do not invent new theory IDs or article IDs.** Preserve the supplied
+          ``supporting_articles`` list for every theory you place.
+        - Respond with JSON containing a top-level key "groups".
 
-        Respond with JSON containing a top-level key "groups".
-
-        Summary of theories:
+        Summary of canonical theories:
         {theories_block}
         """
     ).strip()
+
+
+def _canonical_article_index(
+    registry: Mapping[str, Mapping[str, object]]
+) -> Dict[str, List[str]]:
+    article_index: Dict[str, List[str]] = {}
+    for theory_id, payload in registry.items():
+        articles = payload.get("supporting_articles") if isinstance(payload, Mapping) else None
+        if not isinstance(articles, Sequence) or isinstance(articles, (str, bytes)):
+            continue
+        for article_id in articles:
+            if isinstance(article_id, str):
+                article_index.setdefault(article_id, []).append(theory_id)
+    for theory_ids in article_index.values():
+        theory_ids.sort()
+    return article_index
+
+
+def _reconcile_theory_node(
+    node: Mapping[str, Any],
+    registry: Mapping[str, Mapping[str, object]],
+    *,
+    article_index: Mapping[str, Sequence[str]],
+    seen: MutableMapping[str, str],
+    reconciliation: Dict[str, List[Dict[str, object]]],
+) -> Optional[Dict[str, Any]]:
+    theory_id = node.get("theory_id") or node.get("id")
+    if not isinstance(theory_id, str):
+        reconciliation.setdefault("dropped_theories", []).append(
+            {
+                "reason": "Missing canonical theory_id",
+                "raw_node": node,
+            }
+        )
+        return None
+
+    if theory_id not in registry:
+        reconciliation.setdefault("dropped_theories", []).append(
+            {
+                "reason": "Theory ID not present in canonical registry",
+                "theory_id": theory_id,
+            }
+        )
+        return None
+
+    if theory_id in seen:
+        reconciliation.setdefault("duplicate_theories", []).append(
+            {
+                "theory_id": theory_id,
+                "first_location": seen[theory_id],
+                "second_location": node.get("preferred_label") or node.get("label"),
+            }
+        )
+        return None
+
+    seen[theory_id] = node.get("preferred_label") or node.get("label") or registry[theory_id].get("label") or theory_id
+
+    canonical_entry = registry[theory_id]
+    canonical_articles = [
+        article_id
+        for article_id in canonical_entry.get("supporting_articles", [])
+        if isinstance(article_id, str)
+    ]
+
+    llm_articles = [
+        article_id
+        for article_id in node.get("supporting_articles", [])
+        if isinstance(article_id, str)
+    ]
+
+    canonical_set = set(canonical_articles)
+    llm_set = set(llm_articles)
+
+    removed_articles = sorted(llm_set - canonical_set)
+    added_articles = sorted(canonical_set - llm_set)
+
+    for article_id in removed_articles:
+        reconciliation.setdefault("reassignments", []).append(
+            {
+                "article_id": article_id,
+                "from_theory_id": theory_id,
+                "to_theory_ids": list(article_index.get(article_id, [])),
+                "action": "removed",
+                "reason": "Article not linked to theory in canonical registry",
+            }
+        )
+
+    for article_id in added_articles:
+        reconciliation.setdefault("reassignments", []).append(
+            {
+                "article_id": article_id,
+                "from_theory_id": None,
+                "to_theory_ids": [theory_id],
+                "action": "added",
+                "reason": "Article linked to theory in canonical registry but missing from LLM output",
+            }
+        )
+
+    processed_children: List[Dict[str, Any]] = []
+    for child in node.get("children", []) or []:
+        if isinstance(child, Mapping):
+            reconciled = _reconcile_theory_node(
+                child,
+                registry,
+                article_index=article_index,
+                seen=seen,
+                reconciliation=reconciliation,
+            )
+            if reconciled:
+                processed_children.append(reconciled)
+
+    final_node: Dict[str, Any] = {
+        "theory_id": theory_id,
+        "label": canonical_entry.get("label"),
+        "preferred_label": node.get("preferred_label") or node.get("label") or canonical_entry.get("label"),
+        "aliases": canonical_entry.get("aliases", []),
+        "supporting_articles": canonical_articles,
+    }
+    if node.get("description"):
+        final_node["description"] = node["description"]
+    if processed_children:
+        final_node["children"] = processed_children
+
+    return final_node
+
+
+def _reconcile_groups(
+    groups: Sequence[Mapping[str, Any]],
+    registry: Mapping[str, Mapping[str, object]],
+    *,
+    article_index: Mapping[str, Sequence[str]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, object]]]]:
+    reconciliation: Dict[str, List[Dict[str, object]]] = {}
+    seen: Dict[str, str] = {}
+
+    def process_group(group_node: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        name = group_node.get("name") or group_node.get("label")
+        if not isinstance(name, str) or not name.strip():
+            name = "Unnamed group"
+        description = group_node.get("description") if isinstance(group_node.get("description"), str) else None
+
+        subgroups_raw: List[Mapping[str, Any]] = []
+        for child in group_node.get("subgroups", []) or []:
+            if isinstance(child, Mapping):
+                subgroups_raw.append(child)
+        for child in group_node.get("children", []) or []:
+            if isinstance(child, Mapping):
+                subgroups_raw.append(child)
+
+        theories_raw: List[Mapping[str, Any]] = []
+        for theory in group_node.get("theories", []) or []:
+            if isinstance(theory, Mapping):
+                theories_raw.append(theory)
+
+        processed_subgroups: List[Dict[str, Any]] = []
+        for subgroup in subgroups_raw:
+            processed = process_group(subgroup)
+            if processed:
+                processed_subgroups.append(processed)
+
+        processed_theories: List[Dict[str, Any]] = []
+        for theory_node in theories_raw:
+            reconciled = _reconcile_theory_node(
+                theory_node,
+                registry,
+                article_index=article_index,
+                seen=seen,
+                reconciliation=reconciliation,
+            )
+            if reconciled:
+                processed_theories.append(reconciled)
+
+        if not processed_subgroups and not processed_theories:
+            return None
+
+        group_payload: Dict[str, Any] = {
+            "name": name.strip(),
+        }
+        if description:
+            group_payload["description"] = description.strip()
+        if processed_subgroups:
+            group_payload["subgroups"] = processed_subgroups
+        if processed_theories:
+            group_payload["theories"] = processed_theories
+        return group_payload
+
+    processed_groups: List[Dict[str, Any]] = []
+    for group_node in groups:
+        if isinstance(group_node, Mapping):
+            processed = process_group(group_node)
+            if processed:
+                processed_groups.append(processed)
+
+    missing_theories = [theory_id for theory_id in registry.keys() if theory_id not in seen]
+    if missing_theories:
+        fallback_group: Dict[str, Any] = {
+            "name": "Ungrouped canonical theories",
+            "description": "Canonical theories not placed by the LLM grouping.",
+            "theories": [],
+        }
+        for theory_id in missing_theories:
+            entry = registry[theory_id]
+            canonical_articles = [
+                article_id
+                for article_id in entry.get("supporting_articles", [])
+                if isinstance(article_id, str)
+            ]
+            fallback_group["theories"].append(
+                {
+                    "theory_id": theory_id,
+                    "label": entry.get("label"),
+                    "preferred_label": entry.get("label"),
+                    "aliases": entry.get("aliases", []),
+                    "supporting_articles": canonical_articles,
+                }
+            )
+        processed_groups.append(fallback_group)
+        reconciliation.setdefault("unplaced_theories", []).append(
+            {
+                "theory_ids": missing_theories,
+                "reason": "Added fallback group for theories omitted by LLM ontology",
+            }
+        )
+
+    return processed_groups, reconciliation
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -202,12 +418,6 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=60,
         help="Maximum number of theories to include in the ontology prompt (0 for all).",
-    )
-    parser.add_argument(
-        "--examples-per-theory",
-        type=int,
-        default=3,
-        help="How many article titles to include as context for each theory.",
     )
     args = parser.parse_args(argv)
 
@@ -223,34 +433,45 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         data = json.load(fh)
 
-    articles = data.get("articles") if isinstance(data, Mapping) else None
-    if not isinstance(articles, Sequence):
-        print("Input JSON is missing the 'articles' array", file=sys.stderr)
+    registry = data.get("theory_registry") if isinstance(data, Mapping) else None
+    if not isinstance(registry, Mapping):
+        print("Input JSON is missing the 'theory_registry' mapping", file=sys.stderr)
         return 1
 
-    total_unique = 0
-    aggregated = data.get("aggregated_theories") if isinstance(data, Mapping) else None
-    if isinstance(aggregated, Sequence) and not isinstance(aggregated, (str, bytes)):
-        total_unique = sum(1 for item in aggregated if isinstance(item, str))
+    total_unique = len(registry)
+    summary = _summarise_registry(registry, limit=max(args.top_n, 0))
 
-    summary = _summarise_theories(
-        articles,
-        limit=max(args.top_n, 0),
-        max_examples=max(args.examples_per_theory, 0),
-    )
     if total_unique == 0:
-        total_unique = len(summary)
+        print("No canonical theories available in registry", file=sys.stderr)
+        return 1
 
     prompt = _build_prompt(summary, total_unique)
     response = _call_openai(prompt, api_key, args.model)
+
+    article_index = _canonical_article_index(registry)
+    reconciled_groups, reconciliation = _reconcile_groups(
+        response.get("groups", []),
+        registry,
+        article_index=article_index,
+    )
 
     output_payload = {
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         "model": args.model,
         "input_file": args.input,
-        "summary": summary,
         "total_unique_theories": total_unique,
-        "ontology": response,
+        "prompt_summary": summary,
+        "ontology": {
+            "raw": response,
+            "final": {
+                "groups": reconciled_groups,
+            },
+        },
+        "reconciliation_report": {
+            "total_groups": len(reconciled_groups),
+            "total_reassignments": len(reconciliation.get("reassignments", [])),
+            **reconciliation,
+        },
     }
 
     output_dir = os.path.dirname(args.output)
@@ -259,7 +480,10 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(output_payload, fh, ensure_ascii=False, indent=2)
 
-    print(f"Saved ontology with {len(response.get('groups', []))} groups to {args.output}")
+    print(
+        "Saved reconciled ontology with "
+        f"{len(reconciled_groups)} groups to {args.output}"
+    )
     return 0
 
 
