@@ -93,11 +93,13 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     }
 
     def collect_text(node: ET.Element, chunks: List[str]) -> None:
+        tag_name = local_name(node.tag)
+
         if node.text:
             chunks.append(node.text)
         for child in node:
             collect_text(child, chunks)
-        if local_name(node.tag) in block_tags:
+        if tag_name in block_tags:
             chunks.append("\n\n")
         if node.tail:
             chunks.append(node.tail)
