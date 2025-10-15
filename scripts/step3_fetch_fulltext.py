@@ -27,6 +27,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import re
 import xml.etree.ElementTree as ET
 from typing import Dict, Iterable, List, Optional
 
@@ -72,11 +73,36 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     body = root.find(".//body")
     if body is None:
         return None
+
+    block_tags = {
+        "p",
+        "sec",
+        "title",
+        "abstract",
+        "list-item",
+        "caption",
+        "fig",
+        "table-wrap",
+    }
+
+    def collect_text(node: ET.Element, chunks: List[str]) -> None:
+        if node.text:
+            chunks.append(node.text)
+        for child in node:
+            collect_text(child, chunks)
+        if node.tag in block_tags:
+            chunks.append("\n\n")
+        if node.tail:
+            chunks.append(node.tail)
+
     text_chunks: List[str] = []
-    for elem in body.iter():
-        if elem.text and elem.text.strip():
-            text_chunks.append(elem.text.strip())
-    return "\n\n".join(text_chunks) if text_chunks else None
+    collect_text(body, text_chunks)
+    raw_text = "".join(text_chunks)
+    normalized = re.sub(r"[ \t\r\f\v]+", " ", raw_text)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r" ?\n", "\n", normalized)
+    normalized = normalized.strip()
+    return normalized or None
 
 
 def enrich_records(records: Iterable[Dict]) -> List[Dict]:
