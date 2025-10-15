@@ -4,8 +4,10 @@ This repository bundles a lightweight, four-stage workflow for harvesting PubMed
 reviews about aging theories, curating the relevant subset with OpenAI, pulling
 open-access full texts, and extracting the theories they discuss. Each stage is
 implemented as a standalone script so you can inspect or extend the behaviour in
-isolation, and a convenience runner (`scripts/run_full_pipeline.py`) chains them
-into a single command for day-to-day use.
+isolation, and a convenience runner (`scripts/run_pipeline.py`) chains them into
+a single command for day-to-day use. The legacy
+`scripts/run_full_pipeline.py` module now forwards to the same entrypoint so
+existing automation keeps working.
 
 > **Note**  
 > The project ships without vendored credentials. Export the API keys you are
@@ -33,8 +35,9 @@ that the Hackaging organisers require for leaderboard submissions.
 
 The repository now includes a four-stage bootstrap that focuses specifically on
 aging-theory review articles retrieved from PubMed. The helper scripts live in
-`scripts/step[1-4]_*.py`, and a convenience orchestrator
-(`scripts/run_pipeline.py`) runs the entire sequence end-to-end.
+`scripts/step[1-5]_*.py`, and a convenience orchestrator
+(`scripts/run_pipeline.py`) runs the entire sequence end-to-end while merging
+records from PubMed, OpenAlex, and optional Google Scholar collectors.
 
 ### 1. Configure credentials
 
@@ -59,23 +62,29 @@ By default this performs:
 
 1. `step1_pubmed_search.py` – exhaustive PubMed search for review articles
    matching the query `(aging theory OR ageing theory OR theories of aging)` in
-   titles/abstracts, saving metadata to `start_reviews.json`.
-2. `step2_filter_reviews.py` – OpenAI-powered screening of each record's title
+   titles/abstracts, saving metadata to `start_reviews_pubmed.json`.
+2. `step1b_openalex_search.py` – OpenAlex metadata harvest for the same keyword
+   set, stored in `start_reviews_openalex.json`.
+3. Optional Google Scholar collector (`step1c_*`) when present.
+4. Deduplication and merging of the provider outputs into a single
+   `start_reviews.json` file keyed on DOI/PMID/OpenAlex IDs.
+5. `step2_filter_reviews.py` – OpenAI-powered screening of each record's title
    and abstract to discard off-topic material, storing decisions in
    `filtered_reviews.json`.
-3. `step3_fetch_fulltext.py` – PMC full-text enrichment when an article has a
+6. `step3_fetch_fulltext.py` – PMC full-text enrichment when an article has a
    matching PubMed Central entry, preserving paragraph boundaries so downstream
    models see intact sentences.
-4. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
+7. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
    (full) texts, plus aggregation of unique theory names in
    `aging_theories.json`.
-5. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
+8. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
    theories into multi-level ontology clusters saved as `aging_ontology.json`.
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
-supplied. Use `--query`, `--filter-model`, `--theory-model`, `--max-chars`, or
-the ontology arguments (`--ontology-model`, `--ontology-top-n`,
-`--ontology-examples`) to customise individual stages.
+supplied. Use `--query`, `--filter-model`, `--theory-model` (or the legacy
+`--extract-model` alias), `--max-chars`, or the ontology arguments
+(`--ontology-model`, `--ontology-top-n`, `--ontology-examples`) to customise
+individual stages.
 
 ### 3. Run stages individually (optional)
 
@@ -84,7 +93,16 @@ particular step:
 
 ```bash
 # Step 1 – PubMed search
-python scripts/step1_pubmed_search.py --output data/pipeline/start_reviews.json
+python scripts/step1_pubmed_search.py --output data/pipeline/start_reviews_pubmed.json
+
+# Step 1b – OpenAlex search
+python scripts/step1b_openalex_search.py --output data/pipeline/start_reviews_openalex.json
+
+# Step 1c – Optional Google Scholar search (only if the helper exists)
+python scripts/step1c_google_scholar.py --output data/pipeline/start_reviews_google_scholar.json
+
+# Merge provider outputs before filtering (handled automatically by run_pipeline.py)
+# Copy or concatenate the collected JSON into data/pipeline/start_reviews.json
 
 # Step 2 – LLM relevance filtering
 python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json --output data/pipeline/filtered_reviews.json
@@ -152,24 +170,21 @@ export PUBMED_EMAIL="maintainer@example.org"
 
 ### 2. Run the full pipeline
 
-The helper script orchestrates the four stages and stores intermediate JSON
-artefacts in `data/pipeline/` by default:
+The helper script orchestrates collection, deduplication, filtering, full-text
+enrichment, theory extraction, and ontology building. Intermediate JSON
+artefacts are stored in `data/pipeline/` by default:
 
 ```bash
-python scripts/run_full_pipeline.py \
+python scripts/run_pipeline.py \
   --query '(("aging theory"[TIAB] OR "ageing theory"[TIAB]) AND review[PTYP])' \
-  --output-dir data/pipeline
+  --workdir data/pipeline
 ```
 
-Override `--filter-model`, `--extract-model`, or the request delays if you need
-custom OpenAI models or throttling for quota management. When the command
-completes successfully you should see four files:
-
-- `start_reviews.json` – raw PubMed review metadata
-- `filtered_reviews.json` – records that passed the LLM relevance filter
-- `filtered_reviews_fulltext.json` – filtered records augmented with PubMed
-  Central full texts where available
-- `aging_theories.json` – the final catalogue with extracted theories
+Override `--filter-model`, `--theory-model` (or the compatibility flag
+`--extract-model`), or the request delays if you need custom OpenAI models or
+throttling for quota management. When the command completes successfully you
+should see the merged metadata (`start_reviews.json`) alongside the filtered,
+full-text, theory, and ontology artefacts in `data/pipeline/`.
 
 ## Running stages manually
 
@@ -179,7 +194,17 @@ only part of the workflow while debugging. They can be executed independently:
 ```bash
 # Step 1 — PubMed review search
 python scripts/step1_pubmed_search.py \
-  --output data/pipeline/start_reviews.json
+  --output data/pipeline/start_reviews_pubmed.json
+
+# Step 1b — OpenAlex review search
+python scripts/step1b_openalex_search.py \
+  --output data/pipeline/start_reviews_openalex.json
+
+# Step 1c — Optional Google Scholar review search (if available)
+python scripts/step1c_google_scholar.py \
+  --output data/pipeline/start_reviews_google_scholar.json
+
+# Merge the provider outputs into start_reviews.json before continuing
 
 # Step 2 — LLM-based relevance filtering
 python scripts/step2_filter_reviews.py \
