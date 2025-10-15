@@ -22,10 +22,20 @@ from typing import Dict, Iterable, List, Mapping
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
+# OpenAlex uses fairly coarse publication type buckets ("article", "dataset", etc.)
+# while Crossref contributes the familiar journal categorisation. We keep the query
+# broad enough to return journal literature while excluding paratext (editorials,
+# corrections) so downstream filtering via LLM stays effective.
+DEFAULT_FILTERS = (
+    "type:article",
+    "type_crossref:journal-article",
+    "is_paratext:false",
+)
+
 DEFAULT_TERMS = [
-    '"aging theory"',
-    '"ageing theory"',
-    '"theories of aging"',
+    "aging theory",
+    "ageing theory",
+    "theories of aging",
 ]
 
 
@@ -201,13 +211,47 @@ def ensure_directory(path: str) -> None:
         os.makedirs(directory, exist_ok=True)
 
 
-def fetch_openalex(term: str, per_page: int, delay: float) -> List[Mapping[str, object]]:
+def build_filter_param(extra_filters: Iterable[str] | None = None) -> str:
+    filters = list(DEFAULT_FILTERS)
+    if extra_filters:
+        for value in extra_filters:
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            if cleaned:
+                filters.append(cleaned)
+    return ",".join(filters)
+
+
+def fetch_openalex(
+    term: str,
+    per_page: int,
+    delay: float,
+    extra_filters: Iterable[str] | None = None,
+) -> List[Mapping[str, object]]:
     cursor = "*"
     results: List[Mapping[str, object]] = []
+    filter_param = build_filter_param(extra_filters)
+    # OpenAlex search accepts either Lucene-like strings or plain keywords.
+    # We keep the keyword form to avoid over-quoting and let OpenAlex match the
+    # phrase across title/abstract/keyword metadata. Users can still pass
+    # advanced search expressions via --terms.
+    search_term = term.strip()
+    if (
+        search_term
+        and "\"" not in search_term
+        and ":" not in search_term
+        and " " in search_term
+    ):
+        # Use phrase matching for plain multi-word keywords to avoid pulling
+        # millions of loosely related results. Advanced filters (containing
+        # colons or explicit quotes) are passed through untouched so power
+        # users can express richer queries.
+        search_term = f'"{search_term}"'
     while cursor:
         params = {
-            "search": term,
-            "filter": "type:journal-article,type_crossref:review",
+            "search": search_term,
+            "filter": filter_param,
             "per-page": per_page,
             "cursor": cursor,
         }
@@ -234,10 +278,20 @@ def fetch_openalex(term: str, per_page: int, delay: float) -> List[Mapping[str, 
     return results
 
 
-def collect_records(terms: Iterable[str], per_page: int, delay: float) -> List[OpenAlexRecord]:
+def collect_records(
+    terms: Iterable[str],
+    per_page: int,
+    delay: float,
+    extra_filters: Iterable[str] | None = None,
+) -> List[OpenAlexRecord]:
     seen: Dict[str, Mapping[str, object]] = {}
     for term in terms:
-        fetched = fetch_openalex(term, per_page=per_page, delay=delay)
+        fetched = fetch_openalex(
+            term,
+            per_page=per_page,
+            delay=delay,
+            extra_filters=extra_filters,
+        )
         for item in fetched:
             identifier = item.get("id") if isinstance(item, Mapping) else None
             if not isinstance(identifier, str):
@@ -267,6 +321,15 @@ def main(argv: List[str] | None = None) -> int:
         help="Delay between paginated API requests (seconds).",
     )
     parser.add_argument(
+        "--filter",
+        action="append",
+        dest="filters",
+        help=(
+            "Additional OpenAlex filter clauses to append to the default "
+            "type/article journal selection (e.g. from_publication_date:1990-01-01)."
+        ),
+    )
+    parser.add_argument(
         "--terms",
         nargs="*",
         default=DEFAULT_TERMS,
@@ -275,7 +338,12 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        records = collect_records(args.terms, per_page=args.per_page, delay=args.delay)
+        records = collect_records(
+            args.terms,
+            per_page=args.per_page,
+            delay=args.delay,
+            extra_filters=args.filters,
+        )
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         return 2
