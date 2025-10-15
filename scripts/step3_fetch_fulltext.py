@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
@@ -95,27 +96,35 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
     if body is None:
         return None
 
-    paragraphs: List[str] = []
-    for node in body.findall(".//p"):
-        fragments = [
-            part.strip()
-            for part in node.itertext()
-            if part and part.strip()
-        ]
-        if not fragments:
-            continue
-        paragraphs.append(" ".join(" ".join(fragments).split()))
+    block_tags = {
+        "p",
+        "sec",
+        "title",
+        "abstract",
+        "list-item",
+        "caption",
+        "fig",
+        "table-wrap",
+    }
 
-    if not paragraphs:
-        # Fallback: flatten the entire body text when paragraph tags are absent.
-        text_chunks = [
-            part.strip() for part in body.itertext() if part and part.strip()
-        ]
-        if not text_chunks:
-            return None
-        return " ".join(text_chunks)
+    def collect_text(node: ET.Element, chunks: List[str]) -> None:
+        if node.text:
+            chunks.append(node.text)
+        for child in node:
+            collect_text(child, chunks)
+        if node.tag in block_tags:
+            chunks.append("\n\n")
+        if node.tail:
+            chunks.append(node.tail)
 
-    return "\n\n".join(paragraphs)
+    text_chunks: List[str] = []
+    collect_text(body, text_chunks)
+    raw_text = "".join(text_chunks)
+    normalized = re.sub(r"[ \t\r\f\v]+", " ", raw_text)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r" ?\n", "\n", normalized)
+    normalized = normalized.strip()
+    return normalized or None
 
 
 def enrich_records(records: Iterable[Dict]) -> List[Dict]:
