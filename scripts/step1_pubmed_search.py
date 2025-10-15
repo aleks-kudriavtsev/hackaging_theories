@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Iterable, List
 
 
@@ -54,6 +54,8 @@ class PubMedRecord:
     authors: List[str]
     journal: str | None
     publication_year: str | None
+    doi: str | None
+    sources: List[str] = field(default_factory=list)
 
     @classmethod
     def from_xml(cls, article: ET.Element) -> "PubMedRecord":
@@ -101,6 +103,15 @@ class PubMedRecord:
             medline_date = pub_date.findtext("MedlineDate")
             publication_year = (year or medline_date or "").strip() or None
 
+        doi = None
+        for article_id in article.findall(".//ArticleIdList/ArticleId"):
+            id_type = (article_id.attrib.get("IdType") or "").lower()
+            if id_type == "doi" and article_id.text:
+                candidate = article_id.text.strip()
+                if candidate:
+                    doi = candidate
+                break
+
         return cls(
             pmid=pmid or "",
             title=title,
@@ -109,6 +120,8 @@ class PubMedRecord:
             authors=authors,
             journal=(journal or "").strip() or None,
             publication_year=publication_year,
+            doi=doi,
+            sources=["pubmed"],
         )
 
 
