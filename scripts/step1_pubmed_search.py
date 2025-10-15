@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -115,12 +116,27 @@ def entrez_request(path: str, params: dict[str, str | int]) -> bytes:
     """Execute an HTTP GET against the NCBI E-utilities API."""
 
     api_key = os.environ.get("PUBMED_API_KEY")
+    tool = os.environ.get("PUBMED_TOOL")
+    email = os.environ.get("PUBMED_EMAIL")
     query = params.copy()
     if api_key:
         query.setdefault("api_key", api_key)
+    if tool:
+        query.setdefault("tool", tool)
+    if email:
+        query.setdefault("email", email)
     url = f"{EUTILS_BASE}/{path}?{urllib.parse.urlencode(query)}"
-    with urllib.request.urlopen(url) as response:  # nosec: trusted host
-        return response.read()
+    request = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(request) as response:  # nosec: trusted host
+            return response.read()
+    except urllib.error.HTTPError as exc:  # pragma: no cover - network guard
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(
+            f"Entrez request failed ({exc.code}): {body or exc.reason}"
+        ) from exc
+    except urllib.error.URLError as exc:  # pragma: no cover - network guard
+        raise RuntimeError(f"Entrez request failed: {exc.reason}") from exc
 
 
 def esearch_ids(term: str, batch_size: int = 500) -> List[str]:
@@ -138,7 +154,21 @@ def esearch_ids(term: str, batch_size: int = 500) -> List[str]:
             "retmode": "xml",
         }
         data = entrez_request("esearch.fcgi", payload)
-        root = ET.fromstring(data)
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as err:  # pragma: no cover - defensive guard
+            raise RuntimeError("Unable to parse ESearch XML response") from err
+        # Surface any query issues flagged by the ESearch service.
+        errors = [
+            err.text.strip()
+            for err in root.findall(".//ErrorList/*")
+            if (err.text or "").strip()
+        ]
+        if errors:
+            raise ValueError(
+                "PubMed rejected the search term: " + "; ".join(errors)
+            )
+
         if total_count is None:
             total_count_text = root.findtext(".//Count")
             total_count = int(total_count_text or 0)
@@ -169,14 +199,17 @@ def fetch_records(pmids: Iterable[str]) -> List[PubMedRecord]:
     """Fetch full metadata for a list of PubMed IDs."""
 
     records: List[PubMedRecord] = []
-    for batch in chunked(list(pmids), 200):
+    for batch in chunked(pmids, 200):
         payload = {
             "db": "pubmed",
             "id": ",".join(batch),
             "retmode": "xml",
         }
         data = entrez_request("efetch.fcgi", payload)
-        root = ET.fromstring(data)
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as err:  # pragma: no cover - defensive guard
+            raise RuntimeError("Unable to parse EFetch XML response") from err
         for article in root.findall(".//PubmedArticle"):
             records.append(PubMedRecord.from_xml(article))
         time.sleep(0.34)
@@ -208,15 +241,18 @@ def main(argv: List[str] | None = None) -> int:
 
     try:
         ids = esearch_ids(args.query)
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 2
-    ids = esearch_ids(args.query)
     if not ids:
         print("No PubMed records found for query", file=sys.stderr)
         return 1
 
-    records = fetch_records(ids)
+    try:
+        records = fetch_records(ids)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     ensure_directory(args.output)
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump([asdict(record) for record in records], fh, ensure_ascii=False, indent=2)

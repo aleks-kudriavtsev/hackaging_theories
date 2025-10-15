@@ -25,10 +25,11 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -37,11 +38,26 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 def entrez_request(path: str, params: Dict[str, str]) -> bytes:
     query = params.copy()
     api_key = os.environ.get("PUBMED_API_KEY")
+    tool = os.environ.get("PUBMED_TOOL")
+    email = os.environ.get("PUBMED_EMAIL")
     if api_key:
         query.setdefault("api_key", api_key)
+    if tool:
+        query.setdefault("tool", tool)
+    if email:
+        query.setdefault("email", email)
     url = f"{EUTILS_BASE}/{path}?{urllib.parse.urlencode(query)}"
-    with urllib.request.urlopen(url) as response:  # nosec: trusted endpoint
-        return response.read()
+    request = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(request) as response:  # nosec: trusted endpoint
+            return response.read()
+    except urllib.error.HTTPError as exc:  # pragma: no cover - network edge case
+        error_body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(
+            f"Entrez request failed ({exc.code}): {error_body or exc.reason}"
+        ) from exc
+    except urllib.error.URLError as exc:  # pragma: no cover - network edge case
+        raise RuntimeError(f"Entrez request failed: {exc.reason}") from exc
 
 
 def extract_pmcid(pubmed_xml: ET.Element) -> Optional[str]:
@@ -58,7 +74,10 @@ def fetch_pubmed_xml(pmid: str) -> Optional[ET.Element]:
         "efetch.fcgi",
         {"db": "pubmed", "id": pmid, "retmode": "xml"},
     )
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as err:  # pragma: no cover - defensive guard
+        raise RuntimeError("Unable to parse PubMed XML response") from err
     article = root.find(".//PubmedArticle")
     return article
 
@@ -68,19 +87,35 @@ def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
         "efetch.fcgi",
         {"db": "pmc", "id": pmcid, "retmode": "xml"},
     )
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as err:  # pragma: no cover - defensive guard
+        raise RuntimeError("Unable to parse PMC XML response") from err
     body = root.find(".//body")
     if body is None:
         return None
-    text_chunks: List[str] = [
-        part.strip() for part in body.itertext() if part and part.strip()
-    ]
-    return " ".join(text_chunks) if text_chunks else None
-    text_chunks: List[str] = []
-    for elem in body.iter():
-        if elem.text and elem.text.strip():
-            text_chunks.append(elem.text.strip())
-    return "\n\n".join(text_chunks) if text_chunks else None
+
+    paragraphs: List[str] = []
+    for node in body.findall(".//p"):
+        fragments = [
+            part.strip()
+            for part in node.itertext()
+            if part and part.strip()
+        ]
+        if not fragments:
+            continue
+        paragraphs.append(" ".join(" ".join(fragments).split()))
+
+    if not paragraphs:
+        # Fallback: flatten the entire body text when paragraph tags are absent.
+        text_chunks = [
+            part.strip() for part in body.itertext() if part and part.strip()
+        ]
+        if not text_chunks:
+            return None
+        return " ".join(text_chunks)
+
+    return "\n\n".join(paragraphs)
 
 
 def enrich_records(records: Iterable[Dict]) -> List[Dict]:
