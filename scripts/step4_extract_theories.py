@@ -35,6 +35,25 @@ import urllib.request
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
+def _normalise_theory_list(payload: Dict) -> Dict:
+    theories = payload.get("theories")
+    if theories is None:
+        return payload
+    if isinstance(theories, list):
+        cleaned = []
+        for item in theories:
+            if isinstance(item, str):
+                name = item.strip()
+                if name:
+                    cleaned.append(name)
+        payload["theories"] = cleaned
+    elif isinstance(theories, str):
+        payload["theories"] = [theories.strip()] if theories.strip() else []
+    else:
+        payload["theories"] = []
+    return payload
+
+
 def call_openai(prompt: str, api_key: str, model: str) -> Dict:
     payload = json.dumps(
         {
@@ -77,12 +96,20 @@ def call_openai(prompt: str, api_key: str, model: str) -> Dict:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as err:  # pragma: no cover - defensive guard
         raise RuntimeError(f"Unexpected OpenAI response: {data!r}") from err
-    return json.loads(content)
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as err:
+        raise RuntimeError(
+            "OpenAI returned invalid JSON payload: " + content
+        ) from err
+
+    return _normalise_theory_list(parsed)
 
 
 def build_prompt(record: Dict, max_chars: int) -> str:
     text = record.get("full_text") or record.get("abstract") or ""
-    if len(text) > max_chars:
+    if max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars]
         text = text.rsplit(" ", 1)[0]  # avoid cutting mid-word
         text += "..."

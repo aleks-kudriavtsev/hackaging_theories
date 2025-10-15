@@ -8,6 +8,7 @@ the same structured payload.
 Environment variables
 ---------------------
 - ``PUBMED_API_KEY`` — optional, increases the request quota and rate limits.
+- ``PUBMED_TOOL`` and ``PUBMED_EMAIL`` — recommended by NCBI for contact info.
 
 Usage
 -----
@@ -26,14 +27,20 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Iterable, List
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+DEFAULT_QUERY = (
+    '(("aging theory"[TIAB] OR "ageing theory"[TIAB] '
+    'OR "theories of aging"[TIAB]) AND review[PTYP])'
+)
 
 
 @dataclass
@@ -47,6 +54,8 @@ class PubMedRecord:
     authors: List[str]
     journal: str | None
     publication_year: str | None
+    doi: str | None
+    sources: List[str] = field(default_factory=list)
 
     @classmethod
     def from_xml(cls, article: ET.Element) -> "PubMedRecord":
@@ -94,6 +103,15 @@ class PubMedRecord:
             medline_date = pub_date.findtext("MedlineDate")
             publication_year = (year or medline_date or "").strip() or None
 
+        doi = None
+        for article_id in article.findall(".//ArticleIdList/ArticleId"):
+            id_type = (article_id.attrib.get("IdType") or "").lower()
+            if id_type == "doi" and article_id.text:
+                candidate = article_id.text.strip()
+                if candidate:
+                    doi = candidate
+                break
+
         return cls(
             pmid=pmid or "",
             title=title,
@@ -102,6 +120,8 @@ class PubMedRecord:
             authors=authors,
             journal=(journal or "").strip() or None,
             publication_year=publication_year,
+            doi=doi,
+            sources=["pubmed"],
         )
 
 
@@ -109,12 +129,27 @@ def entrez_request(path: str, params: dict[str, str | int]) -> bytes:
     """Execute an HTTP GET against the NCBI E-utilities API."""
 
     api_key = os.environ.get("PUBMED_API_KEY")
+    tool = os.environ.get("PUBMED_TOOL")
+    email = os.environ.get("PUBMED_EMAIL")
     query = params.copy()
     if api_key:
         query.setdefault("api_key", api_key)
+    if tool:
+        query.setdefault("tool", tool)
+    if email:
+        query.setdefault("email", email)
     url = f"{EUTILS_BASE}/{path}?{urllib.parse.urlencode(query)}"
-    with urllib.request.urlopen(url) as response:  # nosec: trusted host
-        return response.read()
+    request = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(request) as response:  # nosec: trusted host
+            return response.read()
+    except urllib.error.HTTPError as exc:  # pragma: no cover - network guard
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(
+            f"Entrez request failed ({exc.code}): {body or exc.reason}"
+        ) from exc
+    except urllib.error.URLError as exc:  # pragma: no cover - network guard
+        raise RuntimeError(f"Entrez request failed: {exc.reason}") from exc
 
 
 def esearch_ids(term: str, batch_size: int = 500) -> List[str]:
@@ -132,7 +167,21 @@ def esearch_ids(term: str, batch_size: int = 500) -> List[str]:
             "retmode": "xml",
         }
         data = entrez_request("esearch.fcgi", payload)
-        root = ET.fromstring(data)
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as err:  # pragma: no cover - defensive guard
+            raise RuntimeError("Unable to parse ESearch XML response") from err
+        # Surface any query issues flagged by the ESearch service.
+        errors = [
+            err.text.strip()
+            for err in root.findall(".//ErrorList/*")
+            if (err.text or "").strip()
+        ]
+        if errors:
+            raise ValueError(
+                "PubMed rejected the search term: " + "; ".join(errors)
+            )
+
         if total_count is None:
             total_count_text = root.findtext(".//Count")
             total_count = int(total_count_text or 0)
@@ -163,14 +212,17 @@ def fetch_records(pmids: Iterable[str]) -> List[PubMedRecord]:
     """Fetch full metadata for a list of PubMed IDs."""
 
     records: List[PubMedRecord] = []
-    for batch in chunked(list(pmids), 200):
+    for batch in chunked(pmids, 200):
         payload = {
             "db": "pubmed",
             "id": ",".join(batch),
             "retmode": "xml",
         }
         data = entrez_request("efetch.fcgi", payload)
-        root = ET.fromstring(data)
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as err:  # pragma: no cover - defensive guard
+            raise RuntimeError("Unable to parse EFetch XML response") from err
         for article in root.findall(".//PubmedArticle"):
             records.append(PubMedRecord.from_xml(article))
         time.sleep(0.34)
@@ -187,8 +239,11 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Collect PubMed reviews on aging theory")
     parser.add_argument(
         "--query",
-        default='"Aging Theory" AND review[Publication Type]',
-        help="PubMed search query to execute (defaults to review articles on aging theory).",
+        default=DEFAULT_QUERY,
+        help=(
+            "PubMed search query to execute (defaults to a Title/Abstract search for "
+            "aging theories limited to review publication type)."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -197,12 +252,20 @@ def main(argv: List[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    ids = esearch_ids(args.query)
+    try:
+        ids = esearch_ids(args.query)
+    except (ValueError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
     if not ids:
         print("No PubMed records found for query", file=sys.stderr)
         return 1
 
-    records = fetch_records(ids)
+    try:
+        records = fetch_records(ids)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     ensure_directory(args.output)
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump([asdict(record) for record in records], fh, ensure_ascii=False, indent=2)
