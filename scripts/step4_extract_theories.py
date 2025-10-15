@@ -22,12 +22,15 @@ python scripts/step4_extract_theories.py \
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 import sys
 import textwrap
 import time
-from typing import Dict, Iterable, List, Set
+import unicodedata
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 import urllib.error
 import urllib.request
 
@@ -54,22 +57,17 @@ def _normalise_theory_list(payload: Dict) -> Dict:
     return payload
 
 
-def call_openai(prompt: str, api_key: str, model: str) -> Dict:
+def chat_completion_json(
+    system_prompt: str, user_prompt: str, api_key: str, model: str
+) -> Dict:
     payload = json.dumps(
         {
             "model": model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract distinct aging theories from the supplied review "
-                        "text. Return JSON with keys `theories` (list of strings) "
-                        "and `notes` (optional explanatory text)."
-                    ),
-                },
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
         }
     ).encode("utf-8")
@@ -104,6 +102,16 @@ def call_openai(prompt: str, api_key: str, model: str) -> Dict:
             "OpenAI returned invalid JSON payload: " + content
         ) from err
 
+    return parsed
+
+
+def call_openai(prompt: str, api_key: str, model: str) -> Dict:
+    system_prompt = (
+        "Extract distinct aging theories from the supplied review text. Return "
+        "JSON with keys `theories` (list of strings) and `notes` (optional "
+        "explanatory text)."
+    )
+    parsed = chat_completion_json(system_prompt, prompt, api_key, model)
     return _normalise_theory_list(parsed)
 
 
@@ -144,16 +152,231 @@ def extract_theories(records: Iterable[Dict], api_key: str, model: str, delay: f
     return annotated
 
 
-def aggregate_theories(annotated: Iterable[Dict]) -> List[str]:
-    theories: Set[str] = set()
-    for record in annotated:
-        extracted = record.get("theory_extraction", {}).get("theories") or []
-        for name in extracted:
-            if isinstance(name, str):
-                cleaned = name.strip()
-                if cleaned:
-                    theories.add(cleaned)
-    return sorted(theories)
+def slugify(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode(
+        "ascii"
+    )
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    normalized = re.sub(r"-+", "-", normalized)
+    return normalized.strip("-")
+
+
+def lexical_signature(value: str) -> Tuple[str, Tuple[str, ...]]:
+    tokens = re.split(r"[^a-z0-9]+", value.lower())
+    tokens = [token for token in tokens if token]
+    return (" ".join(tokens), tuple(sorted(tokens)))
+
+
+def find_lexical_match(
+    name: str,
+    slug: str,
+    slug_index: Dict[str, str],
+    signatures: Dict[str, Tuple[str, Tuple[str, ...]]],
+) -> Optional[str]:
+    if slug and slug in slug_index:
+        return slug_index[slug]
+
+    target_signature = lexical_signature(name)
+    best_match: Optional[Tuple[str, float]] = None
+    for theory_id, signature in signatures.items():
+        candidate_text, candidate_tokens = signature
+        score = difflib.SequenceMatcher(None, target_signature[0], candidate_text).ratio()
+        if score >= 0.9:
+            return theory_id
+        if target_signature[1] == candidate_tokens and candidate_tokens:
+            return theory_id
+        if score >= 0.75:
+            if best_match is None or score > best_match[1]:
+                best_match = (theory_id, score)
+    if best_match:
+        return best_match[0]
+    return None
+
+
+def disambiguate_with_llm(
+    name: str,
+    candidates: Dict[str, Dict],
+    record: Dict,
+    api_key: str,
+    model: str,
+) -> Optional[str]:
+    if not candidates:
+        return None
+
+    title = record.get("title", "")
+    abstract = record.get("abstract", "") or record.get("full_text", "")
+    if abstract:
+        abstract = abstract[:1500]
+    system_prompt = (
+        "You reconcile potentially duplicate aging theory names. Analyse the "
+        "context and respond with JSON containing keys `match_id` (string or "
+        "null) and `rationale` (string). Choose an existing theory ID only if it "
+        "clearly refers to the same conceptual theory; otherwise return null."
+    )
+    candidate_lines = []
+    for theory_id, entry in candidates.items():
+        label = entry.get("label")
+        aliases = ", ".join(entry.get("aliases", [])) or "(no aliases yet)"
+        candidate_lines.append(f"- {theory_id}: {label} | aliases: {aliases}")
+    user_prompt = textwrap.dedent(
+        f"""
+        New theory mention: {name}
+        Article title: {title}
+
+        Known candidates:
+        {os.linesep.join(candidate_lines)}
+
+        Article context snippet:
+        {abstract}
+        """
+    ).strip()
+    try:
+        response = chat_completion_json(system_prompt, user_prompt, api_key, model)
+    except RuntimeError:
+        return None
+    match_id = response.get("match_id")
+    if isinstance(match_id, str) and match_id in candidates:
+        rationale = response.get("rationale")
+        notes = candidates[match_id].setdefault("notes", [])
+        if isinstance(rationale, str) and rationale.strip():
+            notes.append(rationale.strip())
+        return match_id
+    return None
+
+
+def build_theory_registry(
+    annotated: Iterable[Dict], api_key: str, model: str
+) -> Dict[str, Dict]:
+    registry: Dict[str, Dict] = {}
+    signature_index: Dict[str, Tuple[str, Tuple[str, ...]]] = {}
+    slug_index: Dict[str, str] = {}
+
+    def add_alias(entry: Dict, alias: str) -> None:
+        aliases: Set[str] = set(entry.setdefault("aliases", []))
+        if alias not in aliases:
+            aliases.add(alias)
+            entry["aliases"] = sorted(aliases)
+
+    for idx, record in enumerate(annotated):
+        extraction = record.get("theory_extraction") or {}
+        theories = extraction.get("theories") or []
+        if not isinstance(theories, list):
+            continue
+        article_assignments: List[Dict[str, str]] = []
+
+        article_id = record.get("id") or record.get("uid") or record.get("doi")
+        if not article_id:
+            article_id = record.get("openalex_id") or record.get("pmid")
+        if not article_id:
+            article_id = f"article-{idx+1}"
+        openalex_id = record.get("openalex_id")
+        pmid = record.get("pmid")
+
+        for raw_name in theories:
+            if not isinstance(raw_name, str):
+                continue
+            cleaned = raw_name.strip()
+            if not cleaned:
+                continue
+            slug = slugify(cleaned)
+            signature = lexical_signature(cleaned)
+            theory_id = None
+
+            # direct slug match
+            if slug and slug in slug_index:
+                theory_id = slug_index[slug]
+            else:
+                candidate_id = find_lexical_match(
+                    cleaned, slug, slug_index, signature_index
+                )
+                if candidate_id and candidate_id in registry:
+                    theory_id = candidate_id
+                else:
+                    potential_candidates = {
+                        key: value
+                        for key, value in registry.items()
+                        if difflib.SequenceMatcher(
+                            None,
+                            signature[0],
+                            signature_index.get(key, ("", tuple()))[0],
+                        ).ratio()
+                        >= 0.65
+                    }
+                    match = disambiguate_with_llm(
+                        cleaned, potential_candidates, record, api_key, model
+                    )
+                    if match:
+                        theory_id = match
+
+            if theory_id is None:
+                provenance_bits: List[str] = []
+                if openalex_id:
+                    provenance_bits.append(str(openalex_id))
+                if pmid:
+                    provenance_bits.append(str(pmid))
+                provenance_bits.append(article_id)
+                provenance = "-".join(provenance_bits)
+                theory_id = f"{slug or 'theory'}__{slugify(provenance)}"
+                registry[theory_id] = {
+                    "label": cleaned,
+                    "slug": slug,
+                    "provenance": {
+                        "article_id": article_id,
+                        "openalex_id": openalex_id,
+                        "pmid": pmid,
+                    },
+                    "supporting_articles": [],
+                    "openalex_ids": [],
+                    "pmids": [],
+                    "aliases": [],
+                    "notes": [],
+                }
+                signature_index[theory_id] = signature
+                if slug:
+                    slug_index.setdefault(slug, theory_id)
+            else:
+                # update slug index if new slug was unseen
+                if slug and slug not in slug_index:
+                    slug_index[slug] = theory_id
+                signature_index.setdefault(theory_id, signature)
+
+            entry = registry[theory_id]
+            add_alias(entry, cleaned)
+            entry.setdefault("supporting_articles", [])
+            if article_id not in entry["supporting_articles"]:
+                entry["supporting_articles"].append(article_id)
+            if openalex_id:
+                entry.setdefault("openalex_ids", [])
+                if openalex_id not in entry["openalex_ids"]:
+                    entry["openalex_ids"].append(openalex_id)
+            if pmid:
+                entry.setdefault("pmids", [])
+                if pmid not in entry["pmids"]:
+                    entry["pmids"].append(pmid)
+            if extraction.get("notes"):
+                note_text = extraction["notes"]
+                if isinstance(note_text, str) and note_text.strip():
+                    notes = entry.setdefault("notes", [])
+                    if note_text.strip() not in notes:
+                        notes.append(note_text.strip())
+
+            article_assignments.append({"theory_id": theory_id, "alias": cleaned})
+
+        if article_assignments:
+            record["theory_assignments"] = article_assignments
+
+    for entry in registry.values():
+        entry.setdefault("aliases", [])
+        entry["aliases"] = sorted(dict.fromkeys(entry["aliases"]))
+        entry.setdefault("supporting_articles", [])
+        entry["supporting_articles"] = sorted(entry["supporting_articles"])
+        entry.setdefault("openalex_ids", [])
+        entry["openalex_ids"] = sorted(entry["openalex_ids"])
+        entry.setdefault("pmids", [])
+        entry["pmids"] = sorted(entry["pmids"])
+
+    return registry
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -183,15 +406,27 @@ def main(argv: List[str] | None = None) -> int:
         records = json.load(fh)
 
     annotated = extract_theories(records, api_key, args.model, args.delay, args.max_chars)
-    aggregated = aggregate_theories(annotated)
+    theory_registry = build_theory_registry(annotated, api_key, args.model)
+    aggregated = sorted(theory_registry.keys())
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as fh:
-        json.dump({"articles": annotated, "aggregated_theories": aggregated}, fh, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "articles": annotated,
+                "aggregated_theories": aggregated,
+                "theory_registry": theory_registry,
+            },
+            fh,
+            ensure_ascii=False,
+            indent=2,
+        )
 
-    print(f"Saved theory catalogue with {len(aggregated)} unique theories to {args.output}")
+    print(
+        f"Saved theory catalogue with {len(theory_registry)} canonical theories to {args.output}"
+    )
     return 0
 
 
