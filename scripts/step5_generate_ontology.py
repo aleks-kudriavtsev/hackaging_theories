@@ -27,7 +27,8 @@ Usage
 ```bash
 python scripts/step5_generate_ontology.py \
     --input data/pipeline/aging_theories.json \
-    --output data/pipeline/aging_ontology.json
+    --output data/pipeline/aging_ontology.json \
+    [--processes 4] [--chunk-size 120]
 ```
 """
 
@@ -36,12 +37,13 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import multiprocessing
 import os
 import sys
 import textwrap
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -120,6 +122,16 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
     return _normalise_groups(parsed)
 
 
+def _chunk_summary(
+    summary: Sequence[Mapping[str, object]],
+    *,
+    chunk_size: int,
+) -> Iterable[List[Mapping[str, object]]]:
+    chunk_size = max(1, chunk_size)
+    for start in range(0, len(summary), chunk_size):
+        yield [dict(item) for item in summary[start : start + chunk_size]]
+
+
 def _summarise_registry(
     registry: Mapping[str, Mapping[str, object]],
     *,
@@ -150,6 +162,18 @@ def _summarise_registry(
     if limit > 0:
         summary = summary[:limit]
     return summary
+
+
+def generate_grouping(
+    summary_chunk: Sequence[Mapping[str, object]],
+    total_unique: int,
+    model: str,
+    api_key: str,
+) -> Dict[str, object]:
+    """Generate ontology groups for a subset of the registry summary."""
+
+    prompt = _build_prompt(summary_chunk, total_unique)
+    return _call_openai(prompt, api_key, model)
 
 
 def _build_prompt(summary: Sequence[Mapping[str, object]], total_unique: int) -> str:
@@ -197,6 +221,77 @@ def _canonical_article_index(
     for theory_ids in article_index.values():
         theory_ids.sort()
     return article_index
+
+
+def _deduplicate_group(
+    group_node: Mapping[str, Any],
+    *,
+    seen_theories: Set[str],
+) -> Optional[Dict[str, Any]]:
+    name = group_node.get("name") or group_node.get("label")
+    if not isinstance(name, str) or not name.strip():
+        name = "Unnamed group"
+
+    payload: Dict[str, Any] = {"name": name.strip()}
+    description = group_node.get("description")
+    if isinstance(description, str) and description.strip():
+        payload["description"] = description.strip()
+
+    subgroups: List[Dict[str, Any]] = []
+    for key in ("subgroups", "children"):
+        for subgroup in group_node.get(key, []) or []:
+            if isinstance(subgroup, Mapping):
+                processed = _deduplicate_group(subgroup, seen_theories=seen_theories)
+                if processed:
+                    subgroups.append(processed)
+    if subgroups:
+        payload["subgroups"] = subgroups
+
+    theories: List[Dict[str, Any]] = []
+    for theory in group_node.get("theories", []) or []:
+        if not isinstance(theory, Mapping):
+            continue
+        theory_id = theory.get("theory_id") or theory.get("id")
+        if not isinstance(theory_id, str):
+            continue
+        if theory_id in seen_theories:
+            continue
+        seen_theories.add(theory_id)
+        theories.append(dict(theory))
+    if theories:
+        payload["theories"] = theories
+
+    if "subgroups" not in payload and "theories" not in payload:
+        return None
+    return payload
+
+
+def _merge_groupings(responses: Sequence[Mapping[str, object]]) -> List[Dict[str, Any]]:
+    seen_theories: Set[str] = set()
+    merged: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+
+    for response in responses:
+        normalised = _normalise_groups(response)
+        for group in normalised.get("groups", []) or []:
+            if not isinstance(group, Mapping):
+                continue
+            processed = _deduplicate_group(group, seen_theories=seen_theories)
+            if not processed:
+                continue
+            key = processed["name"].lower()
+            if key not in merged:
+                merged[key] = {"name": processed["name"]}
+                order.append(key)
+            target = merged[key]
+            if processed.get("description") and not target.get("description"):
+                target["description"] = processed["description"]
+            if processed.get("theories"):
+                target.setdefault("theories", []).extend(processed["theories"])
+            if processed.get("subgroups"):
+                target.setdefault("subgroups", []).extend(processed["subgroups"])
+
+    return [merged[key] for key in order]
 
 
 def _reconcile_theory_node(
@@ -419,6 +514,21 @@ def main(argv: List[str] | None = None) -> int:
         default=60,
         help="Maximum number of theories to include in the ontology prompt (0 for all).",
     )
+    parser.add_argument(
+        "--processes",
+        type=int,
+        default=None,
+        help="Number of worker processes for ontology generation (default: single process).",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=100,
+        help=(
+            "Maximum number of theories per chunk when splitting the registry summary. "
+            "Chunks are used when more than one process is requested or when the summary exceeds this threshold."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -445,12 +555,40 @@ def main(argv: List[str] | None = None) -> int:
         print("No canonical theories available in registry", file=sys.stderr)
         return 1
 
-    prompt = _build_prompt(summary, total_unique)
-    response = _call_openai(prompt, api_key, args.model)
+    processes = 1 if args.processes is None else args.processes
+    if processes < 1:
+        print("--processes must be at least 1", file=sys.stderr)
+        return 1
+
+    chunk_threshold = max(args.chunk_size, 1)
+    should_chunk = processes > 1 or len(summary) > chunk_threshold
+
+    if should_chunk:
+        summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_threshold))
+        worker_args = [
+            (chunk, total_unique, args.model, api_key)
+            for chunk in summary_chunks
+        ]
+
+        if processes > 1 and len(summary_chunks) > 1:
+            with multiprocessing.Pool(processes=processes) as pool:
+                chunk_responses = pool.starmap(generate_grouping, worker_args)
+        else:
+            chunk_responses = [
+                generate_grouping(chunk, total_unique, args.model, api_key)
+                for chunk in summary_chunks
+            ]
+
+        merged_groups = _merge_groupings(chunk_responses)
+        response = {"groups": merged_groups, "chunks": chunk_responses}
+        groups_for_reconciliation = merged_groups
+    else:
+        response = generate_grouping(summary, total_unique, args.model, api_key)
+        groups_for_reconciliation = response.get("groups", [])
 
     article_index = _canonical_article_index(registry)
     reconciled_groups, reconciliation = _reconcile_groups(
-        response.get("groups", []),
+        groups_for_reconciliation,
         registry,
         article_index=article_index,
     )
