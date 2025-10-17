@@ -182,7 +182,11 @@ python scripts/run_pipeline.py \
 
 Override `--filter-model`, `--theory-model` (or the compatibility flag
 `--extract-model`), or the request delays if you need custom OpenAI models or
-throttling for quota management. When the command completes successfully you
+throttling for quota management. The filtering stage also accepts
+`--batch-size` so multiple abstracts can be screened in a single request. Start
+with 5–10 items for GPT-4o/GPT-4o mini tiers (roughly 3–5k prompt tokens) and
+lower the value if your abstracts are unusually long or you are using a model
+with a smaller context window. When the command completes successfully you
 should see the merged metadata (`start_reviews.json`) alongside the filtered,
 full-text, theory, and ontology artefacts in `data/pipeline/`.
 
