@@ -4,7 +4,9 @@ This final step reads the enriched dataset created by
 ``step3_fetch_fulltext.py`` and prompts an OpenAI model to extract the names of
 aging theories discussed in each review. The script aggregates unique theory
 labels across all processed articles and stores both the per-article annotations
-and the combined set for downstream ontology building.
+and the combined set for downstream ontology building. Use ``--processes`` to
+control how many worker processes share the LLM queue (auto-detected for large
+inputs).
 
 Environment variables
 ---------------------
@@ -15,7 +17,8 @@ Usage
 ```bash
 python scripts/step4_extract_theories.py \
     --input data/pipeline/filtered_reviews_fulltext.json \
-    --output data/pipeline/aging_theories.json
+    --output data/pipeline/aging_theories.json \
+    --processes 4
 ```
 """
 
@@ -24,6 +27,8 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
+import multiprocessing
 import os
 import re
 import sys
@@ -138,17 +143,56 @@ def build_prompt(record: Dict, max_chars: int) -> str:
     ).strip()
 
 
-def extract_theories(records: Iterable[Dict], api_key: str, model: str, delay: float, max_chars: int) -> List[Dict]:
-    records_list = list(records)
-    annotated: List[Dict] = []
-    for idx, record in enumerate(records_list, start=1):
+def process_batch(payload: Tuple[List[Tuple[int, Dict]], str, str, float, int, int]) -> List[Tuple[int, Dict]]:
+    batch, api_key, model, delay, max_chars, total_records = payload
+    annotated: List[Tuple[int, Dict]] = []
+    for global_idx, record in batch:
         prompt = build_prompt(record, max_chars)
         response = call_openai(prompt, api_key, model)
         annotated_record = record.copy()
         annotated_record["theory_extraction"] = response
-        annotated.append(annotated_record)
-        print(f"Annotated {idx}/{len(records_list)} reviews", flush=True)
+        annotated.append((global_idx, annotated_record))
+        print(
+            f"Annotated {global_idx + 1}/{total_records} reviews",
+            flush=True,
+        )
         time.sleep(delay)
+    return annotated
+
+
+def extract_theories(
+    records: Iterable[Dict],
+    api_key: str,
+    model: str,
+    delay: float,
+    max_chars: int,
+    processes: int,
+) -> List[Dict]:
+    records_list = list(records)
+    total_records = len(records_list)
+    if total_records == 0:
+        return []
+
+    indexed_records: List[Tuple[int, Dict]] = list(enumerate(records_list))
+    if processes <= 1:
+        payload = (indexed_records, api_key, model, delay, max_chars, total_records)
+        annotated_pairs = process_batch(payload)
+    else:
+        chunk_size = math.ceil(total_records / processes)
+        batches: List[List[Tuple[int, Dict]]] = [
+            indexed_records[i : i + chunk_size]
+            for i in range(0, total_records, chunk_size)
+        ]
+        payloads = [
+            (batch, api_key, model, delay, max_chars, total_records)
+            for batch in batches
+        ]
+        with multiprocessing.Pool(processes=processes) as pool:
+            results = pool.map(process_batch, payloads)
+        annotated_pairs = [pair for chunk in results for pair in chunk]
+        annotated_pairs.sort(key=lambda item: item[0])
+
+    annotated = [record for _, record in annotated_pairs]
     return annotated
 
 
@@ -391,6 +435,15 @@ def main(argv: List[str] | None = None) -> int:
         default=12000,
         help="Maximum number of characters from each review to send to the LLM.",
     )
+    parser.add_argument(
+        "--processes",
+        type=int,
+        default=None,
+        help=(
+            "Number of worker processes to use for LLM calls; defaults to the CPU count "
+            "for queues above 100 items."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -405,7 +458,25 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
-    annotated = extract_theories(records, api_key, args.model, args.delay, args.max_chars)
+    if not isinstance(records, list):
+        print("Input JSON must contain a list of records", file=sys.stderr)
+        return 1
+
+    auto_processes = (os.cpu_count() or 1) if len(records) > 100 else 1
+    processes = args.processes or auto_processes
+    if len(records) == 0:
+        processes = 0
+    else:
+        processes = max(1, min(processes, len(records)))
+
+    annotated = extract_theories(
+        records,
+        api_key,
+        args.model,
+        args.delay,
+        args.max_chars,
+        processes,
+    )
     theory_registry = build_theory_registry(annotated, api_key, args.model)
     aggregated = sorted(theory_registry.keys())
 
