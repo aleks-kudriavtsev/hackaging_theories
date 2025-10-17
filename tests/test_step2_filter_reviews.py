@@ -127,3 +127,32 @@ def test_filter_records_retries_failed_items(monkeypatch: pytest.MonkeyPatch) ->
     assert responses == []
     assert records[0]["llm_filter"]["explanation"] == "Retry success"
     assert records[1]["llm_filter"]["relevant"] is False
+
+
+def test_single_item_retry_accepts_legacy_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        _record("a", "General", ""),
+        _record("b", "Focused", ""),
+    ]
+
+    responses: List[object] = [
+        {"1": {"relevant": False, "explanation": "Irrelevant"}},
+        {"relevant": True, "explanation": "Uses legacy schema"},
+    ]
+
+    def fake_call_openai(prompt: str, api_key: str, model: str) -> Dict:
+        result = responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result  # type: ignore[return-value]
+
+    monkeypatch.setattr(step2, "call_openai", fake_call_openai)
+
+    kept = step2.filter_records(records, "key", "model", delay=0, batch_size=2)
+
+    assert len(kept) == 1
+    assert kept[0]["id"] == "b"
+    assert records[1]["llm_filter"]["explanation"] == "Uses legacy schema"
+    assert responses == []

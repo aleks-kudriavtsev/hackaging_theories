@@ -137,6 +137,22 @@ def build_prompt(batch: Sequence[Dict]) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+def _normalize_item(item: object) -> Dict | None:
+    if not isinstance(item, dict):
+        return None
+
+    relevant = _coerce_bool(item.get("relevant"))
+    if relevant is None:
+        return None
+
+    normalized = dict(item)
+    normalized["relevant"] = relevant
+    if "explanation" not in normalized or normalized["explanation"] is None:
+        normalized["explanation"] = ""
+
+    return normalized
+
+
 def _parse_batch_response(
     batch: Sequence[Dict], response: object
 ) -> Tuple[Dict[int, Dict], List[int]]:
@@ -174,22 +190,19 @@ def _parse_batch_response(
     if not isinstance(response, dict):
         return processed, list(range(len(batch)))
 
+    if len(batch) == 1:
+        single_item = _normalize_item(response)
+        if single_item is not None:
+            processed[0] = single_item
+            return processed, []
+
     for idx in range(len(batch)):
         key = str(idx + 1)
-        item = response.get(key)
-        if not isinstance(item, dict):
+        item_data = _normalize_item(response.get(key))
+        if item_data is None:
             fallback.append(idx)
             continue
 
-        relevant = _coerce_bool(item.get("relevant"))
-        if relevant is None:
-            fallback.append(idx)
-            continue
-
-        item_data = dict(item)
-        item_data["relevant"] = relevant
-        if "explanation" not in item_data:
-            item_data["explanation"] = ""
         processed[idx] = item_data
 
     missing = set(range(len(batch))) - set(processed.keys()) - set(fallback)
