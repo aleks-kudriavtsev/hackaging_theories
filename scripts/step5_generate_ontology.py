@@ -507,7 +507,15 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate an ontology from extracted theories")
     parser.add_argument("--input", default="data/pipeline/aging_theories.json")
     parser.add_argument("--output", default="data/pipeline/aging_ontology.json")
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument(
+        "--model",
+        default="gpt-5-mini",
+        help=(
+            "OpenAI chat completion model identifier. gpt-5-mini is the default "
+            "for ontology assembly, providing broader synthesis quality than the "
+            "nano tier while staying within the ~$10 per million articles budget."
+        ),
+    )
     parser.add_argument(
         "--top-n",
         type=int,

@@ -427,7 +427,15 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract aging theories from filtered reviews")
     parser.add_argument("--input", default="data/pipeline/filtered_reviews_fulltext.json")
     parser.add_argument("--output", default="data/pipeline/aging_theories.json")
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument(
+        "--model",
+        default="gpt-5-nano",
+        help=(
+            "OpenAI chat completion model identifier. gpt-5-nano is the default "
+            "so consolidated review excerpts can be processed accurately "
+            "without exceeding the ~$10 per million articles budget."
+        ),
+    )
     parser.add_argument("--delay", type=float, default=0.5)
     parser.add_argument(
         "--max-chars",

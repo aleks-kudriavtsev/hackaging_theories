@@ -72,7 +72,9 @@ By default this performs:
    and abstract to discard off-topic material, storing decisions in
    `filtered_reviews.json`. The script now auto-detects when to spawn multiple
    worker processes (defaulting to the machine's CPU count for 100+ items) and
-   streams per-process progress logs.
+   streams per-process progress logs. The default `gpt-5-nano` model balances
+   quality with the target ~$10 per million articles budget while comfortably
+   handling batched abstracts.
 6. `step3_fetch_fulltext.py` – PMC full-text enrichment when an article has a
    matching PubMed Central entry, preserving paragraph boundaries so downstream
    models see intact sentences.
@@ -80,15 +82,36 @@ By default this performs:
    (full) texts, plus aggregation of unique theory names in
    `aging_theories.json`. The worker count scales with the CPU total for queues
    above 100 items and can be overridden with `--processes` when you need
-   explicit control.
+   explicit control. Theory extraction defaults to `gpt-5-nano`, and the
+   optional hypothesis review stage runs on `gpt-4.1-nano` so both passes stay
+   accurate within the same budget envelope.
 8. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
    theories into multi-level ontology clusters saved as `aging_ontology.json`.
+   Ontology synthesis defaults to `gpt-5-mini`, which provides extra synthesis
+   capacity without exceeding the approximate $10 per million articles spend.
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
 supplied. Use `--query`, `--filter-model`, `--theory-model` (or the legacy
-`--extract-model` alias), `--max-chars`, or the ontology arguments
-(`--ontology-model`, `--ontology-top-n`, `--ontology-examples`) to customise
-individual stages.
+`--extract-model` alias), `--hypothesis-review-model`, `--max-chars`, or the
+ontology arguments (`--ontology-model`, `--ontology-top-n`,
+`--ontology-examples`) to customise individual stages. Override the defaults
+when you need to trade context for cost (e.g., swapping `gpt-5-nano` for an even
+cheaper tier on short abstracts) or when your account exposes alternative model
+families.
+
+**Recommended model mix.** For a balanced run that keeps the end-to-end spend
+close to $10 per million processed articles:
+
+- Stage 2 (relevance filtering) – `gpt-5-nano` for fast, low-cost classification.
+- Stage 4 (theory extraction) – `gpt-5-nano` for consistent naming while staying
+  within the budget.
+- Hypothesis review (post-extraction audit) – `gpt-4.1-nano` to add lightweight
+  structured reasoning before ontology grouping.
+- Stage 5 (ontology generation) – `gpt-5-mini` for higher-quality synthesis when
+  reconciling theories into a shared ontology.
+
+Operators should override these defaults if they have tighter budgets, require
+larger context windows, or prefer vendor-specific alternatives.
 
 ### 3. Run stages individually (optional)
 
@@ -221,7 +244,7 @@ python scripts/step1c_google_scholar.py \
 python scripts/step2_filter_reviews.py \
   --input data/pipeline/start_reviews.json \
   --output data/pipeline/filtered_reviews.json \
-  --model gpt-4o-mini
+  --model gpt-5-nano
 
 # Step 3 — PubMed Central full-text enrichment
 python scripts/step3_fetch_fulltext.py \
@@ -232,7 +255,13 @@ python scripts/step3_fetch_fulltext.py \
 python scripts/step4_extract_theories.py \
   --input data/pipeline/filtered_reviews_fulltext.json \
   --output data/pipeline/aging_theories.json \
-  --model gpt-4o-mini
+  --model gpt-5-nano
+
+# Step 5 — Ontology generation
+python scripts/step5_generate_ontology.py \
+  --input data/pipeline/aging_theories.json \
+  --output data/pipeline/aging_ontology.json \
+  --model gpt-5-mini
 ```
 
 All scripts share the following expectations:
