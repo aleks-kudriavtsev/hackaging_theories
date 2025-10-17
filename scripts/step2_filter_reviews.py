@@ -387,8 +387,13 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--output", default="data/pipeline/filtered_reviews.json")
     parser.add_argument(
         "--model",
-        default="gpt-4o-mini",
-        help="OpenAI chat completion model identifier.",
+        default="gpt-5-nano",
+        help=(
+            "OpenAI chat completion model identifier. The default gpt-5-nano tier "
+            "keeps this filtering stage inside the ~$10 per million articles "
+            "budget while preserving dependable relevance calls on batched "
+            "abstracts."
+        ),
     )
     parser.add_argument(
         "--delay",
@@ -403,7 +408,7 @@ def main(argv: List[str] | None = None) -> int:
         help=(
             "Number of records to include in each LLM request. Larger batches reduce "
             "API calls but consume more tokens; pick a value that keeps prompts "
-            "within the model's context window (e.g., 5-10 abstracts for GPT-4o)."
+            "within the model's context window (e.g., 5-10 abstracts for gpt-5-nano)."
         ),
     )
     parser.add_argument(

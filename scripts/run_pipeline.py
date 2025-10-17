@@ -178,8 +178,13 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--filter-model",
-        default="gpt-4o-mini",
-        help="OpenAI model used for relevance filtering (step 2).",
+        default="gpt-5-nano",
+        help=(
+            "OpenAI model used for relevance filtering (step 2). Defaults to the "
+            "balanced gpt-5-nano tier so we stay within the ~$10 per million "
+            "articles budget while still handling batched title/abstract "
+            "prompts with solid accuracy."
+        ),
     )
     parser.add_argument(
         "--filter-delay",
@@ -191,10 +196,22 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--theory-model",
         "--extract-model",
         dest="theory_model",
-        default="gpt-4o-mini",
+        default="gpt-5-nano",
         help=(
-            "OpenAI model used for theory extraction (step 4). "
-            "(--extract-model is accepted for backwards compatibility.)"
+            "OpenAI model used for theory extraction (step 4). Defaults to gpt-5-"
+            "nano, which offers enough context for consolidated review prompts "
+            "while keeping token costs in line with the $10 per million articles "
+            "budget. (--extract-model is accepted for backwards compatibility.)"
+        ),
+    )
+    parser.add_argument(
+        "--hypothesis-review-model",
+        dest="hypothesis_review_model",
+        default="gpt-4.1-nano",
+        help=(
+            "OpenAI model used for post-extraction hypothesis review. Defaults to "
+            "gpt-4.1-nano so the audit pass gains structured reasoning quality "
+            "without pushing the per-run budget past ~$10 per million articles."
         ),
     )
     parser.add_argument(
@@ -221,8 +238,12 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--ontology-model",
-        default="gpt-4o-mini",
-        help="OpenAI model used for ontology generation (step 5).",
+        default="gpt-5-mini",
+        help=(
+            "OpenAI model used for ontology generation (step 5). Defaults to the "
+            "gpt-5-mini tier, which provides broader synthesis context for "
+            "ontology assembly while staying on budget."
+        ),
     )
     parser.add_argument(
         "--ontology-top-n",
