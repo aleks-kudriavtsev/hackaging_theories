@@ -70,7 +70,9 @@ By default this performs:
    `start_reviews.json` file keyed on DOI/PMID/OpenAlex IDs.
 5. `step2_filter_reviews.py` – OpenAI-powered screening of each record's title
    and abstract to discard off-topic material, storing decisions in
-   `filtered_reviews.json`.
+   `filtered_reviews.json`. The script now auto-detects when to spawn multiple
+   worker processes (defaulting to the machine's CPU count for 100+ items) and
+   streams per-process progress logs.
 6. `step3_fetch_fulltext.py` – PMC full-text enrichment when an article has a
    matching PubMed Central entry, preserving paragraph boundaries so downstream
    models see intact sentences.
@@ -105,7 +107,7 @@ python scripts/step1c_google_scholar.py --output data/pipeline/start_reviews_goo
 # Copy or concatenate the collected JSON into data/pipeline/start_reviews.json
 
 # Step 2 – LLM relevance filtering
-python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json --output data/pipeline/filtered_reviews.json
+python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json --output data/pipeline/filtered_reviews.json --processes 4
 
 # Step 3 – Full-text enrichment
 python scripts/step3_fetch_fulltext.py --input data/pipeline/filtered_reviews.json --output data/pipeline/filtered_reviews_fulltext.json
@@ -183,12 +185,14 @@ python scripts/run_pipeline.py \
 Override `--filter-model`, `--theory-model` (or the compatibility flag
 `--extract-model`), or the request delays if you need custom OpenAI models or
 throttling for quota management. The filtering stage also accepts
-`--batch-size` so multiple abstracts can be screened in a single request. Start
-with 5–10 items for GPT-4o/GPT-4o mini tiers (roughly 3–5k prompt tokens) and
-lower the value if your abstracts are unusually long or you are using a model
-with a smaller context window. When the command completes successfully you
-should see the merged metadata (`start_reviews.json`) alongside the filtered,
-full-text, theory, and ontology artefacts in `data/pipeline/`.
+`--batch-size` so multiple abstracts can be screened in a single request.
+Parallelism can be tuned via `--processes` (defaults to the CPU count for large
+inputs) when you need to split long queues across worker processes. Start with
+5–10 items for GPT-4o/GPT-4o mini tiers (roughly 3–5k prompt tokens) and lower
+the value if your abstracts are unusually long or you are using a model with a
+smaller context window. When the command completes successfully you should see
+the merged metadata (`start_reviews.json`) alongside the filtered, full-text,
+theory, and ontology artefacts in `data/pipeline/`.
 
 ## Running stages manually
 

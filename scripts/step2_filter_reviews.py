@@ -3,7 +3,8 @@
 The script loads the JSON file produced by the metadata collection steps and
 asks an OpenAI chat model to decide whether each article is relevant to aging
 theory based on its title and abstract. Records marked as irrelevant are
-discarded.
+discarded. Large batches are automatically processed in parallel worker
+processes so long runs saturate the available CPU cores.
 
 Environment variables
 ---------------------
@@ -14,7 +15,8 @@ Usage
 ```bash
 python scripts/step2_filter_reviews.py \
     --input data/pipeline/start_reviews.json \
-    --output data/pipeline/filtered_reviews.json
+    --output data/pipeline/filtered_reviews.json \
+    --processes 4
 ```
 """
 
@@ -25,6 +27,7 @@ import asyncio
 import json
 import os
 import sys
+from multiprocessing import Process, Queue
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 from openai import AsyncOpenAI
@@ -204,6 +207,7 @@ async def async_filter_records(
     delay: float = 0.5,
     batch_size: int = 5,
     concurrency: int = 5,
+    progress_prefix: str | None = None,
 ) -> List[Dict]:
     records_list = list(records)
 
@@ -218,6 +222,8 @@ async def async_filter_records(
     kept_total = 0
 
     async with AsyncOpenAI(api_key=api_key) as client:
+        prefix = f"[{progress_prefix}] " if progress_prefix else ""
+
         async def log_progress(relevant: bool) -> None:
             nonlocal processed_total, kept_total
             async with progress_lock:
@@ -225,7 +231,7 @@ async def async_filter_records(
                 if relevant:
                     kept_total += 1
                 print(
-                    f"Processed {processed_total} records — kept {kept_total}",
+                    f"{prefix}Processed {processed_total} records — kept {kept_total}",
                     flush=True,
                 )
 
@@ -244,7 +250,7 @@ async def async_filter_records(
                 )
             except RuntimeError as err:
                 print(
-                    f"Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
+                    f"{prefix}Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
                     "Retrying items individually.",
                     file=sys.stderr,
                 )
@@ -270,7 +276,7 @@ async def async_filter_records(
                     )
                 except RuntimeError as err:
                     print(
-                        f"Record {start + offset + 1} failed after retry: {err}",
+                        f"{prefix}Record {start + offset + 1} failed after retry: {err}",
                         file=sys.stderr,
                     )
                     await log_progress(False)
@@ -284,12 +290,12 @@ async def async_filter_records(
                     relevant = decision.get("relevant") is True
                 else:
                     print(
-                        f"Record {start + offset + 1} returned invalid JSON even after retry.",
+                        f"{prefix}Record {start + offset + 1} returned invalid JSON even after retry.",
                         file=sys.stderr,
                     )
                 if pending:
                     print(
-                        f"Record {start + offset + 1} still pending after retry; giving up.",
+                        f"{prefix}Record {start + offset + 1} still pending after retry; giving up.",
                         file=sys.stderr,
                     )
                 await log_progress(relevant)
@@ -307,6 +313,59 @@ async def async_filter_records(
         if record.get("llm_filter", {}).get("relevant") is True
     ]
     return kept
+
+
+def _split_records(records: List[Dict], parts: int) -> List[List[Dict]]:
+    if parts <= 0:
+        raise ValueError("parts must be positive")
+    if not records:
+        return [[] for _ in range(parts)]
+
+    chunk_sizes = []
+    base, remainder = divmod(len(records), parts)
+    for index in range(parts):
+        size = base + (1 if index < remainder else 0)
+        chunk_sizes.append(size)
+
+    chunks: List[List[Dict]] = []
+    start = 0
+    for size in chunk_sizes:
+        end = start + size
+        chunks.append(list(records[start:end]))
+        start = end
+
+    return chunks
+
+
+def _worker_filter(
+    index: int,
+    records: List[Dict],
+    queue: "Queue[Tuple[int, List[Dict] | None, str | None]]",
+    api_key: str,
+    model: str,
+    *,
+    delay: float,
+    batch_size: int,
+    concurrency: int,
+) -> None:
+    prefix = f"worker-{index + 1}"
+    try:
+        kept = asyncio.run(
+            async_filter_records(
+                records,
+                api_key,
+                model,
+                delay=delay,
+                batch_size=batch_size,
+                concurrency=concurrency,
+                progress_prefix=prefix,
+            )
+        )
+    except Exception as exc:  # pragma: no cover - inter-process error propagation
+        queue.put((index, None, str(exc)))
+        return
+
+    queue.put((index, kept, None))
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -340,6 +399,15 @@ def main(argv: List[str] | None = None) -> int:
         default=5,
         help="Maximum number of concurrent OpenAI requests.",
     )
+    parser.add_argument(
+        "--processes",
+        type=int,
+        default=None,
+        help=(
+            "Number of OS processes used for filtering. Defaults to CPU count when "
+            "more than 100 records are provided; otherwise runs single-threaded."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -350,16 +418,75 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
-    kept = asyncio.run(
-        async_filter_records(
-            records,
-            api_key,
-            args.model,
-            delay=args.delay,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
+    total_records = len(records)
+    if args.processes is not None and args.processes <= 0:
+        print("--processes must be a positive integer", file=sys.stderr)
+        return 2
+
+    auto_processes = (os.cpu_count() or 1) if total_records > 100 else 1
+    processes = args.processes or auto_processes
+    if total_records > 0:
+        processes = min(processes, total_records)
+    else:
+        processes = 1
+
+    if total_records == 0:
+        kept: List[Dict] = []
+    elif processes <= 1 or total_records <= 1:
+        kept = asyncio.run(
+            async_filter_records(
+                records,
+                api_key,
+                args.model,
+                delay=args.delay,
+                batch_size=args.batch_size,
+                concurrency=args.concurrency,
+            )
         )
-    )
+    else:
+        queue: "Queue[Tuple[int, List[Dict] | None, str | None]]" = Queue()
+        chunks = _split_records(list(records), processes)
+        jobs = [
+            Process(
+                target=_worker_filter,
+                args=(idx, chunk, queue, api_key, args.model),
+                kwargs={
+                    "delay": args.delay,
+                    "batch_size": args.batch_size,
+                    "concurrency": args.concurrency,
+                },
+            )
+            for idx, chunk in enumerate(chunks)
+            if chunk
+        ]
+
+        if not jobs:
+            kept = []
+        else:
+            for job in jobs:
+                job.start()
+
+            results: List[Tuple[int, List[Dict]]] = []
+            errors: List[Tuple[int, str]] = []
+            for _ in range(len(jobs)):
+                index, chunk_result, error = queue.get()
+                if error:
+                    errors.append((index, error))
+                elif chunk_result is not None:
+                    results.append((index, chunk_result))
+
+            for job in jobs:
+                job.join()
+
+            if errors:
+                for index, error in errors:
+                    print(
+                        f"worker-{index + 1} failed with error: {error}",
+                        file=sys.stderr,
+                    )
+                return 3
+
+            kept = [record for _, chunk in sorted(results, key=lambda item: item[0]) for record in chunk]
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
