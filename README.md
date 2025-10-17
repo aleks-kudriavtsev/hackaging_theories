@@ -92,12 +92,12 @@ By default this performs:
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
 supplied. Use `--query`, `--filter-model`, `--theory-model` (or the legacy
-`--extract-model` alias), `--hypothesis-review-model`, `--max-chars`, or the
-ontology arguments (`--ontology-model`, `--ontology-top-n`,
-`--ontology-examples`) to customise individual stages. Override the defaults
-when you need to trade context for cost (e.g., swapping `gpt-5-nano` for an even
-cheaper tier on short abstracts) or when your account exposes alternative model
-families.
+`--extract-model` alias), `--hypothesis-review-model`, the chunking options
+(`--chunk-chars`, `--chunk-overlap`), or the ontology arguments
+(`--ontology-model`, `--ontology-top-n`, `--ontology-examples`) to customise
+individual stages. Override the defaults when you need to trade context for cost
+(e.g., swapping `gpt-5-nano` for an even cheaper tier on short abstracts) or
+when your account exposes alternative model families.
 
 **Recommended model mix.** For a balanced run that keeps the end-to-end spend
 close to $10 per million processed articles:
@@ -138,7 +138,7 @@ python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json 
 python scripts/step3_fetch_fulltext.py --input data/pipeline/filtered_reviews.json --output data/pipeline/filtered_reviews_fulltext.json
 
 # Step 4 – Theory extraction
-python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json --processes 4
+python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json --chunk-chars 12000 --chunk-overlap 1000 --processes 4
 
 # Step 5 – Ontology generation
 python scripts/step5_generate_ontology.py --input data/pipeline/aging_theories.json --output data/pipeline/aging_ontology.json
