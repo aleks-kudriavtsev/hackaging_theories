@@ -44,7 +44,7 @@ def test_build_prompt_enumerates_items() -> None:
 
     assert "Item 1:" in prompt
     assert "Item 2:" in prompt
-    assert "Return a JSON object" in prompt
+    assert "Return a JSON array" in prompt
 
 def test_filter_records_processes_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     records = [
@@ -58,10 +58,10 @@ def test_filter_records_processes_batch(monkeypatch: pytest.MonkeyPatch) -> None
         client, prompt: str, model: str, semaphore, delay: float
     ) -> Dict:
         prompts.append(prompt)
-        return {
-            "1": {"relevant": True, "explanation": "Focuses on aging theory"},
-            "2": {"relevant": False, "explanation": "Different domain"},
-        }
+        return [
+            {"relevant": True, "explanation": "Focuses on aging theory"},
+            {"relevant": False, "explanation": "Different domain"},
+        ]
 
     monkeypatch.setattr(step2, "_call_openai", fake_call_openai)
     monkeypatch.setattr(step2, "AsyncOpenAI", _DummyAsyncOpenAI)
@@ -91,8 +91,13 @@ def test_filter_records_retries_failed_items(monkeypatch: pytest.MonkeyPatch) ->
 
     responses: List[object] = [
         RuntimeError("OpenAI returned invalid JSON payload: not-json"),
-        {"1": {"relevant": True, "explanation": "Retry success"}},
-        {"1": {"relevant": False, "explanation": "Retry fail"}},
+        [
+            {"relevant": True, "explanation": "Retry success"},
+            {"relevant": False, "explanation": "Retry fail"},
+        ],
+        [
+            {"relevant": False, "explanation": "Retry fail"},
+        ],
     ]
 
     async def fake_call_openai(

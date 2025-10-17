@@ -100,8 +100,9 @@ def build_prompt(batch: Sequence[Dict]) -> str:
     lines = [
         "You will receive multiple review articles about scientific topics.",
         "For each item, determine if the article is primarily about aging theory.",
-        "Return a JSON object where each key is the item number (e.g., \"1\").",
-        "Each value must be an object with fields `relevant` (true/false) and `explanation`.",
+        "Return a JSON array with the same number of elements as the items below.",
+        "Each array element must correspond to the item at the same position.",
+        "Every element must be an object with fields `relevant` (true/false) and `explanation`.",
         "Items:",
     ]
 
@@ -138,6 +139,34 @@ def _parse_batch_response(
 ) -> Tuple[Dict[int, Dict], List[int]]:
     processed: Dict[int, Dict] = {}
     fallback: List[int] = []
+
+    if isinstance(response, list):
+        elements = response
+        if len(elements) != len(batch):
+            # keep len(elements) so we don't index past range
+            elements = list(elements)[: len(batch)]
+            fallback.extend(range(len(elements), len(batch)))
+        for idx, item in enumerate(elements):
+            if not isinstance(item, dict):
+                fallback.append(idx)
+                continue
+
+            relevant = _coerce_bool(item.get("relevant"))
+            if relevant is None:
+                fallback.append(idx)
+                continue
+
+            item_data = dict(item)
+            item_data["relevant"] = relevant
+            if "explanation" not in item_data:
+                item_data["explanation"] = ""
+            processed[idx] = item_data
+
+        missing = set(range(len(batch))) - set(processed.keys()) - set(fallback)
+        if missing:
+            fallback.extend(sorted(missing))
+
+        return processed, sorted(set(fallback))
 
     if not isinstance(response, dict):
         return processed, list(range(len(batch)))
@@ -299,7 +328,11 @@ def main(argv: List[str] | None = None) -> int:
         "--batch-size",
         type=int,
         default=5,
-        help="Number of records to include in each LLM request.",
+        help=(
+            "Number of records to include in each LLM request. Larger batches reduce "
+            "API calls but consume more tokens; pick a value that keeps prompts "
+            "within the model's context window (e.g., 5-10 abstracts for GPT-4o)."
+        ),
     )
     parser.add_argument(
         "--concurrency",
