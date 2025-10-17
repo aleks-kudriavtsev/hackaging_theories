@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -188,89 +189,97 @@ async def async_filter_records(
     processed_total = 0
     kept_total = 0
 
-    async with AsyncOpenAI(api_key=api_key) as client:
-        async def log_progress(relevant: bool) -> None:
-            nonlocal processed_total, kept_total
-            async with progress_lock:
-                processed_total += 1
-                if relevant:
-                    kept_total += 1
-                print(
-                    f"Processed {processed_total} records — kept {kept_total}",
-                    flush=True,
-                )
+    client = AsyncOpenAI(api_key=api_key)
 
-        async def process_batch(start: int) -> None:
-            batch = records_list[start : start + batch_size]
-            prompt = build_prompt(batch)
-            processed_items: Dict[int, Dict] = {}
-            fallback_indices: List[int] = []
+    async def log_progress(relevant: bool) -> None:
+        nonlocal processed_total, kept_total
+        async with progress_lock:
+            processed_total += 1
+            if relevant:
+                kept_total += 1
+            print(
+                f"Processed {processed_total} records — kept {kept_total}",
+                flush=True,
+            )
+
+    async def process_batch(start: int) -> None:
+        batch = records_list[start : start + batch_size]
+        prompt = build_prompt(batch)
+        processed_items: Dict[int, Dict] = {}
+        fallback_indices: List[int] = []
+        try:
+            response = await _call_openai(
+                client,
+                prompt,
+                model,
+                semaphore,
+                delay,
+            )
+        except RuntimeError as err:
+            print(
+                f"Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
+                "Retrying items individually.",
+                file=sys.stderr,
+            )
+            fallback_indices = list(range(len(batch)))
+        else:
+            processed_items, fallback_indices = _parse_batch_response(batch, response)
+
+        for offset, decision in processed_items.items():
+            record = batch[offset]
+            record["llm_filter"] = decision
+            await log_progress(decision.get("relevant") is True)
+
+        for offset in fallback_indices:
+            record = batch[offset]
+            single_prompt = build_prompt([record])
             try:
-                response = await _call_openai(
+                single_response = await _call_openai(
                     client,
-                    prompt,
+                    single_prompt,
                     model,
                     semaphore,
                     delay,
                 )
             except RuntimeError as err:
                 print(
-                    f"Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
-                    "Retrying items individually.",
+                    f"Record {start + offset + 1} failed after retry: {err}",
                     file=sys.stderr,
                 )
-                fallback_indices = list(range(len(batch)))
-            else:
-                processed_items, fallback_indices = _parse_batch_response(batch, response)
+                await log_progress(False)
+                continue
 
-            for offset, decision in processed_items.items():
-                record = batch[offset]
+            single_items, pending = _parse_batch_response([record], single_response)
+            decision = single_items.get(0)
+            relevant = False
+            if decision is not None:
                 record["llm_filter"] = decision
-                await log_progress(decision.get("relevant") is True)
+                relevant = decision.get("relevant") is True
+            else:
+                print(
+                    f"Record {start + offset + 1} returned invalid JSON even after retry.",
+                    file=sys.stderr,
+                )
+            if pending:
+                print(
+                    f"Record {start + offset + 1} still pending after retry; giving up.",
+                    file=sys.stderr,
+                )
+            await log_progress(relevant)
 
-            for offset in fallback_indices:
-                record = batch[offset]
-                single_prompt = build_prompt([record])
-                try:
-                    single_response = await _call_openai(
-                        client,
-                        single_prompt,
-                        model,
-                        semaphore,
-                        delay,
-                    )
-                except RuntimeError as err:
-                    print(
-                        f"Record {start + offset + 1} failed after retry: {err}",
-                        file=sys.stderr,
-                    )
-                    await log_progress(False)
-                    continue
-
-                single_items, pending = _parse_batch_response([record], single_response)
-                decision = single_items.get(0)
-                relevant = False
-                if decision is not None:
-                    record["llm_filter"] = decision
-                    relevant = decision.get("relevant") is True
-                else:
-                    print(
-                        f"Record {start + offset + 1} returned invalid JSON even after retry.",
-                        file=sys.stderr,
-                    )
-                if pending:
-                    print(
-                        f"Record {start + offset + 1} still pending after retry; giving up.",
-                        file=sys.stderr,
-                    )
-                await log_progress(relevant)
-
+    try:
         tasks = [
             asyncio.create_task(process_batch(start))
             for start in range(0, len(records_list), batch_size)
         ]
         if tasks:
             await asyncio.gather(*tasks)
+    finally:
+        close_method = getattr(client, "close", None)
+        if callable(close_method):
+            maybe_coro = close_method()
+            if inspect.isawaitable(maybe_coro):
+                await maybe_coro
 
     kept = [
         record
