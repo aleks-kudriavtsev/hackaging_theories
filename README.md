@@ -78,7 +78,9 @@ By default this performs:
    models see intact sentences.
 7. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
    (full) texts, plus aggregation of unique theory names in
-   `aging_theories.json`.
+   `aging_theories.json`. The worker count scales with the CPU total for queues
+   above 100 items and can be overridden with `--processes` when you need
+   explicit control.
 8. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
    theories into multi-level ontology clusters saved as `aging_ontology.json`.
 
@@ -113,7 +115,7 @@ python scripts/step2_filter_reviews.py --input data/pipeline/start_reviews.json 
 python scripts/step3_fetch_fulltext.py --input data/pipeline/filtered_reviews.json --output data/pipeline/filtered_reviews_fulltext.json
 
 # Step 4 – Theory extraction
-python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json
+python scripts/step4_extract_theories.py --input data/pipeline/filtered_reviews_fulltext.json --output data/pipeline/aging_theories.json --processes 4
 
 # Step 5 – Ontology generation
 python scripts/step5_generate_ontology.py --input data/pipeline/aging_theories.json --output data/pipeline/aging_ontology.json
@@ -187,9 +189,10 @@ Override `--filter-model`, `--theory-model` (or the compatibility flag
 throttling for quota management. The filtering stage also accepts
 `--batch-size` so multiple abstracts can be screened in a single request.
 Parallelism can be tuned via `--processes` (defaults to the CPU count for large
-inputs) when you need to split long queues across worker processes. Start with
-5–10 items for GPT-4o/GPT-4o mini tiers (roughly 3–5k prompt tokens) and lower
-the value if your abstracts are unusually long or you are using a model with a
+inputs) when you need to split long queues across worker processes. The
+filtering and theory extraction stages both honour this flag. Start with 5–10
+items for GPT-4o/GPT-4o mini tiers (roughly 3–5k prompt tokens) and lower the
+value if your abstracts are unusually long or you are using a model with a
 smaller context window. When the command completes successfully you should see
 the merged metadata (`start_reviews.json`) alongside the filtered, full-text,
 theory, and ontology artefacts in `data/pipeline/`.
