@@ -99,6 +99,17 @@ async def _call_openai(
     return parsed
 
 
+def call_openai(prompt: str, api_key: str, model: str) -> Dict:
+    """Backward-compatible synchronous wrapper around :func:`_call_openai`."""
+
+    async def _run() -> Dict:
+        async with AsyncOpenAI(api_key=api_key) as client:  # type: ignore[call-arg]
+            semaphore = asyncio.Semaphore(1)
+            return await _call_openai(client, prompt, model, semaphore, delay=0)
+
+    return asyncio.run(_run())
+
+
 def build_prompt(batch: Sequence[Dict]) -> str:
     lines = [
         "You will receive multiple review articles about scientific topics.",
@@ -326,6 +337,56 @@ async def async_filter_records(
         if record.get("llm_filter", {}).get("relevant") is True
     ]
     return kept
+
+
+def filter_records(
+    records: Iterable[Dict],
+    api_key: str,
+    model: str,
+    *,
+    delay: float = 0.5,
+    batch_size: int = 5,
+    concurrency: int = 5,
+) -> List[Dict]:
+    """Synchronous helper mirroring :func:`async_filter_records`.
+
+    The implementation swaps the internal coroutine transport so legacy callers
+    that monkeypatch :func:`call_openai` continue to work. The heavy lifting is
+    still delegated to :func:`async_filter_records` so behaviour stays aligned
+    between both entry points.
+    """
+
+    async def _compat_call_openai(
+        client: AsyncOpenAI,
+        prompt: str,
+        model_name: str,
+        semaphore: asyncio.Semaphore,
+        call_delay: float,
+    ) -> Dict:
+        async with semaphore:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, call_openai, prompt, api_key, model_name
+            )
+            if call_delay > 0:
+                await asyncio.sleep(call_delay)
+            return result
+
+    original_call = _call_openai
+    try:
+        globals()["_call_openai"] = _compat_call_openai
+        return asyncio.run(
+            async_filter_records(
+                records,
+                api_key,
+                model,
+                delay=delay,
+                batch_size=batch_size,
+                concurrency=concurrency,
+            )
+        )
+    finally:
+        globals()["_call_openai"] = original_call
 
 
 def _split_records(records: List[Dict], parts: int) -> List[List[Dict]]:

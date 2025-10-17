@@ -6,7 +6,9 @@ aging theories discussed in each review. The script aggregates unique theory
 labels across all processed articles and stores both the per-article annotations
 and the combined set for downstream ontology building. Use ``--processes`` to
 control how many worker processes share the LLM queue (auto-detected for large
-inputs).
+inputs). The ``--chunk-chars`` and ``--chunk-overlap`` switches control how long
+each prompt window is and how much adjacent context overlaps, ensuring long
+reviews are streamed to the LLM in multiple passes.
 
 Environment variables
 ---------------------
@@ -18,6 +20,7 @@ Usage
 python scripts/step4_extract_theories.py \
     --input data/pipeline/filtered_reviews_fulltext.json \
     --output data/pipeline/aging_theories.json \
+    --chunk-chars 12000 --chunk-overlap 1000 \
     --processes 4
 ```
 """
@@ -120,18 +123,64 @@ def call_openai(prompt: str, api_key: str, model: str) -> Dict:
     return _normalise_theory_list(parsed)
 
 
-def build_prompt(record: Dict, max_chars: int) -> str:
-    text = record.get("full_text") or record.get("abstract") or ""
-    if max_chars > 0 and len(text) > max_chars:
-        text = text[:max_chars]
-        text = text.rsplit(" ", 1)[0]  # avoid cutting mid-word
-        text += "..."
+def chunk_review_text(text: str, chunk_chars: int, chunk_overlap: int) -> List[str]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return [""]
+
+    if chunk_chars <= 0 or len(cleaned) <= chunk_chars:
+        return [cleaned]
+
+    overlap = max(0, chunk_overlap)
+    if overlap >= chunk_chars:
+        overlap = max(0, chunk_chars - 1)
+
+    step = max(1, chunk_chars - overlap)
+    chunks: List[str] = []
+    start = 0
+    length = len(cleaned)
+    while start < length:
+        end = min(length, start + chunk_chars)
+        chunk = cleaned[start:end]
+        if end < length:
+            split_point = chunk.rfind(" ")
+            if split_point > 0:
+                end = start + split_point
+                chunk = cleaned[start:end]
+        chunk = chunk.strip()
+        if chunk:
+            chunks.append(chunk)
+        else:
+            # if whitespace trimming removed content, advance by full window
+            chunk = cleaned[start:end]
+            if chunk:
+                chunks.append(chunk)
+        next_start = end if overlap == 0 else max(0, end - overlap)
+        if next_start <= start:
+            next_start = start + step
+        start = next_start
+    if not chunks:
+        return [cleaned]
+    return chunks
+
+
+def build_prompt(
+    record: Dict,
+    chunk_text: str,
+    chunk_index: int,
+    total_chunks: int,
+) -> str:
+    text = chunk_text or ""
     title = record.get("title", "")
     citation = record.get("journal", "")
+    chunk_label = ""
+    if total_chunks > 1:
+        chunk_label = f" (chunk {chunk_index + 1} of {total_chunks})"
     return textwrap.dedent(
         f"""
         Review title: {title}
         Citation source: {citation}
+        Review section{chunk_label}:
 
         Extract every distinct theory of aging discussed in this review. Focus on
         conceptual theories (e.g., oxidative stress theory, disposable soma,
@@ -143,14 +192,55 @@ def build_prompt(record: Dict, max_chars: int) -> str:
     ).strip()
 
 
-def process_batch(payload: Tuple[List[Tuple[int, Dict]], str, str, float, int, int]) -> List[Tuple[int, Dict]]:
-    batch, api_key, model, delay, max_chars, total_records = payload
+def process_batch(
+    payload: Tuple[List[Tuple[int, Dict]], str, str, float, int, int, int]
+) -> List[Tuple[int, Dict]]:
+    batch, api_key, model, delay, chunk_chars, chunk_overlap, total_records = payload
     annotated: List[Tuple[int, Dict]] = []
     for global_idx, record in batch:
-        prompt = build_prompt(record, max_chars)
-        response = call_openai(prompt, api_key, model)
+        text_source = record.get("full_text") or record.get("abstract") or ""
+        chunks = chunk_review_text(text_source, chunk_chars, chunk_overlap)
+        aggregated_theories: List[str] = []
+        seen_aliases: Set[str] = set()
+        aggregated_notes: List[str] = []
+        for chunk_idx, chunk_text in enumerate(chunks):
+            prompt = build_prompt(record, chunk_text, chunk_idx, len(chunks))
+            response = call_openai(prompt, api_key, model)
+            theories = response.get("theories") if isinstance(response, dict) else []
+            if isinstance(theories, list):
+                for alias in theories:
+                    if not isinstance(alias, str):
+                        continue
+                    cleaned = alias.strip()
+                    if not cleaned:
+                        continue
+                    key = cleaned.casefold()
+                    if key not in seen_aliases:
+                        seen_aliases.add(key)
+                        aggregated_theories.append(cleaned)
+            notes_field = response.get("notes") if isinstance(response, dict) else None
+            if isinstance(notes_field, str):
+                cleaned_note = notes_field.strip()
+                if cleaned_note and cleaned_note not in aggregated_notes:
+                    aggregated_notes.append(cleaned_note)
+            elif isinstance(notes_field, list):
+                for note in notes_field:
+                    if not isinstance(note, str):
+                        continue
+                    cleaned_note = note.strip()
+                    if cleaned_note and cleaned_note not in aggregated_notes:
+                        aggregated_notes.append(cleaned_note)
+
         annotated_record = record.copy()
-        annotated_record["theory_extraction"] = response
+        theory_payload: Dict[str, object] = {"theories": aggregated_theories}
+        if aggregated_notes:
+            theory_payload["notes"] = (
+                aggregated_notes[0]
+                if len(aggregated_notes) == 1
+                else list(aggregated_notes)
+            )
+        theory_payload["chunk_count"] = len(chunks)
+        annotated_record["theory_extraction"] = theory_payload
         annotated.append((global_idx, annotated_record))
         print(
             f"Annotated {global_idx + 1}/{total_records} reviews",
@@ -165,7 +255,8 @@ def extract_theories(
     api_key: str,
     model: str,
     delay: float,
-    max_chars: int,
+    chunk_chars: int,
+    chunk_overlap: int,
     processes: int,
 ) -> List[Dict]:
     records_list = list(records)
@@ -175,7 +266,15 @@ def extract_theories(
 
     indexed_records: List[Tuple[int, Dict]] = list(enumerate(records_list))
     if processes <= 1:
-        payload = (indexed_records, api_key, model, delay, max_chars, total_records)
+        payload = (
+            indexed_records,
+            api_key,
+            model,
+            delay,
+            chunk_chars,
+            chunk_overlap,
+            total_records,
+        )
         annotated_pairs = process_batch(payload)
     else:
         chunk_size = math.ceil(total_records / processes)
@@ -184,7 +283,7 @@ def extract_theories(
             for i in range(0, total_records, chunk_size)
         ]
         payloads = [
-            (batch, api_key, model, delay, max_chars, total_records)
+            (batch, api_key, model, delay, chunk_chars, chunk_overlap, total_records)
             for batch in batches
         ]
         with multiprocessing.Pool(processes=processes) as pool:
@@ -398,12 +497,24 @@ def build_theory_registry(
                 entry.setdefault("pmids", [])
                 if pmid not in entry["pmids"]:
                     entry["pmids"].append(pmid)
-            if extraction.get("notes"):
-                note_text = extraction["notes"]
-                if isinstance(note_text, str) and note_text.strip():
-                    notes = entry.setdefault("notes", [])
-                    if note_text.strip() not in notes:
-                        notes.append(note_text.strip())
+            notes_field = extraction.get("notes")
+            note_values: List[str] = []
+            if isinstance(notes_field, str):
+                cleaned_note = notes_field.strip()
+                if cleaned_note:
+                    note_values.append(cleaned_note)
+            elif isinstance(notes_field, list):
+                for note in notes_field:
+                    if not isinstance(note, str):
+                        continue
+                    cleaned_note = note.strip()
+                    if cleaned_note:
+                        note_values.append(cleaned_note)
+            if note_values:
+                notes = entry.setdefault("notes", [])
+                for note in note_values:
+                    if note not in notes:
+                        notes.append(note)
 
             article_assignments.append({"theory_id": theory_id, "alias": cleaned})
 
@@ -438,10 +549,28 @@ def main(argv: List[str] | None = None) -> int:
     )
     parser.add_argument("--delay", type=float, default=0.5)
     parser.add_argument(
-        "--max-chars",
+        "--chunk-chars",
         type=int,
         default=12000,
-        help="Maximum number of characters from each review to send to the LLM.",
+        help=(
+            "Maximum number of characters in each review chunk sent to the LLM."
+        ),
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=1000,
+        help=(
+            "Number of characters to overlap between successive review chunks when "
+            "calling the LLM."
+        ),
+    )
+    parser.add_argument(
+        "--max-chars",
+        dest="compat_max_chars",
+        type=int,
+        default=None,
+        help="Deprecated alias for --chunk-chars.",
     )
     parser.add_argument(
         "--processes",
@@ -477,12 +606,17 @@ def main(argv: List[str] | None = None) -> int:
     else:
         processes = max(1, min(processes, len(records)))
 
+    chunk_chars = args.chunk_chars
+    if args.compat_max_chars is not None:
+        chunk_chars = args.compat_max_chars
+
     annotated = extract_theories(
         records,
         api_key,
         args.model,
         args.delay,
-        args.max_chars,
+        chunk_chars,
+        args.chunk_overlap,
         processes,
     )
     theory_registry = build_theory_registry(annotated, api_key, args.model)

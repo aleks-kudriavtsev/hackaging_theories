@@ -226,15 +226,35 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--max-chars",
-        "--extract-max-chars",
-        dest="max_chars",
+        "--chunk-chars",
+        "--extract-chunk-chars",
+        dest="chunk_chars",
         type=int,
         default=12000,
         help=(
-            "Maximum characters from each review to send to the LLM (step 4). "
-            "(--extract-max-chars is accepted for backwards compatibility.)"
+            "Maximum characters from each review chunk sent to the LLM during "
+            "step 4. (--extract-chunk-chars is accepted for backwards compatibility.)"
         ),
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        "--extract-chunk-overlap",
+        dest="chunk_overlap",
+        type=int,
+        default=1000,
+        help=(
+            "Number of characters to overlap between successive review chunks "
+            "in step 4. (--extract-chunk-overlap is accepted for backwards "
+            "compatibility.)"
+        ),
+    )
+    parser.add_argument(
+        "--max-chars",
+        "--extract-max-chars",
+        dest="compat_max_chars",
+        type=int,
+        default=None,
+        help="Deprecated alias for --chunk-chars.",
     )
     parser.add_argument(
         "--ontology-model",
@@ -275,6 +295,9 @@ def maybe_skip(path: str, force: bool, label: str) -> bool:
 def main(argv: List[str] | None = None) -> int:
     args = parse_args(argv)
     paths = build_paths(args.workdir)
+
+    if args.compat_max_chars is not None:
+        args.chunk_chars = args.compat_max_chars
 
     # Step 1 – PubMed search
     if not maybe_skip(paths.pubmed_reviews, args.force, "step 1 (PubMed)"):
@@ -451,8 +474,10 @@ def main(argv: List[str] | None = None) -> int:
                 args.theory_model,
                 "--delay",
                 str(args.theory_delay),
-                "--max-chars",
-                str(args.max_chars),
+                "--chunk-chars",
+                str(args.chunk_chars),
+                "--chunk-overlap",
+                str(args.chunk_overlap),
             ],
             "Extract theories from reviews",
         )
