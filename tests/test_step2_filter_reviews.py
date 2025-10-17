@@ -1,8 +1,25 @@
+import asyncio
+import sys
+import types
 from pathlib import Path
 from typing import Dict, List
 
 import importlib.util
 import pytest
+
+
+class _DummyAsyncOpenAI:
+    def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - trivial wrapper
+        pass
+
+    async def __aenter__(self) -> "_DummyAsyncOpenAI":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - trivial wrapper
+        return False
+
+
+sys.modules.setdefault("openai", types.SimpleNamespace(AsyncOpenAI=_DummyAsyncOpenAI))
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "step2_filter_reviews.py"
 SPEC = importlib.util.spec_from_file_location("step2_filter_reviews", MODULE_PATH)
@@ -29,7 +46,6 @@ def test_build_prompt_enumerates_items() -> None:
     assert "Item 2:" in prompt
     assert "Return a JSON object" in prompt
 
-
 def test_filter_records_processes_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     records = [
         _record("a", "Aging review", "Discusses aging theory"),
@@ -38,16 +54,28 @@ def test_filter_records_processes_batch(monkeypatch: pytest.MonkeyPatch) -> None
 
     prompts: List[str] = []
 
-    def fake_call_openai(prompt: str, api_key: str, model: str) -> Dict:
+    async def fake_call_openai(
+        client, prompt: str, model: str, semaphore, delay: float
+    ) -> Dict:
         prompts.append(prompt)
         return {
             "1": {"relevant": True, "explanation": "Focuses on aging theory"},
             "2": {"relevant": False, "explanation": "Different domain"},
         }
 
-    monkeypatch.setattr(step2, "call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "AsyncOpenAI", _DummyAsyncOpenAI)
 
-    kept = step2.filter_records(records, "key", "model", delay=0, batch_size=2)
+    kept = asyncio.run(
+        step2.async_filter_records(
+            records,
+            "key",
+            "model",
+            delay=0,
+            batch_size=2,
+            concurrency=2,
+        )
+    )
 
     assert len(kept) == 1
     assert kept[0]["id"] == "a"
@@ -67,15 +95,27 @@ def test_filter_records_retries_failed_items(monkeypatch: pytest.MonkeyPatch) ->
         {"1": {"relevant": False, "explanation": "Retry fail"}},
     ]
 
-    def fake_call_openai(prompt: str, api_key: str, model: str) -> Dict:
+    async def fake_call_openai(
+        client, prompt: str, model: str, semaphore, delay: float
+    ) -> Dict:
         result = responses.pop(0)
         if isinstance(result, Exception):
             raise result
         return result  # type: ignore[return-value]
 
-    monkeypatch.setattr(step2, "call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "AsyncOpenAI", _DummyAsyncOpenAI)
 
-    kept = step2.filter_records(records, "key", "model", delay=0, batch_size=2)
+    kept = asyncio.run(
+        step2.async_filter_records(
+            records,
+            "key",
+            "model",
+            delay=0,
+            batch_size=2,
+            concurrency=1,
+        )
+    )
 
     assert len(kept) == 1
     assert kept[0]["id"] == "a"
