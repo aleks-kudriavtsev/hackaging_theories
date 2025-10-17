@@ -21,17 +21,19 @@ python scripts/step2_filter_reviews.py \
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
-import time
 from typing import Dict, Iterable, List, Sequence, Tuple
-import urllib.request
-import urllib.error
-import urllib.parse
+
+from openai import AsyncOpenAI
 
 
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_SYSTEM_PROMPT = (
+    "You are an expert gerontology curator. Respond with JSON containing `relevant` "
+    "(true/false) and `explanation`."
+)
 
 
 def _coerce_bool(value: object) -> bool | None:
@@ -53,47 +55,36 @@ def _coerce_bool(value: object) -> bool | None:
     return None
 
 
-def call_openai(prompt: str, api_key: str, model: str) -> Dict:
-    payload = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert gerontology curator. Respond with JSON "
-                        "containing `relevant` (true/false) and `explanation`."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        OPENAI_URL,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+async def _call_openai(
+    client: AsyncOpenAI,
+    prompt: str,
+    model: str,
+    semaphore: asyncio.Semaphore,
+    delay: float,
+) -> Dict:
+    async with semaphore:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": OPENAI_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - network error handling
+            raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+        finally:
+            if delay > 0:
+                await asyncio.sleep(delay)
 
     try:
-        with urllib.request.urlopen(request) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:  # pragma: no cover - network error handling
-        error_body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"OpenAI API error {exc.code}: {error_body}") from exc
-
-    data = json.loads(body)
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as err:  # pragma: no cover - defensive guard
-        raise RuntimeError(f"Unexpected OpenAI response: {data!r}") from err
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, KeyError) as err:  # pragma: no cover
+        raise RuntimeError(f"Unexpected OpenAI response: {response!r}") from err
 
     try:
         parsed = json.loads(content)
@@ -176,85 +167,116 @@ def _parse_batch_response(
     return processed, sorted(set(fallback))
 
 
-def filter_records(
+async def async_filter_records(
     records: Iterable[Dict],
     api_key: str,
     model: str,
+    *,
     delay: float = 0.5,
     batch_size: int = 5,
+    concurrency: int = 5,
 ) -> List[Dict]:
     records_list = list(records)
-    kept: List[Dict] = []
-    processed_total = 0
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if concurrency <= 0:
+        raise ValueError("concurrency must be positive")
 
-    for start in range(0, len(records_list), batch_size):
-        batch = records_list[start : start + batch_size]
-        prompt = build_prompt(batch)
-        processed_items: Dict[int, Dict] = {}
-        fallback_indices: List[int] = []
-        try:
-            response = call_openai(prompt, api_key, model=model)
-        except RuntimeError as err:
-            print(
-                f"Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
-                "Retrying items individually.",
-                file=sys.stderr,
-            )
-            fallback_indices = list(range(len(batch)))
-        else:
-            processed_items, fallback_indices = _parse_batch_response(batch, response)
-        finally:
-            time.sleep(delay)
+    semaphore = asyncio.Semaphore(concurrency)
+    progress_lock = asyncio.Lock()
+    processed_total = 0
+    kept_total = 0
 
-        for offset, decision in processed_items.items():
-            record = batch[offset]
-            record["llm_filter"] = decision
-            if decision.get("relevant") is True:
-                kept.append(record)
-            processed_total += 1
-            print(f"Processed {processed_total} records — kept {len(kept)}", flush=True)
-
-        for offset in fallback_indices:
-            record = batch[offset]
-            single_prompt = build_prompt([record])
-            try:
-                single_response = call_openai(single_prompt, api_key, model=model)
-            except RuntimeError as err:
-                print(
-                    f"Record {start + offset + 1} failed after retry: {err}",
-                    file=sys.stderr,
-                )
+    async with AsyncOpenAI(api_key=api_key) as client:
+        async def log_progress(relevant: bool) -> None:
+            nonlocal processed_total, kept_total
+            async with progress_lock:
                 processed_total += 1
+                if relevant:
+                    kept_total += 1
                 print(
-                    f"Processed {processed_total} records — kept {len(kept)}",
+                    f"Processed {processed_total} records — kept {kept_total}",
                     flush=True,
                 )
-                time.sleep(delay)
-                continue
 
-            time.sleep(delay)
-            single_items, pending = _parse_batch_response([record], single_response)
-            decision = single_items.get(0)
-            if decision is not None:
-                record["llm_filter"] = decision
-                if decision.get("relevant") is True:
-                    kept.append(record)
+        async def process_batch(start: int) -> None:
+            batch = records_list[start : start + batch_size]
+            prompt = build_prompt(batch)
+            processed_items: Dict[int, Dict] = {}
+            fallback_indices: List[int] = []
+            try:
+                response = await _call_openai(
+                    client,
+                    prompt,
+                    model,
+                    semaphore,
+                    delay,
+                )
+            except RuntimeError as err:
+                print(
+                    f"Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
+                    "Retrying items individually.",
+                    file=sys.stderr,
+                )
+                fallback_indices = list(range(len(batch)))
             else:
-                print(
-                    f"Record {start + offset + 1} returned invalid JSON even after retry.",
-                    file=sys.stderr,
-                )
-            if pending:
-                print(
-                    f"Record {start + offset + 1} still pending after retry; giving up.",
-                    file=sys.stderr,
-                )
-            processed_total += 1
-            print(f"Processed {processed_total} records — kept {len(kept)}", flush=True)
+                processed_items, fallback_indices = _parse_batch_response(batch, response)
 
+            for offset, decision in processed_items.items():
+                record = batch[offset]
+                record["llm_filter"] = decision
+                await log_progress(decision.get("relevant") is True)
+
+            for offset in fallback_indices:
+                record = batch[offset]
+                single_prompt = build_prompt([record])
+                try:
+                    single_response = await _call_openai(
+                        client,
+                        single_prompt,
+                        model,
+                        semaphore,
+                        delay,
+                    )
+                except RuntimeError as err:
+                    print(
+                        f"Record {start + offset + 1} failed after retry: {err}",
+                        file=sys.stderr,
+                    )
+                    await log_progress(False)
+                    continue
+
+                single_items, pending = _parse_batch_response([record], single_response)
+                decision = single_items.get(0)
+                relevant = False
+                if decision is not None:
+                    record["llm_filter"] = decision
+                    relevant = decision.get("relevant") is True
+                else:
+                    print(
+                        f"Record {start + offset + 1} returned invalid JSON even after retry.",
+                        file=sys.stderr,
+                    )
+                if pending:
+                    print(
+                        f"Record {start + offset + 1} still pending after retry; giving up.",
+                        file=sys.stderr,
+                    )
+                await log_progress(relevant)
+
+        tasks = [
+            asyncio.create_task(process_batch(start))
+            for start in range(0, len(records_list), batch_size)
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    kept = [
+        record
+        for record in records_list
+        if record.get("llm_filter", {}).get("relevant") is True
+    ]
     return kept
 
 
@@ -279,6 +301,12 @@ def main(argv: List[str] | None = None) -> int:
         default=5,
         help="Number of records to include in each LLM request.",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Maximum number of concurrent OpenAI requests.",
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -289,12 +317,15 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
-    kept = filter_records(
-        records,
-        api_key,
-        args.model,
-        delay=args.delay,
-        batch_size=args.batch_size,
+    kept = asyncio.run(
+        async_filter_records(
+            records,
+            api_key,
+            args.model,
+            delay=args.delay,
+            batch_size=args.batch_size,
+            concurrency=args.concurrency,
+        )
     )
 
     output_dir = os.path.dirname(args.output)
