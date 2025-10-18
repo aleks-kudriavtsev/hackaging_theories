@@ -34,6 +34,8 @@ from theories_pipeline import (
     export_question_answers,
     export_theories,
     RelevanceFilter,
+    load_ontology_query_suggestions,
+    merge_query_suggestions,
 )
 from theories_pipeline.config_utils import (
     MissingSecretError,
@@ -1836,6 +1838,20 @@ def run_pipeline(
         runtime_targets = base_targets
         ontology_targets = base_targets
 
+    ontology_suggestions_summary: Dict[str, Any] = {}
+    suggestions_path_raw = corpus_cfg.get("ontology_suggestions_path")
+    if suggestions_path_raw:
+        suggestions_path = Path(suggestions_path_raw)
+        if not suggestions_path.is_absolute():
+            suggestions_path = (config_path.parent / suggestions_path).resolve()
+        suggestions_payload = load_ontology_query_suggestions(suggestions_path)
+        if suggestions_payload:
+            ontology_suggestions_summary = merge_query_suggestions(runtime_targets, suggestions_payload)
+            if ontology_targets is not runtime_targets:
+                merge_query_suggestions(ontology_targets, suggestions_payload)
+        else:
+            ontology_suggestions_summary = {}
+
     wants_expansion = (expansion_cfg is not None) or _has_expansion_config(runtime_targets)
     default_expansion: QueryExpansionSettings | None = None
     expander: QueryExpander | None = None
@@ -1897,6 +1913,16 @@ def run_pipeline(
             filter_llm_client=llm_client,
             label_bootstrapper=label_bootstrapper,
         )
+        if isinstance(theory_cfg, Mapping):
+            raw_hints = theory_cfg.get("suggested_queries")
+            hints: List[str] = []
+            if isinstance(raw_hints, Sequence) and not isinstance(raw_hints, (str, bytes)):
+                hints = [str(item).strip() for item in raw_hints if str(item).strip()]
+            elif isinstance(raw_hints, str) and raw_hints.strip():
+                hints = [raw_hints.strip()]
+            if hints:
+                theory_summary = dict(theory_summary)
+                theory_summary["suggested_queries"] = hints
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
             collected_papers.setdefault(paper.identifier, paper)
@@ -1939,9 +1965,12 @@ def run_pipeline(
     export_theories(assignments, Path(outputs["theories"]))
     export_question_answers(question_answers, Path(outputs["questions"]))
 
-    retriever.state_store.write_summary(
-        {"retrieval": summary_report, "quota_status": quota_status}
-    )
+    summary_payload = {
+        "retrieval": summary_report,
+        "quota_status": quota_status,
+        "ontology_suggestions": ontology_suggestions_summary,
+    }
+    retriever.state_store.write_summary(summary_payload)
 
     print(f"Exported {len(papers)} papers to {outputs['papers']}")
     print(f"Exported {len(assignments)} theory assignments to {outputs['theories']}")
@@ -1961,7 +1990,10 @@ def run_pipeline(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        args = parser.parse_args()
+    else:
+        args = parser.parse_args(argv)
     config_path = Path(args.config)
     config = load_config(config_path)
     return run_pipeline(args, parser=parser, config=config, config_path=config_path)

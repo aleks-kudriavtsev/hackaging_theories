@@ -152,6 +152,7 @@ classification:
       - detach
 
 corpus:
+  ontology_suggestions_path: data/pipeline/aging_ontology.json
   bootstrap:
     enabled: true
     queries:
