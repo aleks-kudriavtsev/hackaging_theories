@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -278,6 +279,17 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Number of representative titles to pass for each theory in step 5.",
     )
     parser.add_argument(
+        "--ontology-processes",
+        type=int,
+        default=None,
+        help=(
+            "Number of worker processes to use during ontology generation. If "
+            "omitted, the pipeline mirrors step 5's auto-scaling behaviour: it "
+            "falls back to a single process unless the summary size crosses the "
+            "chunk threshold, in which case it uses the available CPU count."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-run steps even if their output files already exist.",
@@ -290,6 +302,33 @@ def maybe_skip(path: str, force: bool, label: str) -> bool:
         print(f"Skipping {label}; {path} already exists. Use --force to regenerate.")
         return True
     return False
+
+
+def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) -> int | None:
+    if args.ontology_processes is not None:
+        return args.ontology_processes
+
+    try:
+        with open(paths.theories, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    registry = data.get("theory_registry")
+    if not isinstance(registry, Mapping):
+        return None
+
+    total_unique = len(registry)
+    limit = max(args.ontology_top_n, 0)
+    summary_count = total_unique if limit == 0 else min(total_unique, limit)
+
+    try:
+        cpu_total = multiprocessing.cpu_count()
+    except NotImplementedError:  # pragma: no cover - defensive guard
+        cpu_total = 1
+
+    chunk_threshold = 100  # Matches step5_generate_ontology.py default chunk size.
+    return cpu_total if summary_count > chunk_threshold else 1
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -489,6 +528,7 @@ def main(argv: List[str] | None = None) -> int:
             raise SystemExit(
                 f"Step 5 requires the output from step 4 ({paths.theories}) to exist."
             )
+        resolved_processes = _resolve_ontology_processes(paths, args)
         run_step(
             [
                 sys.executable,
@@ -503,6 +543,11 @@ def main(argv: List[str] | None = None) -> int:
                 str(args.ontology_top_n),
                 "--examples-per-theory",
                 str(args.ontology_examples),
+                *(
+                    ["--processes", str(resolved_processes)]
+                    if resolved_processes is not None
+                    else []
+                ),
             ],
             "Generate ontology from theories",
         )
