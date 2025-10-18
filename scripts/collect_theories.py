@@ -394,6 +394,50 @@ def _existing_total(retriever: LiteratureRetriever, state_prefix: str) -> int:
     return 0
 
 
+def _desired_subtheory_quota(
+    config: Mapping[str, Any],
+    subtheory_cfg: Mapping[str, Mapping[str, Any]],
+) -> int:
+    raw_limit = config.get("max_subtheories")
+    if isinstance(raw_limit, int):
+        if raw_limit <= 0:
+            return 0
+        return min(len(subtheory_cfg), raw_limit)
+
+    parent_target = config.get("target")
+    if isinstance(parent_target, int) and parent_target > 0:
+        sub_targets: List[int] = []
+        for sub_config in subtheory_cfg.values():
+            if isinstance(sub_config, Mapping):
+                sub_target = sub_config.get("target")
+                if isinstance(sub_target, int) and sub_target > 0:
+                    sub_targets.append(sub_target)
+        if sub_targets:
+            avg_target = statistics.mean(sub_targets)
+            if avg_target > 0:
+                inferred = math.ceil(parent_target / avg_target)
+                return max(1, min(len(subtheory_cfg), inferred))
+
+    return len(subtheory_cfg)
+
+
+def _partition_subtheories(
+    prioritized: Sequence[Tuple[float, str, Mapping[str, Any], str, int, Any]],
+    desired_total: int,
+) -> Tuple[List[Tuple[float, str, Mapping[str, Any], str, int, Any]], List[Tuple[float, str, Mapping[str, Any], str, int, Any]]]:
+    if desired_total <= 0:
+        return [], list(prioritized)
+
+    active: List[Tuple[float, str, Mapping[str, Any], str, int, Any]] = []
+    waiting: List[Tuple[float, str, Mapping[str, Any], str, int, Any]] = []
+    for item in prioritized:
+        if len(active) < desired_total:
+            active.append(item)
+        else:
+            waiting.append(item)
+    return active, waiting
+
+
 def _build_state_prefix_map(ontology: TheoryOntology) -> Dict[str, str]:
     prefix_map: Dict[str, str] = {}
 
@@ -1157,15 +1201,52 @@ def collect_for_entry(
     subtheory_cfg = config.get("subtheories", {})
     if subtheory_cfg:
         sub_summaries: Dict[str, Any] = {}
-        prioritized = []
+        prioritized: List[Tuple[float, str, Mapping[str, Any], str, int, Any]] = []
         for sub_name, sub_config in subtheory_cfg.items():
             sub_state_prefix = f"{state_prefix}::sub::{slugify(sub_name)}"
             existing = _existing_total(retriever, sub_state_prefix) if resume else 0
             sub_target = sub_config.get("target")
-            fill_ratio = (existing / sub_target) if sub_target else 0.0
-            prioritized.append((fill_ratio, sub_name, sub_config, sub_state_prefix))
+            try:
+                numeric_target = int(sub_target)
+            except (TypeError, ValueError):
+                numeric_target = 0
+            fill_ratio = (existing / numeric_target) if numeric_target else 0.0
+            prioritized.append(
+                (
+                    fill_ratio,
+                    sub_name,
+                    sub_config,
+                    sub_state_prefix,
+                    existing,
+                    sub_target,
+                )
+            )
         prioritized.sort(key=lambda item: (item[0], item[1]))
-        for _ratio, sub_name, sub_config, sub_state_prefix in prioritized:
+
+        desired_total = _desired_subtheory_quota(config, subtheory_cfg)
+        active_items, waiting_items = _partition_subtheories(prioritized, desired_total)
+
+        if waiting_items:
+            summary["subtheory_queue"] = [item[1] for item in waiting_items]
+
+        for queue_position, (
+            ratio,
+            sub_name,
+            _sub_config,
+            _state_prefix,
+            existing,
+            sub_target,
+        ) in enumerate(waiting_items, start=1):
+            sub_summaries[sub_name] = {
+                "status": "waiting",
+                "status_label": "в ожидании",
+                "target": sub_target,
+                "existing_total": existing,
+                "fill_ratio": ratio,
+                "queue_position": queue_position,
+            }
+
+        for ratio, sub_name, sub_config, sub_state_prefix, existing, sub_target in active_items:
             sub_summary, sub_papers = collect_for_entry(
                 retriever,
                 name=sub_name,
@@ -1181,10 +1262,17 @@ def collect_for_entry(
                 filter_llm_client=filter_llm_client,
                 label_bootstrapper=label_bootstrapper,
             )
+            sub_summary.setdefault("status", "active")
+            if sub_summary.get("status") == "active":
+                sub_summary.setdefault("status_label", "активен")
+            sub_summary.setdefault("target", sub_target)
+            sub_summary.setdefault("existing_total", existing)
+            sub_summary.setdefault("fill_ratio", ratio)
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
                 entry_map.setdefault(paper.identifier, paper)
         summary["subtheories"] = sub_summaries
+        summary["subtheory_quota"] = desired_total
 
     return summary, list(entry_map.values())
 
