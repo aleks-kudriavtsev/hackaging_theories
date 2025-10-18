@@ -598,10 +598,45 @@ def collect_for_entry(
     filter_llm_client: LLMClient | None = None,
     label_bootstrapper: RuntimeOntologyBootstrapper | None = None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
-    query_templates = config.get("queries") or [context.get("base_query", name)]
-    queries = [render_query(template, context | {"query": context.get("base_query", name)}) for template in query_templates]
+    query_templates = config.get("queries")
+    query_source = "configured"
+
+    def _coerce_templates(payload: Any) -> List[str]:
+        if isinstance(payload, Mapping):
+            return [str(item) for item in payload.values() if str(item).strip()]
+        if isinstance(payload, (list, tuple, set)):
+            return [str(item) for item in payload if str(item).strip()]
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            return [stripped] if stripped else []
+        return []
+
+    templates = _coerce_templates(query_templates)
+    if not templates:
+        suggestions = _coerce_templates(config.get("suggested_queries"))
+        if suggestions:
+            templates = suggestions
+            query_source = "suggested"
+
+    if not templates:
+        fallback_template = str(context.get("base_query") or name)
+        templates = [fallback_template]
+        query_source = "fallback"
+
+    queries = [
+        render_query(template, context | {"query": context.get("base_query", name)})
+        for template in templates
+    ]
     queries = [q.strip() for q in queries if q.strip()]
+    if not queries:
+        queries = [str(context.get("base_query") or name)]
+        query_source = "fallback"
+
     base_queries = list(queries)
+    if query_source == "suggested":
+        logger.info("Using suggested ontology queries for %s", name)
+    elif query_source == "fallback" and not config.get("queries"):
+        logger.info("Falling back to base query for %s", name)
     target = config.get("target")
     min_citation_override = config.get("min_citation_count")
     if min_citation_override is None and retrieval_options is not None:
@@ -889,6 +924,8 @@ def collect_for_entry(
     summary = dict(result.summary)
     summary["retrieved_total"] = summary.get("total_unique", len(result.papers))
     summary["total_unique"] = len(accepted_papers)
+    summary["queries"] = base_queries
+    summary["query_source"] = query_source
     summary["filtering"] = {
         "accepted": sum(1 for decision in filter_decisions if decision.accepted),
         "rejected": sum(1 for decision in filter_decisions if not decision.accepted),
