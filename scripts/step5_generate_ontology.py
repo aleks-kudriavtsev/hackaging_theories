@@ -526,7 +526,11 @@ def main(argv: List[str] | None = None) -> int:
         "--processes",
         type=int,
         default=None,
-        help="Number of worker processes for ontology generation (default: single process).",
+        help=(
+            "Number of worker processes for ontology generation. If omitted, the "
+            "script auto-scales to the available CPU count whenever the summary "
+            "exceeds the chunk threshold, otherwise it runs in a single process."
+        ),
     )
     parser.add_argument(
         "--chunk-size",
@@ -563,13 +567,36 @@ def main(argv: List[str] | None = None) -> int:
         print("No canonical theories available in registry", file=sys.stderr)
         return 1
 
-    processes = 1 if args.processes is None else args.processes
+    chunk_threshold = max(args.chunk_size, 1)
+
+    try:
+        cpu_total = multiprocessing.cpu_count()
+    except NotImplementedError:  # pragma: no cover - defensive guard
+        cpu_total = 1
+
+    auto_processes = cpu_total if len(summary) > chunk_threshold else 1
+
+    if args.processes is None:
+        processes = auto_processes
+        requested_processes: Optional[int] = None
+    else:
+        processes = args.processes
+        requested_processes = args.processes
+
+    process_source = (
+        "auto" if requested_processes is None or processes == auto_processes else "manual"
+    )
+
     if processes < 1:
         print("--processes must be at least 1", file=sys.stderr)
         return 1
 
-    chunk_threshold = max(args.chunk_size, 1)
     should_chunk = processes > 1 or len(summary) > chunk_threshold
+
+    print(
+        f"Using {processes} worker process{'es' if processes != 1 else ''} "
+        f"({process_source}; auto suggestion: {auto_processes})."
+    )
 
     if should_chunk:
         summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_threshold))
@@ -606,6 +633,9 @@ def main(argv: List[str] | None = None) -> int:
         "model": args.model,
         "input_file": args.input,
         "total_unique_theories": total_unique,
+        "worker_processes": processes,
+        "auto_processes_suggestion": auto_processes,
+        "requested_processes": requested_processes,
         "prompt_summary": summary,
         "ontology": {
             "raw": response,
@@ -616,6 +646,10 @@ def main(argv: List[str] | None = None) -> int:
         "reconciliation_report": {
             "total_groups": len(reconciled_groups),
             "total_reassignments": len(reconciliation.get("reassignments", [])),
+            "worker_processes": processes,
+            "process_configuration": process_source,
+            "auto_processes_suggestion": auto_processes,
+            "requested_processes": requested_processes,
             **reconciliation,
         },
     }
