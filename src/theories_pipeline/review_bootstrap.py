@@ -87,10 +87,28 @@ class _AggregatedNode:
         }
         if self.queries:
             bootstrap_info["queries"] = sorted(self.queries)
+        direct_count, child_citations = self.child_metrics()
+        branch_size = self.leaf_count()
+        if direct_count or branch_size:
+            bootstrap_info["child_summary"] = {
+                "count": direct_count,
+                "citations": child_citations,
+                "branch_size": branch_size,
+            }
         return {
             "bootstrap": bootstrap_info,
             "subtheories": child_items,
         }
+
+    def child_metrics(self) -> tuple[int, int]:
+        count = len(self.children)
+        citations = sum(child.citations for child in self.children.values())
+        return count, citations
+
+    def leaf_count(self) -> int:
+        if not self.children:
+            return 1
+        return sum(child.leaf_count() for child in self.children.values())
 
 
 class _SafeDict(dict):
@@ -418,14 +436,92 @@ def _merge_node(
             _merge_node(child_container, child, review)
 
 
-def build_bootstrap_ontology(results: Iterable[BootstrapResult]) -> Dict[str, Any]:
+def _aggregate_children(children: Iterable[_AggregatedNode]) -> tuple[int, set[str], set[str]]:
+    total_citations = 0
+    reviews: set[str] = set()
+    queries: set[str] = set()
+    for child in children:
+        total_citations += child.citations
+        reviews.update(child.reviews)
+        queries.update(child.queries)
+    return total_citations, reviews, queries
+
+
+def _next_other_name(existing: set[str], used: set[str]) -> str:
+    index = 1
+    while True:
+        name = "Other" if index == 1 else f"Other {index}"
+        if name not in existing and name not in used:
+            used.add(name)
+            return name
+        index += 1
+
+
+def _rebalance_node(node: _AggregatedNode, max_children: int | None) -> None:
+    if max_children is None or max_children < 1:
+        for child in node.children.values():
+            _rebalance_node(child, max_children)
+        return
+
+    for child in node.children.values():
+        _rebalance_node(child, max_children)
+
+    children = list(node.children.values())
+    if len(children) <= max_children:
+        return
+
+    sorted_children = sorted(children, key=lambda child: (-child.citations, child.name.lower()))
+    group_count = max_children
+    groups: list[list[_AggregatedNode]] = [[] for _ in range(group_count)]
+    for index, child in enumerate(sorted_children):
+        groups[index % group_count].append(child)
+
+    existing_names = set(node.children.keys())
+    new_children: Dict[str, _AggregatedNode] = {}
+    used_names: set[str] = set()
+
+    for group in groups:
+        if not group:
+            continue
+        if len(group) == 1:
+            single = group[0]
+            new_children[single.name] = single
+            continue
+        aggregator_name = _next_other_name(existing_names, used_names)
+        citations, reviews, queries = _aggregate_children(group)
+        aggregator = _AggregatedNode(name=aggregator_name, citations=citations, reviews=reviews, queries=queries)
+        aggregator.children = {child.name: child for child in group}
+        _rebalance_node(aggregator, max_children)
+        new_children[aggregator.name] = aggregator
+
+    node.children = new_children
+
+
+def _rebalance_root(children: Dict[str, _AggregatedNode], max_children: int | None) -> Dict[str, _AggregatedNode]:
+    if max_children is None or max_children < 1 or len(children) <= max_children:
+        for child in children.values():
+            _rebalance_node(child, max_children)
+        return children
+
+    pseudo_root = _AggregatedNode(name="__root__", children=dict(children))
+    _rebalance_node(pseudo_root, max_children)
+    return pseudo_root.children
+
+
+def build_bootstrap_ontology(
+    results: Iterable[BootstrapResult],
+    *,
+    max_children: int | None = None,
+) -> Dict[str, Any]:
     """Aggregate bootstrap results into a nested ontology mapping."""
 
     root: Dict[str, _AggregatedNode] = {}
     for result in results:
         for node in result.theories:
             _merge_node(root, node, result.review)
-    return {name: aggregated.to_config() for name, aggregated in sorted(root.items())}
+
+    balanced = _rebalance_root(root, max_children)
+    return {name: aggregated.to_config() for name, aggregated in sorted(balanced.items())}
 
 
 def merge_bootstrap_into_targets(

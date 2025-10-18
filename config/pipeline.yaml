@@ -170,6 +170,8 @@ corpus:
     resume: true
     state_prefix: "bootstrap::reviews"
     max_theories: 8
+    balance:
+      max_children: 6
     cache_path: data/cache/bootstrap_ontology.json
     update_targets: false
   cache_dir: data/cache/literature
