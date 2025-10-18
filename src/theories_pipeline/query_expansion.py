@@ -23,6 +23,7 @@ import shlex
 import string
 import time
 import uuid
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
@@ -30,6 +31,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 from .literature import PaperMetadata
 from .llm import LLMClient, LLMMessage
 from .ontology import OntologyNode
+from .ontology_manager import RuntimeNodeSpec
 
 logger = logging.getLogger(__name__)
 
@@ -245,12 +247,15 @@ class QueryExpansionCache:
         self,
         session: QueryExpansionSession,
         performance: Mapping[str, Any],
+        *,
+        new_papers: Sequence[PaperMetadata] | None = None,
     ) -> None:
         record = self._load(session.node_name)
         updated = False
         for entry in record.get("history", []):
             if entry.get("session_id") == session.session_id:
                 entry["performance"] = dict(performance)
+                entry["new_papers"] = [paper.to_dict() for paper in new_papers or []]
                 updated = True
                 break
         if not updated:  # pragma: no cover - defensive
@@ -263,9 +268,108 @@ class QueryExpansionCache:
                     "settings": performance.get("settings"),
                     "snippets": [],
                     "performance": dict(performance),
+                    "new_papers": [paper.to_dict() for paper in new_papers or []],
                 }
             )
+        self._update_query_metrics(record, session, performance, new_papers or [])
         self._store(session.node_name, record)
+
+    def _update_query_metrics(
+        self,
+        record: MutableMapping[str, Any],
+        session: QueryExpansionSession,
+        performance: Mapping[str, Any],
+        new_papers: Sequence[PaperMetadata],
+    ) -> None:
+        metrics = record.setdefault("metrics", {})
+        query_metrics: MutableMapping[str, MutableMapping[str, Any]] = metrics.setdefault(
+            "queries", {}
+        )
+        timestamp = time.time()
+        new_unique = int(performance.get("new_unique", 0) or 0)
+        paper_payload: List[Dict[str, Any]] = []
+        seen_papers: set[str] = set()
+        for paper in new_papers:
+            identifier = paper.identifier
+            if identifier in seen_papers:
+                continue
+            seen_papers.add(identifier)
+            paper_payload.append(
+                {
+                    "identifier": identifier,
+                    "title": paper.title,
+                    "source": paper.source,
+                }
+            )
+        for candidate in session.candidates:
+            query_key = candidate.query
+            payload = query_metrics.setdefault(query_key, {})
+            payload["attempts"] = int(payload.get("attempts", 0)) + 1
+            payload["successes"] = int(payload.get("successes", 0))
+            payload["new_unique_total"] = int(payload.get("new_unique_total", 0))
+            payload.setdefault("sources", [])
+            payload.setdefault("keywords", queries_to_keywords([query_key]))
+            payload.setdefault("supporting_papers", [])
+            payload.setdefault("promoted_nodes", [])
+            payload.setdefault("metadata", {})
+            payload["metadata"]["last_session_id"] = session.session_id
+            payload["metadata"]["last_updated"] = timestamp
+            payload["sources"] = list({*payload["sources"], candidate.source})
+            if new_unique > 0:
+                payload["successes"] = int(payload.get("successes", 0)) + 1
+                payload["new_unique_total"] = int(payload.get("new_unique_total", 0)) + new_unique
+                existing_support = payload["supporting_papers"]
+                seen_identifiers = {entry.get("identifier") for entry in existing_support if isinstance(entry, Mapping)}
+                for paper_entry in paper_payload:
+                    identifier = paper_entry.get("identifier")
+                    if identifier and identifier not in seen_identifiers:
+                        existing_support.append(paper_entry)
+                        seen_identifiers.add(identifier)
+
+    def get_query_metrics(self, node_name: str) -> Dict[str, Mapping[str, Any]]:
+        record = self._load(node_name)
+        metrics = record.get("metrics", {})
+        if not isinstance(metrics, Mapping):
+            return {}
+        queries = metrics.get("queries")
+        if not isinstance(queries, Mapping):
+            return {}
+        sanitized: Dict[str, Mapping[str, Any]] = {}
+        for query, payload in queries.items():
+            if not isinstance(query, str) or not isinstance(payload, Mapping):
+                continue
+            sanitized[query] = payload
+        return sanitized
+
+    def mark_query_promoted(self, node_name: str, query: str, node_label: str) -> None:
+        record = self._load(node_name)
+        metrics = record.setdefault("metrics", {})
+        query_metrics: MutableMapping[str, MutableMapping[str, Any]] = metrics.setdefault(
+            "queries", {}
+        )
+        payload = query_metrics.setdefault(query, {})
+        promoted = payload.setdefault("promoted_nodes", [])
+        if isinstance(promoted, list) and node_label not in promoted:
+            promoted.append(node_label)
+        elif not isinstance(promoted, list):
+            payload["promoted_nodes"] = [node_label]
+        self._store(node_name, record)
+
+
+@dataclass(frozen=True)
+class QueryPerformanceRecord:
+    """Aggregate statistics for a query evaluated during expansion."""
+
+    node_name: str
+    query: str
+    attempts: int
+    successes: int
+    new_unique_total: int
+    keywords: Sequence[str]
+    sources: Sequence[str]
+    supporting_papers: Sequence[Mapping[str, Any]]
+    promoted_nodes: Sequence[str]
+    last_session_id: str | None = None
 
 
 class QueryExpander:
@@ -362,6 +466,7 @@ class QueryExpander:
         before_total: int,
         after_total: int,
         new_unique: int,
+        new_papers: Sequence[PaperMetadata] | None = None,
     ) -> None:
         performance = {
             "before_total": before_total,
@@ -370,7 +475,159 @@ class QueryExpander:
             "new_unique": new_unique,
         }
         cache = self._session_cache.pop(session.session_id, self.cache)
-        cache.record_performance(session, performance)
+        cache.record_performance(session, performance, new_papers=new_papers or [])
+
+    def consistent_queries(
+        self,
+        node_name: str,
+        *,
+        selected_queries: Sequence[str],
+        min_successes: int = 2,
+        min_new_unique: int = 3,
+        min_success_rate: float = 0.6,
+    ) -> List[QueryPerformanceRecord]:
+        metrics = self.cache.get_query_metrics(node_name)
+        consistent: List[QueryPerformanceRecord] = []
+        for raw_query in selected_queries:
+            if not isinstance(raw_query, str):
+                continue
+            payload = metrics.get(raw_query)
+            if not payload:
+                continue
+            attempts = int(payload.get("attempts", 0) or 0)
+            successes = int(payload.get("successes", 0) or 0)
+            new_unique_total = int(payload.get("new_unique_total", 0) or 0)
+            if attempts <= 0:
+                continue
+            success_rate = successes / attempts if attempts else 0.0
+            if successes < min_successes or new_unique_total < min_new_unique:
+                continue
+            if success_rate < min_success_rate:
+                continue
+            keywords = payload.get("keywords")
+            if not isinstance(keywords, Sequence):
+                keywords = queries_to_keywords([raw_query])
+            sources = payload.get("sources")
+            if not isinstance(sources, Sequence):
+                sources = []
+            supporting = payload.get("supporting_papers")
+            if not isinstance(supporting, Sequence):
+                supporting = []
+            promoted = payload.get("promoted_nodes")
+            if not isinstance(promoted, Sequence):
+                promoted = []
+            metadata = payload.get("metadata")
+            last_session_id = None
+            if isinstance(metadata, Mapping):
+                last_session_id = metadata.get("last_session_id")
+            consistent.append(
+                QueryPerformanceRecord(
+                    node_name=node_name,
+                    query=raw_query,
+                    attempts=attempts,
+                    successes=successes,
+                    new_unique_total=new_unique_total,
+                    keywords=list(keywords),
+                    sources=list(sources),
+                    supporting_papers=list(supporting),
+                    promoted_nodes=list(promoted),
+                    last_session_id=str(last_session_id) if last_session_id else None,
+                )
+            )
+        return consistent
+
+    def mark_query_promoted(self, node_name: str, query: str, node_label: str) -> None:
+        self.cache.mark_query_promoted(node_name, query, node_label)
+
+    def build_runtime_spec(
+        self,
+        record: QueryPerformanceRecord,
+        *,
+        parent: str | None,
+        new_papers: Sequence[PaperMetadata],
+        existing_names: Iterable[str] | None = None,
+    ) -> RuntimeNodeSpec | None:
+        candidate_keywords = self._theme_keywords(record, new_papers)
+        if not candidate_keywords:
+            return None
+        candidate_name = self._theme_name(candidate_keywords, existing_names)
+        if not candidate_name:
+            return None
+        provenance_payload: Dict[str, Any] = {
+            "source": "adaptive_query_theme",
+            "query": record.query,
+            "metrics": {
+                "attempts": record.attempts,
+                "successes": record.successes,
+                "new_unique_total": record.new_unique_total,
+            },
+            "supporting_papers": [dict(item) for item in record.supporting_papers],
+        }
+        if record.last_session_id:
+            provenance_payload["last_session_id"] = record.last_session_id
+        if new_papers:
+            provenance_payload["latest_supporting_papers"] = [
+                {
+                    "identifier": paper.identifier,
+                    "title": paper.title,
+                    "source": paper.source,
+                }
+                for paper in new_papers
+            ]
+        metadata = {
+            "bootstrap": {
+                "source": "adaptive_query_theme",
+                "query": record.query,
+            }
+        }
+        return RuntimeNodeSpec(
+            name=candidate_name,
+            parent=parent,
+            config={},
+            keywords=candidate_keywords,
+            metadata=metadata,
+            provenance=provenance_payload,
+        )
+
+    def _theme_keywords(
+        self, record: QueryPerformanceRecord, new_papers: Sequence[PaperMetadata]
+    ) -> List[str]:
+        base_keywords = [token for token in record.keywords if isinstance(token, str) and token]
+        base_keywords = [token.lower() for token in base_keywords]
+        theme_terms = _extract_theme_terms(new_papers)
+        combined: List[str] = []
+        seen: set[str] = set()
+        for token in base_keywords + theme_terms:
+            normalized = token.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            combined.append(normalized)
+            if len(combined) >= 10:
+                break
+        return combined
+
+    def _theme_name(
+        self, keywords: Sequence[str], existing_names: Iterable[str] | None
+    ) -> str | None:
+        if not keywords:
+            return None
+        existing = {name.lower() for name in (existing_names or [])}
+        base_tokens = [token for token in keywords[:3] if token]
+        if not base_tokens:
+            return None
+        candidate = " ".join(token.title() for token in base_tokens).strip()
+        if not candidate:
+            return None
+        if candidate.lower() not in existing:
+            return candidate
+        suffix = 2
+        while suffix < 10:
+            renamed = f"{candidate} {suffix}"
+            if renamed.lower() not in existing:
+                return renamed
+            suffix += 1
+        return None
 
     # ------------------------------------------------------------------
     # Candidate generators
@@ -434,6 +691,7 @@ class QueryExpander:
             logger.debug("LLM returned no usable query suggestions for %s", node.name)
         return candidates
 
+
     def _generate_with_embeddings(
         self,
         node: OntologyNode,
@@ -442,10 +700,11 @@ class QueryExpander:
         snippets: Sequence[str],
         settings: QueryExpansionSettings,
     ) -> List[QueryCandidate]:
-        if not snippets:
-            return []
-        if TfidfVectorizer is None or cosine_similarity is None:
+        if TfidfVectorizer is None or cosine_similarity is None:  # pragma: no cover - optional dependency
             logger.debug("Skipping embedding-based expansion for %s: scikit-learn not available", node.name)
+            return []
+
+        if not snippets:
             return []
 
         vectorizer = TfidfVectorizer(
@@ -483,10 +742,68 @@ class QueryExpander:
         return candidates
 
 
+_THEME_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z\-]{2,}")
+_STOPWORDS = {
+    "and",
+    "the",
+    "with",
+    "from",
+    "into",
+    "using",
+    "for",
+    "into",
+    "that",
+    "this",
+    "over",
+    "between",
+    "after",
+    "before",
+    "during",
+    "among",
+    "their",
+    "within",
+    "study",
+    "analysis",
+    "effects",
+    "effect",
+    "aging",
+    "ageing",
+    "older",
+    "adults",
+}
+
+
+def _extract_theme_terms(papers: Sequence[PaperMetadata]) -> List[str]:
+    if not papers:
+        return []
+    counter: Counter[str] = Counter()
+    for paper in papers:
+        text = " ".join(
+            part
+            for part in (
+                paper.title or "",
+                paper.abstract or "",
+            )
+            if part
+        ).lower()
+        if not text:
+            continue
+        for match in _THEME_TOKEN_PATTERN.findall(text):
+            token = match.lower().strip("- ")
+            if not token or token in _STOPWORDS:
+                continue
+            counter[token] += 1
+    if not counter:
+        return []
+    ranked = [token for token, _count in counter.most_common(10)]
+    return ranked
+
+
 __all__ = [
     "QueryExpander",
     "QueryExpansionSettings",
     "QueryExpansionSession",
     "QueryCandidate",
+    "QueryPerformanceRecord",
     "queries_to_keywords",
 ]
