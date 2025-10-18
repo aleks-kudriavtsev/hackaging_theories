@@ -314,6 +314,9 @@ def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) 
     except (OSError, json.JSONDecodeError):
         return None
 
+    if not isinstance(data, Mapping):
+        return None
+
     registry = data.get("theory_registry")
     if not isinstance(registry, Mapping):
         return None

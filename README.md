@@ -80,11 +80,14 @@ By default this performs:
    models see intact sentences.
 7. `step4_extract_theories.py` – LLM-based extraction of aging theories from the
    (full) texts, plus aggregation of unique theory names in
-   `aging_theories.json`. The worker count scales with the CPU total for queues
-   above 100 items and can be overridden with `--processes` when you need
-   explicit control. Theory extraction defaults to `gpt-5-nano`, and the
-   optional hypothesis review stage runs on `gpt-4.1-nano` so both passes stay
-   accurate within the same budget envelope.
+   `aging_theories.json`. Long reviews are split into overlapping prompt
+   windows controlled by `--chunk-chars` and `--chunk-overlap`, and theory names
+   from every chunk are deduplicated before being stored on the record. The
+   worker count scales with the CPU total for queues above 100 items and can be
+   overridden with `--processes` when you need explicit control. Theory
+   extraction defaults to `gpt-5-nano`, and the optional hypothesis review stage
+   runs on `gpt-4.1-nano` so both passes stay accurate within the same budget
+   envelope.
 8. `step5_generate_ontology.py` – LLM-assisted grouping of the extracted
    theories into multi-level ontology clusters saved as `aging_ontology.json`.
    Ontology synthesis defaults to `gpt-5-mini`, which provides extra synthesis
