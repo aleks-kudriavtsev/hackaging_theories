@@ -503,6 +503,94 @@ def _reconcile_groups(
     return processed_groups, reconciliation
 
 
+def _normalise_term(term: str) -> str:
+    return " ".join(term.split())
+
+
+def _query_variants(term: str) -> List[str]:
+    cleaned = _normalise_term(term)
+    if not cleaned:
+        return []
+    variants: List[str] = []
+
+    def _add(candidate: str) -> None:
+        candidate = candidate.strip()
+        if candidate:
+            variants.append(candidate)
+
+    lower = cleaned.lower()
+    _add(cleaned)
+    if " " in cleaned:
+        _add(f'"{cleaned}"')
+    if "aging" not in lower and "ageing" not in lower:
+        quoted = f'"{cleaned}"' if " " in cleaned else cleaned
+        _add(f"{quoted} aging")
+    if "theory" not in lower:
+        _add(f"{cleaned} theory")
+    return variants
+
+
+def _collect_theory_terms(theory: Mapping[str, Any]) -> List[str]:
+    names: List[str] = []
+    seen: Set[str] = set()
+
+    def _push(value: Any) -> None:
+        if isinstance(value, str):
+            normalised = _normalise_term(value)
+            if normalised and normalised.lower() not in seen:
+                seen.add(normalised.lower())
+                names.append(normalised)
+
+    _push(theory.get("preferred_label"))
+    _push(theory.get("label"))
+    aliases = theory.get("aliases")
+    if isinstance(aliases, Sequence) and not isinstance(aliases, (str, bytes)):
+        for alias in aliases:
+            _push(alias)
+    return names
+
+
+def _attach_suggested_queries(groups: Sequence[Dict[str, Any]]) -> None:
+    def _process_group(group: Dict[str, Any]) -> List[str]:
+        aggregated_terms: List[str] = []
+        seen_terms: Set[str] = set()
+
+        theories = group.get("theories")
+        if isinstance(theories, Sequence) and not isinstance(theories, (str, bytes)):
+            for theory in theories:
+                if isinstance(theory, Mapping):
+                    for term in _collect_theory_terms(theory):
+                        if term.lower() not in seen_terms:
+                            seen_terms.add(term.lower())
+                            aggregated_terms.append(term)
+
+        subgroups = group.get("subgroups")
+        if isinstance(subgroups, Sequence) and not isinstance(subgroups, (str, bytes)):
+            for child in subgroups:
+                if isinstance(child, dict):
+                    child_terms = _process_group(child)
+                    for term in child_terms:
+                        if term.lower() not in seen_terms:
+                            seen_terms.add(term.lower())
+                            aggregated_terms.append(term)
+
+        suggestions: List[str] = []
+        seen_suggestions: Set[str] = set()
+        for term in aggregated_terms:
+            for candidate in _query_variants(term):
+                key = candidate.lower()
+                if key not in seen_suggestions:
+                    seen_suggestions.add(key)
+                    suggestions.append(candidate)
+
+        group["suggested_queries"] = suggestions
+        return aggregated_terms
+
+    for group in groups:
+        if isinstance(group, dict):
+            _process_group(group)
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate an ontology from extracted theories")
     parser.add_argument("--input", default="data/pipeline/aging_theories.json")
@@ -631,6 +719,8 @@ def main(argv: List[str] | None = None) -> int:
         registry,
         article_index=article_index,
     )
+
+    _attach_suggested_queries(reconciled_groups)
 
     reconciliation.setdefault("notes", []).append(
         {
