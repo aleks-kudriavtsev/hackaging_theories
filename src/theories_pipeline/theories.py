@@ -149,6 +149,9 @@ class TheoryClassifier:
                 keywords = data.get("keywords")
                 if keywords:
                     keyword_updates[name] = keywords
+            for name, keywords in update.keyword_updates.items():
+                if keywords:
+                    keyword_updates[name] = keywords
             self.update_ontology(ontology, keyword_updates=keyword_updates)
 
         manager.register_listener(_listener)
