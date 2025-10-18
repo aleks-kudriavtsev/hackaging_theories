@@ -75,6 +75,117 @@ def load_config(path: Path) -> Dict[str, Any]:
     return json.loads(text)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("query", help="Search query for literature retrieval")
+    parser.add_argument(
+        "--config",
+        default="config/pipeline.yaml",
+        type=Path,
+        help="Path to the pipeline configuration file",
+    )
+    parser.add_argument(
+        "--quickstart",
+        action="store_true",
+        help=(
+            "Generate a temporary ontology node from the CLI query instead of "
+            "requiring corpus.targets"
+        ),
+    )
+    parser.add_argument(
+        "--target-count",
+        type=int,
+        help="Target paper quota for the quickstart ontology node",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Global maximum number of papers to export (overrides config)",
+    )
+    parser.add_argument(
+        "--providers",
+        nargs="+",
+        help="Limit retrieval to the specified providers (by name)",
+    )
+    precedence_note = "Overrides the {name} API key (CLI > config file > environment > defaults)"
+    parser.add_argument(
+        "--openalex-api-key",
+        help=precedence_note.format(name="OpenAlex"),
+    )
+    parser.add_argument(
+        "--crossref-api-key",
+        help=precedence_note.format(name="Crossref"),
+    )
+    parser.add_argument(
+        "--pubmed-api-key",
+        help=precedence_note.format(name="PubMed"),
+    )
+    parser.add_argument(
+        "--serpapi-key",
+        help=precedence_note.format(name="SerpApi"),
+    )
+    parser.add_argument(
+        "--semantic-scholar-key",
+        help=precedence_note.format(name="Semantic Scholar"),
+    )
+    parser.add_argument(
+        "--scihub-email",
+        help=precedence_note.format(name="Sci-Hub email"),
+    )
+    parser.add_argument(
+        "--scihub-rapidapi-key",
+        help=precedence_note.format(name="Sci-Hub RapidAPI"),
+    )
+    parser.add_argument(
+        "--annas-archive-api-key",
+        help=precedence_note.format(name="Anna's Archive"),
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore cached retrieval state and start fresh",
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        help="Override the retrieval state directory",
+    )
+    parser.add_argument(
+        "--llm-model",
+        help="Optional OpenAI model name for GPT-assisted classification",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        help="Override sampling temperature for GPT classification",
+    )
+    parser.add_argument(
+        "--llm-batch-size",
+        type=int,
+        help="Number of papers to classify per GPT request batch",
+    )
+    parser.add_argument(
+        "--llm-cache-dir",
+        type=Path,
+        help="Directory to cache GPT responses (default: data/cache/llm)",
+    )
+    parser.add_argument(
+        "--llm-api-key",
+        help="Explicit API key for GPT classification (overrides config/env)",
+    )
+    parser.add_argument(
+        "--parallel-fetch",
+        type=int,
+        help="Number of worker threads to fetch provider pages in parallel",
+    )
+    parser.add_argument(
+        "--classification-workers",
+        type=int,
+        help="Number of worker threads for GPT classification/extraction",
+    )
+    return parser
+
+
 _API_KEY_OVERRIDE_MAP = {
     "openalex_api_key": "openalex",
     "crossref_api_key": "crossref_contact",
@@ -1596,118 +1707,13 @@ def _maybe_build_llm_client(
     return LLMClient(config_obj, api_key=api_key)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("query", help="Search query for literature retrieval")
-    parser.add_argument(
-        "--config",
-        default="config/pipeline.yaml",
-        type=Path,
-        help="Path to the pipeline configuration file",
-    )
-    parser.add_argument(
-        "--quickstart",
-        action="store_true",
-        help=(
-            "Generate a temporary ontology node from the CLI query instead of "
-            "requiring corpus.targets"
-        ),
-    )
-    parser.add_argument(
-        "--target-count",
-        type=int,
-        help="Target paper quota for the quickstart ontology node",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        help="Global maximum number of papers to export (overrides config)",
-    )
-    parser.add_argument(
-        "--providers",
-        nargs="+",
-        help="Limit retrieval to the specified providers (by name)",
-    )
-    precedence_note = "Overrides the {name} API key (CLI > config file > environment > defaults)"
-    parser.add_argument(
-        "--openalex-api-key",
-        help=precedence_note.format(name="OpenAlex"),
-    )
-    parser.add_argument(
-        "--crossref-api-key",
-        help=precedence_note.format(name="Crossref"),
-    )
-    parser.add_argument(
-        "--pubmed-api-key",
-        help=precedence_note.format(name="PubMed"),
-    )
-    parser.add_argument(
-        "--serpapi-key",
-        help=precedence_note.format(name="SerpApi"),
-    )
-    parser.add_argument(
-        "--semantic-scholar-key",
-        help=precedence_note.format(name="Semantic Scholar"),
-    )
-    parser.add_argument(
-        "--scihub-email",
-        help=precedence_note.format(name="Sci-Hub email"),
-    )
-    parser.add_argument(
-        "--scihub-rapidapi-key",
-        help=precedence_note.format(name="Sci-Hub RapidAPI"),
-    )
-    parser.add_argument(
-        "--annas-archive-api-key",
-        help=precedence_note.format(name="Anna's Archive"),
-    )
-    parser.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Ignore cached retrieval state and start fresh",
-    )
-    parser.add_argument(
-        "--state-dir",
-        type=Path,
-        help="Override the retrieval state directory",
-    )
-    parser.add_argument(
-        "--llm-model",
-        help="Optional OpenAI model name for GPT-assisted classification",
-    )
-    parser.add_argument(
-        "--llm-temperature",
-        type=float,
-        help="Override sampling temperature for GPT classification",
-    )
-    parser.add_argument(
-        "--llm-batch-size",
-        type=int,
-        help="Number of papers to classify per GPT request batch",
-    )
-    parser.add_argument(
-        "--llm-cache-dir",
-        type=Path,
-        help="Directory to cache GPT responses (default: data/cache/llm)",
-    )
-    parser.add_argument(
-        "--llm-api-key",
-        help="Explicit API key for GPT classification (overrides config/env)",
-    )
-    parser.add_argument(
-        "--parallel-fetch",
-        type=int,
-        help="Number of worker threads to fetch provider pages in parallel",
-    )
-    parser.add_argument(
-        "--classification-workers",
-        type=int,
-        help="Number of worker threads for GPT classification/extraction",
-    )
-    args = parser.parse_args()
-
-    config_path = Path(args.config)
-    config = load_config(config_path)
+def run_pipeline(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    config: Mapping[str, Any],
+    config_path: Path,
+) -> int:
     try:
         api_keys = _load_api_keys(
             args,
@@ -1950,6 +1956,16 @@ def main() -> None:
     if quickstart_active and quickstart_cache_path is not None:
         print(f"Quickstart ontology node cached at {quickstart_cache_path}")
 
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    config_path = Path(args.config)
+    config = load_config(config_path)
+    return run_pipeline(args, parser=parser, config=config, config_path=config_path)
+
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
-    main()
+    raise SystemExit(main())
