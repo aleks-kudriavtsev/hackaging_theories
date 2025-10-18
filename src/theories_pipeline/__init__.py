@@ -9,6 +9,10 @@ from .literature import (
 )
 from .ontology import TheoryOntology
 from .ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
+from .ontology_suggestions import (
+    load_ontology_query_suggestions,
+    merge_query_suggestions,
+)
 from .theories import TheoryClassifier, TheoryAssignment
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
@@ -47,6 +51,8 @@ __all__ = [
     "OntologyManager",
     "OntologyUpdate",
     "RuntimeNodeSpec",
+    "load_ontology_query_suggestions",
+    "merge_query_suggestions",
     "QuestionExtractor",
     "QuestionAnswer",
     "classify_and_extract_parallel",
