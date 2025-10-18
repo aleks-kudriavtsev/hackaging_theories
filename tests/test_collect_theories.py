@@ -575,10 +575,17 @@ def test_query_expansion_keywords_and_bootstrap(tmp_path: Path, monkeypatch) -> 
                     source="Test",
                 )
             ]
+            per_query_unique = {query: 0 for query in query_list}
+            per_query_identifiers = {query: [] for query in query_list}
+            if query_list:
+                per_query_unique[query_list[0]] = len(papers)
+                per_query_identifiers[query_list[0]] = [paper.dedupe_key for paper in papers]
             summary = {
                 "total_unique": len(papers),
                 "providers": {},
                 "queries": query_list,
+                "per_query_new_unique": per_query_unique,
+                "per_query_new_identifiers": per_query_identifiers,
             }
             return SimpleNamespace(papers=papers, summary=summary)
 
@@ -740,6 +747,8 @@ def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
         after_total=2,
         new_unique=len(papers_one),
         new_papers=papers_one,
+        per_query_new_unique={"digital biomarkers": len(papers_one)},
+        per_query_new_papers={"digital biomarkers": papers_one},
     )
 
     session_two = QueryExpansionSession(
@@ -758,6 +767,8 @@ def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
         after_total=5,
         new_unique=len(papers_two),
         new_papers=papers_two,
+        per_query_new_unique={"digital biomarkers": len(papers_two)},
+        per_query_new_papers={"digital biomarkers": papers_two},
     )
 
     records = expander.consistent_queries(

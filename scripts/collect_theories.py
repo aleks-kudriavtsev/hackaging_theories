@@ -1072,6 +1072,24 @@ def collect_for_entry(
                 new_unique = max(0, summary.get("total_unique", 0) - before_total)
                 if new_papers:
                     new_unique = max(new_unique, len(new_papers))
+                per_query_new_unique = summary.get("per_query_new_unique") or {}
+                per_query_new_identifiers = summary.get("per_query_new_identifiers") or {}
+                adaptive_new_unique: Dict[str, int] = {}
+                adaptive_support: Dict[str, List[PaperMetadata]] = {}
+                dedupe_lookup = {paper.dedupe_key: paper for paper in new_papers}
+                for query in adaptive_queries:
+                    unique_value = int(per_query_new_unique.get(query, 0) or 0)
+                    if unique_value <= 0:
+                        continue
+                    adaptive_new_unique[query] = unique_value
+                    identifiers = per_query_new_identifiers.get(query) or []
+                    support_papers = [
+                        dedupe_lookup[key]
+                        for key in identifiers
+                        if key in dedupe_lookup
+                    ]
+                    if support_papers:
+                        adaptive_support[query] = support_papers
                 summary["expansion"] = {
                     "enabled": True,
                     "queries": adaptive_queries,
@@ -1088,6 +1106,8 @@ def collect_for_entry(
                     after_total=summary.get("total_unique", 0),
                     new_unique=new_unique,
                     new_papers=new_papers,
+                    per_query_new_unique=adaptive_new_unique or None,
+                    per_query_new_papers=adaptive_support or None,
                 )
                 if ontology_manager and new_papers:
                     promoted = _promote_successful_queries(

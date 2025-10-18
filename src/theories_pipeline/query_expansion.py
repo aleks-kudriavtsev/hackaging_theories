@@ -249,6 +249,8 @@ class QueryExpansionCache:
         performance: Mapping[str, Any],
         *,
         new_papers: Sequence[PaperMetadata] | None = None,
+        per_query_new_unique: Mapping[str, int] | None = None,
+        per_query_new_papers: Mapping[str, Sequence[PaperMetadata]] | None = None,
     ) -> None:
         record = self._load(session.node_name)
         updated = False
@@ -271,7 +273,14 @@ class QueryExpansionCache:
                     "new_papers": [paper.to_dict() for paper in new_papers or []],
                 }
             )
-        self._update_query_metrics(record, session, performance, new_papers or [])
+        self._update_query_metrics(
+            record,
+            session,
+            performance,
+            new_papers or [],
+            per_query_new_unique=per_query_new_unique,
+            per_query_new_papers=per_query_new_papers,
+        )
         self._store(session.node_name, record)
 
     def _update_query_metrics(
@@ -280,27 +289,54 @@ class QueryExpansionCache:
         session: QueryExpansionSession,
         performance: Mapping[str, Any],
         new_papers: Sequence[PaperMetadata],
+        *,
+        per_query_new_unique: Mapping[str, int] | None = None,
+        per_query_new_papers: Mapping[str, Sequence[PaperMetadata]] | None = None,
     ) -> None:
         metrics = record.setdefault("metrics", {})
         query_metrics: MutableMapping[str, MutableMapping[str, Any]] = metrics.setdefault(
             "queries", {}
         )
         timestamp = time.time()
-        new_unique = int(performance.get("new_unique", 0) or 0)
-        paper_payload: List[Dict[str, Any]] = []
-        seen_papers: set[str] = set()
-        for paper in new_papers:
-            identifier = paper.identifier
-            if identifier in seen_papers:
-                continue
-            seen_papers.add(identifier)
-            paper_payload.append(
-                {
-                    "identifier": identifier,
-                    "title": paper.title,
-                    "source": paper.source,
+        per_query_unique_map: Dict[str, int] = {}
+        if per_query_new_unique:
+            per_query_unique_map = {
+                str(query): int(value or 0)
+                for query, value in per_query_new_unique.items()
+            }
+        else:
+            raw_unique = performance.get("per_query_new_unique")
+            if isinstance(raw_unique, Mapping):
+                per_query_unique_map = {
+                    str(query): int(value or 0)
+                    for query, value in raw_unique.items()
                 }
-            )
+
+        def _build_payload(papers: Sequence[PaperMetadata]) -> List[Dict[str, Any]]:
+            payload: List[Dict[str, Any]] = []
+            seen_identifiers: set[str] = set()
+            for paper in papers:
+                identifier = paper.identifier
+                if not identifier or identifier in seen_identifiers:
+                    continue
+                seen_identifiers.add(identifier)
+                payload.append(
+                    {
+                        "identifier": identifier,
+                        "title": paper.title,
+                        "source": paper.source,
+                    }
+                )
+            return payload
+
+        per_query_payloads: Dict[str, List[Dict[str, Any]]] = {}
+        if per_query_new_papers:
+            for query, papers in per_query_new_papers.items():
+                per_query_payloads[str(query)] = _build_payload(papers)
+        elif new_papers:
+            fallback_payload = _build_payload(new_papers)
+            if fallback_payload:
+                per_query_payloads = {candidate.query: list(fallback_payload) for candidate in session.candidates}
         for candidate in session.candidates:
             query_key = candidate.query
             payload = query_metrics.setdefault(query_key, {})
@@ -315,12 +351,13 @@ class QueryExpansionCache:
             payload["metadata"]["last_session_id"] = session.session_id
             payload["metadata"]["last_updated"] = timestamp
             payload["sources"] = list({*payload["sources"], candidate.source})
-            if new_unique > 0:
+            query_unique = int(per_query_unique_map.get(query_key, 0) or 0)
+            if query_unique > 0:
                 payload["successes"] = int(payload.get("successes", 0)) + 1
-                payload["new_unique_total"] = int(payload.get("new_unique_total", 0)) + new_unique
+                payload["new_unique_total"] = int(payload.get("new_unique_total", 0)) + query_unique
                 existing_support = payload["supporting_papers"]
                 seen_identifiers = {entry.get("identifier") for entry in existing_support if isinstance(entry, Mapping)}
-                for paper_entry in paper_payload:
+                for paper_entry in per_query_payloads.get(query_key, []):
                     identifier = paper_entry.get("identifier")
                     if identifier and identifier not in seen_identifiers:
                         existing_support.append(paper_entry)
@@ -467,6 +504,8 @@ class QueryExpander:
         after_total: int,
         new_unique: int,
         new_papers: Sequence[PaperMetadata] | None = None,
+        per_query_new_unique: Mapping[str, int] | None = None,
+        per_query_new_papers: Mapping[str, Sequence[PaperMetadata]] | None = None,
     ) -> None:
         performance = {
             "before_total": before_total,
@@ -474,8 +513,19 @@ class QueryExpander:
             "delta": after_total - before_total,
             "new_unique": new_unique,
         }
+        if per_query_new_unique is not None:
+            performance["per_query_new_unique"] = {
+                str(query): int(value or 0)
+                for query, value in per_query_new_unique.items()
+            }
         cache = self._session_cache.pop(session.session_id, self.cache)
-        cache.record_performance(session, performance, new_papers=new_papers or [])
+        cache.record_performance(
+            session,
+            performance,
+            new_papers=new_papers or [],
+            per_query_new_unique=per_query_new_unique,
+            per_query_new_papers=per_query_new_papers,
+        )
 
     def consistent_queries(
         self,
