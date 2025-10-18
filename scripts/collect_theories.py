@@ -359,7 +359,14 @@ def _run_bootstrap_phase(
         extract_theories_from_review(review, llm_client=llm_client, max_theories=theory_cap)
         for review in review_docs
     ]
-    bootstrap_nodes = build_bootstrap_ontology(extraction_results)
+    balance_cfg = bootstrap_cfg_raw.get("balance")
+    max_children: int | None = None
+    if isinstance(balance_cfg, Mapping):
+        raw_limit = balance_cfg.get("max_children")
+        if isinstance(raw_limit, int) and raw_limit > 0:
+            max_children = raw_limit
+
+    bootstrap_nodes = build_bootstrap_ontology(extraction_results, max_children=max_children)
 
     cache_path = Path(bootstrap_cfg_raw.get("cache_path") or "data/cache/bootstrap_ontology.json")
     if bootstrap_nodes:

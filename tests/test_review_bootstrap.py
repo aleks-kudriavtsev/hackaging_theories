@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 from theories_pipeline.literature import PaperMetadata, RetrievalResult
 from theories_pipeline.review_bootstrap import (
+    BootstrapResult,
     ReviewDocument,
     build_bootstrap_ontology,
     extract_theories_from_review,
@@ -148,6 +149,51 @@ def test_extract_theories_and_build_bootstrap_tree() -> None:
     sub_names = set(activity["subtheories"].keys())
     assert {name.lower() for name in sub_names} == {"engagement", "participation"}
 
+
+def _leaf_count_from_config(node: Mapping[str, Any]) -> int:
+    sub = node.get("subtheories")
+    if not isinstance(sub, Mapping) or not sub:
+        return 1
+    return sum(_leaf_count_from_config(child) for child in sub.values())
+
+
+def test_build_bootstrap_ontology_balances_children_evenly() -> None:
+    paper = PaperMetadata(
+        identifier="rev-balanced",
+        title="Balancing review",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2021,
+        doi=None,
+        full_text="",
+        citation_count=90,
+        is_review=True,
+    )
+    review = ReviewDocument(query="aging review", paper=paper, citations=90)
+    parent = {
+        "name": "Composite Theory",
+        "subtheories": [
+            {"name": f"Theory {index}", "subtheories": []}
+            for index in range(1, 11)
+        ],
+    }
+    result = BootstrapResult(review=review, theories=[parent])
+
+    ontology = build_bootstrap_ontology([result], max_children=3)
+
+    composite = ontology["Composite Theory"]
+    subtheories = composite["subtheories"]
+    assert len(subtheories) == 3
+
+    leaf_counts = [_leaf_count_from_config(node) for node in subtheories.values()]
+    assert max(leaf_counts) - min(leaf_counts) <= 1
+
+    branch_sizes = [
+        node.get("bootstrap", {}).get("child_summary", {}).get("branch_size", 0)
+        for node in subtheories.values()
+    ]
+    assert max(branch_sizes) - min(branch_sizes) <= 1
 
 def test_merge_bootstrap_into_targets_handles_missing_nodes() -> None:
     base = {
