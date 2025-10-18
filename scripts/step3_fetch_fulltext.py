@@ -26,15 +26,18 @@ import argparse
 import io
 import json
 import logging
+import math
+import multiprocessing
 import os
+import queue
 import re
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Dict, Iterable, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -268,95 +271,221 @@ def _extract_pdf_text(pdf_bytes: bytes) -> Tuple[Optional[str], Dict[str, Option
     return None, metadata
 
 
-def enrich_records(records: Iterable[Dict]) -> Tuple[List[Dict], List[Dict]]:
-    records_list = list(records)
-    total = len(records_list)
-    enriched: List[Dict] = []
-    failures: List[Dict] = []
-    for idx, record in enumerate(records_list, start=1):
-        pmid = record.get("pmid")
-        full_text = None
-        pmcid = None
-        ocr_status = "not_applicable"
-        full_text_source = None
-        openalex_pdf_url = None
-        record.pop("pdf_processing", None)
-        if pmid:
-            article_xml = fetch_pubmed_xml(pmid)
-            if article_xml is not None:
-                pmcid = extract_pmcid(article_xml)
-                record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
-        if pmcid:
-            full_text = fetch_pmc_fulltext(pmcid)
-            if full_text:
-                full_text_source = "pmc"
-        record["pmcid"] = pmcid
-        extraction_meta: Dict[str, Optional[str]] | None = None
-        if not full_text:
-            openalex_pdf_url = _find_openalex_pdf_url(record) or None
-            record["openalex_pdf_url"] = openalex_pdf_url
-            if openalex_pdf_url:
-                pdf_bytes = _download_binary(openalex_pdf_url)
-                if pdf_bytes:
-                    pdf_text, extraction_meta = _extract_pdf_text(pdf_bytes)
-                    if extraction_meta:
-                        record["pdf_processing"] = extraction_meta
-                        ocr_status = extraction_meta.get("ocr_status") or ocr_status
-                    if pdf_text:
-                        full_text = pdf_text
-                        method = extraction_meta.get("method") if extraction_meta else None
-                        if method == "pdfminer":
-                            full_text_source = "openalex_pdf_digital"
-                        elif method == "ocr":
-                            full_text_source = "openalex_pdf_ocr"
-                        else:
-                            full_text_source = "openalex_pdf"
-                else:
-                    ocr_status = "pdf_download_failed"
-                    record["pdf_processing"] = {
-                        "digital_status": None,
-                        "ocr_status": "not_attempted",
-                        "failure_reason": "pdf_download_failed",
-                        "method": None,
-                    }
+def _process_record(
+    record: Dict,
+    index: int,
+    total: int,
+    worker_prefix: str,
+) -> Tuple[Dict, Optional[Dict]]:
+    pmid = record.get("pmid")
+    full_text = None
+    pmcid = None
+    ocr_status = "not_applicable"
+    full_text_source = None
+    openalex_pdf_url = None
+    record.pop("pdf_processing", None)
+
+    if pmid:
+        article_xml = fetch_pubmed_xml(pmid)
+        if article_xml is not None:
+            pmcid = extract_pmcid(article_xml)
+            record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
+    if pmcid:
+        full_text = fetch_pmc_fulltext(pmcid)
+        if full_text:
+            full_text_source = "pmc"
+    record["pmcid"] = pmcid
+
+    extraction_meta: Dict[str, Optional[str]] | None = None
+    if not full_text:
+        openalex_pdf_url = _find_openalex_pdf_url(record) or None
+        record["openalex_pdf_url"] = openalex_pdf_url
+        if openalex_pdf_url:
+            pdf_bytes = _download_binary(openalex_pdf_url)
+            if pdf_bytes:
+                pdf_text, extraction_meta = _extract_pdf_text(pdf_bytes)
+                if extraction_meta:
+                    record["pdf_processing"] = extraction_meta
+                    ocr_status = extraction_meta.get("ocr_status") or ocr_status
+                if pdf_text:
+                    full_text = pdf_text
+                    method = extraction_meta.get("method") if extraction_meta else None
+                    if method == "pdfminer":
+                        full_text_source = "openalex_pdf_digital"
+                    elif method == "ocr":
+                        full_text_source = "openalex_pdf_ocr"
+                    else:
+                        full_text_source = "openalex_pdf"
             else:
-                ocr_status = "no_pdf_url"
-                record["pdf_processing"] = {
+                ocr_status = "pdf_download_failed"
+                extraction_meta = {
                     "digital_status": None,
                     "ocr_status": "not_attempted",
-                    "failure_reason": "no_pdf_url",
+                    "failure_reason": "pdf_download_failed",
                     "method": None,
                 }
+                record["pdf_processing"] = extraction_meta
         else:
-            record["openalex_pdf_url"] = None
-        failure_reason = None
-        if extraction_meta and extraction_meta.get("failure_reason"):
-            failure_reason = extraction_meta["failure_reason"]
-        elif extraction_meta and extraction_meta.get("digital_status"):
-            failure_reason = extraction_meta["digital_status"]
-        elif ocr_status not in {"not_applicable", "not_required", "performed_success"}:
-            failure_reason = ocr_status
-        if not full_text and openalex_pdf_url and failure_reason:
-            failures.append(
-                {
-                    "pmid": pmid,
-                    "pmcid": pmcid,
-                    "reason": failure_reason,
-                    "url": openalex_pdf_url,
-                    "metadata": extraction_meta,
-                }
+            ocr_status = "no_pdf_url"
+            extraction_meta = {
+                "digital_status": None,
+                "ocr_status": "not_attempted",
+                "failure_reason": "no_pdf_url",
+                "method": None,
+            }
+            record["pdf_processing"] = extraction_meta
+    else:
+        record["openalex_pdf_url"] = None
+
+    failure_reason = None
+    if extraction_meta and extraction_meta.get("failure_reason"):
+        failure_reason = extraction_meta["failure_reason"]
+    elif extraction_meta and extraction_meta.get("digital_status"):
+        failure_reason = extraction_meta["digital_status"]
+    elif ocr_status not in {"not_applicable", "not_required", "performed_success"}:
+        failure_reason = ocr_status
+
+    failure_payload = None
+    if not full_text and openalex_pdf_url and failure_reason:
+        failure_payload = {
+            "pmid": pmid,
+            "pmcid": pmcid,
+            "reason": failure_reason,
+            "url": openalex_pdf_url,
+            "metadata": extraction_meta,
+        }
+
+    record["ocr_status"] = ocr_status
+    record["full_text_source"] = full_text_source
+    record["full_text"] = full_text
+    source_label = full_text_source or "missing"
+    print(
+        f"{worker_prefix} Processed {index + 1}/{total} records — full text {source_label}",
+        flush=True,
+    )
+    return record, failure_payload
+
+
+def _process_batch(
+    worker_id: int,
+    batch: List[Tuple[int, Dict]],
+    result_queue: Any,
+    total: int,
+) -> None:
+    prefix = f"[worker-{worker_id}]"
+    enriched_batch: List[Tuple[int, Dict]] = []
+    failures_batch: List[Dict] = []
+    error_message: Optional[str] = None
+    try:
+        for index, record in batch:
+            enriched_record, failure = _process_record(record, index, total, prefix)
+            enriched_batch.append((index, enriched_record))
+            if failure:
+                failures_batch.append(failure)
+    except Exception as exc:  # pragma: no cover - worker protection
+        error_message = f"{type(exc).__name__}: {exc}"
+        logger.exception("%s Worker encountered an error", prefix)
+    finally:
+        result_queue.put((worker_id, enriched_batch, failures_batch, error_message))
+
+
+def _build_batches(records_list: List[Dict], worker_count: int) -> List[List[Tuple[int, Dict]]]:
+    total = len(records_list)
+    if worker_count <= 0:
+        return []
+    batch_size = math.ceil(total / worker_count)
+    batches: List[List[Tuple[int, Dict]]] = []
+    for worker_index in range(worker_count):
+        start = worker_index * batch_size
+        if start >= total:
+            break
+        end = min(start + batch_size, total)
+        batch = [(idx, records_list[idx]) for idx in range(start, end)]
+        batches.append(batch)
+    return batches
+
+
+def _collect_results(result_queue: Any, expected: int) -> Tuple[Dict[int, Dict], List[Dict]]:
+    results: Dict[int, Dict] = {}
+    failures: List[Dict] = []
+    errors: List[Tuple[int, str]] = []
+    for _ in range(expected):
+        worker_id, enriched_batch, failures_batch, error_message = result_queue.get()
+        for index, record in enriched_batch:
+            results[index] = record
+        failures.extend(failures_batch)
+        if error_message:
+            errors.append((worker_id, error_message))
+    if errors:
+        formatted = ", ".join(f"worker {wid}: {msg}" for wid, msg in errors)
+        raise RuntimeError(f"Worker failures: {formatted}")
+    return results, failures
+
+
+def enrich_records(
+    records: Iterable[Dict],
+    *,
+    processes: int = 1,
+    concurrency: str = "process",
+) -> Tuple[List[Dict], List[Dict]]:
+    records_list = list(records)
+    total = len(records_list)
+    if total == 0:
+        return [], []
+
+    worker_count = max(1, min(processes, total))
+    if worker_count == 1:
+        enriched: Dict[int, Dict] = {}
+        failures: List[Dict] = []
+        for index, record in enumerate(records_list):
+            enriched_record, failure = _process_record(record, index, total, "[worker-1]")
+            enriched[index] = enriched_record
+            if failure:
+                failures.append(failure)
+        ordered = [enriched[idx] for idx in range(total)]
+        return ordered, failures
+
+    batches = _build_batches(records_list, worker_count)
+    if not batches:
+        return records_list, []
+
+    if concurrency == "thread":
+        result_queue: queue.Queue = queue.Queue()
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(
+                    _process_batch,
+                    worker_id,
+                    batch,
+                    result_queue,
+                    total,
+                )
+                for worker_id, batch in enumerate(batches, start=1)
+            ]
+            results_map, failures = _collect_results(result_queue, len(batches))
+            for future in futures:
+                future.result()
+    else:
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        processes_list: List[multiprocessing.Process] = []
+        for worker_id, batch in enumerate(batches, start=1):
+            process = ctx.Process(
+                target=_process_batch,
+                args=(worker_id, batch, result_queue, total),
             )
-        record["ocr_status"] = ocr_status
-        record["full_text_source"] = full_text_source
-        record["full_text"] = full_text
-        enriched.append(record)
-        source_label = full_text_source or "missing"
-        print(
-            f"Processed {idx}/{total} records — full text {source_label}",
-            flush=True,
-        )
-        time.sleep(0.34)
-    return enriched, failures
+            process.start()
+            processes_list.append(process)
+        try:
+            results_map, failures = _collect_results(result_queue, len(processes_list))
+        finally:
+            for process in processes_list:
+                process.join()
+            result_queue.close()
+            result_queue.join_thread()
+
+    ordered_results = [results_map[idx] for idx in range(total)]
+    return ordered_results, failures
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -373,6 +502,21 @@ def main(argv: List[str] | None = None) -> int:
             "Defaults to <output>.failures.json when omitted."
         ),
     )
+    parser.add_argument(
+        "--processes",
+        type=int,
+        default=None,
+        help=(
+            "Number of worker processes (default: os.cpu_count() when more than "
+            "100 records, otherwise 1)."
+        ),
+    )
+    parser.add_argument(
+        "--concurrency",
+        choices=("process", "thread"),
+        default="process",
+        help="Concurrency model for workers (default: process).",
+    )
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.input):
@@ -382,7 +526,16 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
-    enriched, failures = enrich_records(records)
+    total_records = len(records)
+    requested_processes = args.processes
+    if requested_processes is None:
+        cpu_count = os.cpu_count() or 1
+        requested_processes = cpu_count if total_records > 100 else 1
+    enriched, failures = enrich_records(
+        records,
+        processes=requested_processes,
+        concurrency=args.concurrency,
+    )
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
