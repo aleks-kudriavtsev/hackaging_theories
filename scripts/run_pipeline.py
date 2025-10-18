@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import multiprocessing
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Sequence
+
+from scripts import collect_theories
 
 
 def _normalise_doi(doi: str | None) -> str | None:
@@ -117,6 +121,152 @@ def _merge_records(base: Dict[str, object], incoming: Mapping[str, object]) -> D
     return merged
 
 
+def _normalise_term(term: str) -> str:
+    return " ".join(term.split())
+
+
+def _query_variants(term: str) -> List[str]:
+    cleaned = _normalise_term(term)
+    if not cleaned:
+        return []
+    variants: List[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str) -> None:
+        candidate = candidate.strip()
+        if candidate:
+            key = candidate.lower()
+            if key not in seen:
+                seen.add(key)
+                variants.append(candidate)
+
+    lower = cleaned.lower()
+    _add(cleaned)
+    if " " in cleaned:
+        _add(f'"{cleaned}"')
+    if "aging" not in lower and "ageing" not in lower:
+        quoted = f'"{cleaned}"' if " " in cleaned else cleaned
+        _add(f"{quoted} aging")
+    if "theory" not in lower:
+        _add(f"{cleaned} theory")
+    return variants
+
+
+def _clean_suggestions(values: Any) -> List[str]:
+    suggestions: List[str] = []
+    seen: set[str] = set()
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+        for value in values:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned:
+                    key = cleaned.lower()
+                    if key not in seen:
+                        seen.add(key)
+                        suggestions.append(cleaned)
+    return suggestions
+
+
+def _theory_suggestions(theory: Mapping[str, Any]) -> List[str]:
+    names: List[str] = []
+    for key in ("preferred_label", "label"):
+        value = theory.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                names.append(cleaned)
+    aliases = theory.get("aliases")
+    if isinstance(aliases, Sequence) and not isinstance(aliases, (str, bytes)):
+        for alias in aliases:
+            if isinstance(alias, str):
+                cleaned = alias.strip()
+                if cleaned:
+                    names.append(cleaned)
+
+    suggestions: List[str] = []
+    seen: set[str] = set()
+    for name in names:
+        for variant in _query_variants(name):
+            key = variant.lower()
+            if key not in seen:
+                seen.add(key)
+                suggestions.append(variant)
+
+    if not suggestions and names:
+        fallback = _normalise_term(names[0])
+        if fallback:
+            suggestions.append(fallback)
+    return suggestions
+
+
+def _convert_group_node(group: Mapping[str, Any]) -> tuple[str, Dict[str, Any]] | None:
+    raw_name = group.get("name") or group.get("label")
+    if not isinstance(raw_name, str):
+        raw_name = "Unnamed group"
+    name = raw_name.strip() or "Unnamed group"
+
+    entry: Dict[str, Any] = {}
+    group_suggestions = _clean_suggestions(group.get("suggested_queries"))
+    if group_suggestions:
+        entry["suggested_queries"] = group_suggestions
+
+    subtargets: Dict[str, Dict[str, Any]] = {}
+    subgroups = group.get("subgroups")
+    if isinstance(subgroups, Sequence) and not isinstance(subgroups, (str, bytes)):
+        for child in subgroups:
+            if isinstance(child, Mapping):
+                converted = _convert_group_node(child)
+                if converted:
+                    child_name, child_entry = converted
+                    subtargets[child_name] = child_entry
+
+    theories = group.get("theories")
+    if isinstance(theories, Sequence) and not isinstance(theories, (str, bytes)):
+        for theory in theories:
+            if not isinstance(theory, Mapping):
+                continue
+            theory_name = theory.get("preferred_label") or theory.get("label") or theory.get("theory_id")
+            if not isinstance(theory_name, str):
+                continue
+            cleaned_name = theory_name.strip()
+            if not cleaned_name:
+                continue
+            theory_entry: Dict[str, Any] = {}
+            suggestions = _theory_suggestions(theory)
+            if suggestions:
+                theory_entry["suggested_queries"] = suggestions
+            else:
+                theory_entry["suggested_queries"] = [cleaned_name]
+            subtargets.setdefault(cleaned_name, theory_entry)
+
+    if subtargets:
+        entry["subtheories"] = subtargets
+
+    if not entry:
+        entry["suggested_queries"] = [name]
+
+    return name, entry
+
+
+def _ontology_targets_from_path(path: str) -> Dict[str, Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    ontology = payload.get("ontology") if isinstance(payload, Mapping) else None
+    final = ontology.get("final") if isinstance(ontology, Mapping) else None
+    groups = final.get("groups") if isinstance(final, Mapping) else None
+    if not isinstance(groups, Sequence):
+        groups = []
+
+    targets: Dict[str, Dict[str, Any]] = {}
+    for group in groups:
+        if isinstance(group, Mapping):
+            converted = _convert_group_node(group)
+            if converted:
+                name, entry = converted
+                targets[name] = entry
+    return targets
+
 
 @dataclass
 class PipelinePaths:
@@ -176,6 +326,26 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--query",
         default='(("aging theory"[TIAB] OR "ageing theory"[TIAB] OR "theories of aging"[TIAB]) AND review[PTYP])',
         help="PubMed query passed to step1_pubmed_search.py.",
+    )
+    parser.add_argument(
+        "--collector-query",
+        "--base-query",
+        dest="collector_query",
+        default="aging theory",
+        help=(
+            "Base query string supplied to the ontology-driven collector stage. "
+            "(--base-query is accepted as an alias.)"
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Global paper export limit applied during the collector stage.",
+    )
+    parser.add_argument(
+        "--state-dir",
+        dest="state_dir",
+        help="Override the collector's retrieval state directory.",
     )
     parser.add_argument(
         "--filter-model",
@@ -557,12 +727,69 @@ def main(argv: List[str] | None = None) -> int:
             "Generate ontology from theories",
         )
 
+    # Step 6 – Ontology-driven literature collection and classification
+    if not os.path.exists(paths.ontology):
+        raise SystemExit(
+            "Ontology file missing after step 5; cannot continue to collection stage."
+        )
+
+    try:
+        ontology_targets = _ontology_targets_from_path(paths.ontology)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Unable to parse ontology file {paths.ontology}: {exc}") from exc
+
+    if not ontology_targets:
+        print("No ontology groups with suggested queries found; skipping collector stage.")
+    else:
+        collector_config_path = Path("config/pipeline.yaml")
+        try:
+            base_collector_config = collect_theories.load_config(collector_config_path)
+        except Exception as exc:  # pragma: no cover - configuration errors surface immediately
+            raise SystemExit(
+                f"Unable to load collector configuration at {collector_config_path}: {exc}"
+            ) from exc
+
+        collector_config = copy.deepcopy(base_collector_config)
+        corpus_cfg = dict(collector_config.get("corpus") or {})
+        corpus_cfg["targets"] = ontology_targets
+        collector_config["corpus"] = corpus_cfg
+
+        collector_args: List[str] = [str(args.collector_query)]
+        if args.limit is not None:
+            collector_args += ["--limit", str(args.limit)]
+        if args.state_dir:
+            collector_args += ["--state-dir", args.state_dir]
+
+        collector_parser = collect_theories.build_parser()
+        collector_namespace = collector_parser.parse_args(collector_args)
+
+        print("\n→ Step 6 (collector)")
+        collector_exit = collect_theories.run_pipeline(
+            collector_namespace,
+            parser=collector_parser,
+            config=collector_config,
+            config_path=collector_config_path,
+        )
+        if collector_exit != 0:
+            return collector_exit
+
     print("\nPipeline completed. Results available at:")
     print(f"  Step 1 metadata: {paths.start_reviews}")
     print(f"  Step 2 filtered: {paths.filtered_reviews}")
     print(f"  Step 3 full texts: {paths.fulltext_reviews}")
     print(f"  Step 4 theories: {paths.theories}")
     print(f"  Step 5 ontology: {paths.ontology}")
+    outputs = collector_config.get("outputs") if 'collector_config' in locals() else None
+    if isinstance(outputs, Mapping):
+        papers_path = outputs.get("papers")
+        theories_path = outputs.get("theories")
+        questions_path = outputs.get("questions")
+        if papers_path:
+            print(f"  Step 6 papers: {papers_path}")
+        if theories_path:
+            print(f"  Step 6 assignments: {theories_path}")
+        if questions_path:
+            print(f"  Step 6 Q&A: {questions_path}")
     return 0
 
 

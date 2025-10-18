@@ -92,15 +92,25 @@ By default this performs:
    theories into multi-level ontology clusters saved as `aging_ontology.json`.
    Ontology synthesis defaults to `gpt-5-mini`, which provides extra synthesis
    capacity without exceeding the approximate $10 per million articles spend.
+9. `collect_theories.py` – parses the reconciled ontology, turns each group and
+   theory into transient retrieval targets, expands their suggested queries, and
+   runs the literature collector/classifier using an in-memory
+   `config/pipeline.yaml` snapshot. The exported papers, assignments, and
+   question answers mirror the standalone collector's CSV outputs.
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
-supplied. Use `--query`, `--filter-model`, `--theory-model` (or the legacy
+supplied. Use `--query`, `--collector-query` (or the alias `--base-query`),
+`--filter-model`, `--theory-model` (or the legacy
 `--extract-model` alias), `--hypothesis-review-model`, the chunking options
 (`--chunk-chars`, `--chunk-overlap`), or the ontology arguments
 (`--ontology-model`, `--ontology-top-n`, `--ontology-examples`) to customise
 individual stages. Override the defaults when you need to trade context for cost
 (e.g., swapping `gpt-5-nano` for an even cheaper tier on short abstracts) or
 when your account exposes alternative model families.
+
+Collector-specific flags such as `--limit` and `--state-dir` now propagate
+through the unified runner so you can cap exported papers or pin the retrieval
+cache without switching to the standalone `collect_theories.py` entry point.
 
 **Recommended model mix.** For a balanced run that keeps the end-to-end spend
 close to $10 per million processed articles:
