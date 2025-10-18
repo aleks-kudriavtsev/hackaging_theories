@@ -11,8 +11,9 @@ import math
 import statistics
 import sys
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Set, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -758,7 +759,14 @@ def collect_for_entry(
     retrieval_options: Mapping[str, Any] | None = None,
     filter_llm_client: LLMClient | None = None,
     label_bootstrapper: RuntimeOntologyBootstrapper | None = None,
+    visited: Set[str] | None = None,
 ) -> Tuple[Dict[str, Any], List[PaperMetadata]]:
+    if visited is None:
+        visited_nodes: Set[str] = set()
+    else:
+        visited_nodes = visited
+    visited_nodes.add(name)
+
     query_templates = config.get("queries")
     query_source = "configured"
 
@@ -799,6 +807,10 @@ def collect_for_entry(
     elif query_source == "fallback" and not config.get("queries"):
         logger.info("Falling back to base query for %s", name)
     target = config.get("target")
+    try:
+        target_numeric = int(target) if target is not None else None
+    except (TypeError, ValueError):
+        target_numeric = None
     min_citation_override = config.get("min_citation_count")
     if min_citation_override is None and retrieval_options is not None:
         min_citation_override = retrieval_options.get("min_citation_count")
@@ -1095,6 +1107,8 @@ def collect_for_entry(
 
     entry_map = {paper.identifier: paper for paper in accepted_papers}
 
+    runtime_queue: Deque[Tuple[str, str, str]] = deque()
+
     node = None
     if ontology is not None:
         try:
@@ -1215,6 +1229,11 @@ def collect_for_entry(
                         summary.setdefault("expansion", {}).setdefault("runtime_nodes", []).extend(
                             promoted
                         )
+                        if target_numeric is None or summary.get("total_unique", 0) < target_numeric:
+                            for promoted_name in promoted:
+                                if promoted_name in visited_nodes:
+                                    continue
+                                runtime_queue.append((promoted_name, name, state_prefix))
             else:
                 summary["expansion"] = {
                     "enabled": True,
@@ -1567,9 +1586,11 @@ def collect_for_entry(
     if enrichment_report:
         summary["enrichment"] = enrichment_report
 
+    sub_summaries: Dict[str, Any] = {}
+    desired_total: int | None = None
+
     subtheory_cfg = config.get("subtheories", {})
     if subtheory_cfg:
-        sub_summaries: Dict[str, Any] = {}
         prioritized: List[Tuple[float, str, Mapping[str, Any], str, int, Any]] = []
         for sub_name, sub_config in subtheory_cfg.items():
             sub_state_prefix = f"{state_prefix}::sub::{slugify(sub_name)}"
@@ -1630,6 +1651,7 @@ def collect_for_entry(
                 retrieval_options=retrieval_options,
                 filter_llm_client=filter_llm_client,
                 label_bootstrapper=label_bootstrapper,
+                visited=visited_nodes,
             )
             sub_summary.setdefault("status", "active")
             if sub_summary.get("status") == "active":
@@ -1640,8 +1662,59 @@ def collect_for_entry(
             sub_summaries[sub_name] = sub_summary
             for paper in sub_papers:
                 entry_map.setdefault(paper.identifier, paper)
-        summary["subtheories"] = sub_summaries
         summary["subtheory_quota"] = desired_total
+
+    if runtime_queue and not ontology_manager:
+        logger.debug(
+            "Runtime queue contains %d nodes but no ontology manager is available; skipping",
+            len(runtime_queue),
+        )
+
+    while runtime_queue and ontology_manager:
+        pending_name, parent_name, parent_prefix = runtime_queue.popleft()
+        if pending_name in visited_nodes:
+            continue
+        runtime_config = ontology_manager.get_node_config(pending_name)
+        if not isinstance(runtime_config, Mapping):
+            continue
+        visited_nodes.add(pending_name)
+        runtime_state_prefix = f"{parent_prefix}::runtime::{slugify(pending_name)}"
+        existing = _existing_total(retriever, runtime_state_prefix) if resume else 0
+        runtime_context = context | {"subtheory": pending_name, "runtime_parent": parent_name}
+        runtime_summary, runtime_papers = collect_for_entry(
+            retriever,
+            name=pending_name,
+            config=runtime_config,
+            context=runtime_context,
+            providers=providers,
+            resume=resume,
+            state_prefix=runtime_state_prefix,
+            ontology_manager=ontology_manager,
+            expander=expander,
+            default_expansion=default_expansion,
+            retrieval_options=retrieval_options,
+            filter_llm_client=filter_llm_client,
+            label_bootstrapper=label_bootstrapper,
+            visited=visited_nodes,
+        )
+        runtime_summary.setdefault("status", "active")
+        if runtime_summary.get("status") == "active":
+            runtime_summary.setdefault("status_label", "активен")
+        runtime_target = runtime_config.get("target")
+        runtime_summary.setdefault("target", runtime_target)
+        runtime_summary.setdefault("existing_total", existing)
+        try:
+            runtime_target_value = int(runtime_target)
+        except (TypeError, ValueError):
+            runtime_target_value = 0
+        fill_ratio = (existing / runtime_target_value) if runtime_target_value else 0.0
+        runtime_summary.setdefault("fill_ratio", fill_ratio)
+        sub_summaries[pending_name] = runtime_summary
+        for paper in runtime_papers:
+            entry_map.setdefault(paper.identifier, paper)
+
+    if sub_summaries:
+        summary["subtheories"] = sub_summaries
 
     return summary, list(entry_map.values())
 
