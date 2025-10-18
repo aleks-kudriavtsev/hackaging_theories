@@ -8,6 +8,12 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from theories_pipeline.literature import PaperMetadata
+from theories_pipeline.ontology_manager import OntologyManager, RuntimeNodeSpec
+from theories_pipeline.query_expansion import (
+    QueryCandidate,
+    QueryExpansionSession,
+    QueryExpansionSettings,
+)
 from theories_pipeline.review_bootstrap import ReviewDocument
 
 
@@ -503,3 +509,197 @@ def test_subtheory_quota_marks_waiting(monkeypatch):
     assert sub_summaries["Beta"]["queue_position"] == 1
     assert sub_summaries["Alpha"].get("status") == "active"
     assert sub_summaries["Gamma"].get("status") == "active"
+
+
+def test_query_expansion_keywords_and_bootstrap(tmp_path: Path, monkeypatch) -> None:
+    storage = tmp_path / "runtime.json"
+    manager = OntologyManager({"Activity Theory": {"target": 1}}, storage_path=storage)
+
+    class _StateStore:
+        def __init__(self) -> None:
+            self.data: Dict[str, Any] = {}
+
+        def get(self, key: str) -> Dict[str, Any]:
+            return json.loads(json.dumps(self.data.get(key, {})))
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.data[key] = json.loads(json.dumps(value))
+
+        def write_summary(self, value: Mapping[str, Any]) -> None:
+            self.data["summary"] = json.loads(json.dumps(value))
+
+    class _Decision:
+        def __init__(self, identifier: str) -> None:
+            self.identifier = identifier
+            self.accepted = True
+
+        def to_record(self, *, threshold: float) -> Dict[str, Any]:
+            return {"accepted": True, "score": 1.0, "threshold": threshold}
+
+    class _AcceptAllFilter:
+        def __init__(self, *args, **kwargs) -> None:
+            self.threshold = 0.0
+
+        def apply(self, papers, *, context, existing_decisions):
+            del context, existing_decisions
+            decisions = [_Decision(paper.identifier) for paper in papers]
+            return list(papers), decisions
+
+    class _ExpansionRetriever:
+        def __init__(self) -> None:
+            self.state_store = _StateStore()
+            self.calls: List[List[str]] = []
+
+        def collect_queries(
+            self,
+            queries: Sequence[str],
+            *,
+            target: int | None = None,
+            providers: Sequence[str] | None = None,
+            state_key: str | None,
+            resume: bool,
+            min_citation_count: int | None = None,
+            prefer_reviews: bool = False,
+            sort_by_citations: bool = False,
+        ) -> Any:
+            del target, providers, state_key, resume, min_citation_count, prefer_reviews, sort_by_citations
+            query_list = [str(item) for item in queries]
+            self.calls.append(query_list)
+            papers = [
+                PaperMetadata(
+                    identifier="p-exp",
+                    title="Frailty and digital aging biomarkers",
+                    authors=("Author",),
+                    abstract="Explores digital aging biomarkers and resilience.",
+                    source="Test",
+                )
+            ]
+            summary = {
+                "total_unique": len(papers),
+                "providers": {},
+                "queries": query_list,
+            }
+            return SimpleNamespace(papers=papers, summary=summary)
+
+    class _StubExpander:
+        def __init__(self) -> None:
+            self.settings = QueryExpansionSettings(
+                enabled=True,
+                max_new_queries=2,
+                bootstrap_new_theories=True,
+                bootstrap_candidate_limit=2,
+                bootstrap_mode="child",
+                bootstrap_max_labels=1,
+            )
+            self.performance: List[Any] = []
+
+        def settings_for(self, override: Mapping[str, Any]) -> QueryExpansionSettings:
+            del override
+            return self.settings
+
+        def expand(self, node, *, base_queries, papers, settings, context):
+            del node, base_queries, papers, settings, context
+            return QueryExpansionSession(
+                session_id="expansion",
+                node_name="Activity Theory",
+                base_queries=["activity theory"],
+                candidates=[
+                    QueryCandidate(query='"Digital aging" biomarkers', source="gpt"),
+                    QueryCandidate(query="Frailty OR Resilience", source="embedding"),
+                ],
+            )
+
+        def record_performance(self, session, **kwargs):
+            self.performance.append((session, kwargs))
+
+    class _RecordingBootstrapper:
+        def __init__(self) -> None:
+            self.requests: List[Any] = []
+
+        def propose_labels(self, request) -> Any:
+            self.requests.append(request)
+            spec = RuntimeNodeSpec(
+                name="Adaptive Candidate",
+                parent=None,
+                config={},
+                keywords=("resilience",),
+                metadata={},
+                provenance={},
+            )
+            return SimpleNamespace(proposals=[spec])
+
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", _AcceptAllFilter)
+
+    retriever = _ExpansionRetriever()
+    expander = _StubExpander()
+    bootstrapper = _RecordingBootstrapper()
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="Activity Theory",
+        config={
+            "queries": ["activity theory"],
+            "target": 2,
+            "expansion": {
+                "enabled": True,
+                "bootstrap_new_theories": True,
+                "bootstrap_candidate_limit": 2,
+                "bootstrap_max_labels": 1,
+            },
+        },
+        context={"base_query": "activity theory"},
+        providers=None,
+        resume=False,
+        state_prefix="activity::expansion",
+        ontology_manager=manager,
+        expander=expander,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=bootstrapper,
+    )
+
+    assert papers and papers[0].identifier == "p-exp"
+    expansion_summary = summary.get("expansion")
+    assert expansion_summary, "Expansion summary should be recorded"
+    assert expansion_summary["queries"] == ['"Digital aging" biomarkers', "Frailty OR Resilience"]
+    assert expansion_summary["keywords"] == [
+        "digital aging",
+        "biomarkers",
+        "frailty",
+        "resilience",
+    ]
+    assert expansion_summary["bootstrap_candidates"] == ["digital aging", "biomarkers"]
+    assert expansion_summary["bootstrap_generated"] == ["Adaptive Candidate"]
+
+    assert bootstrapper.requests, "Bootstrapper should be invoked"
+    request = bootstrapper.requests[0]
+    assert tuple(request.keywords) == ("digital aging", "biomarkers")
+
+    payload = json.loads(storage.read_text(encoding="utf-8"))
+    stored_entry = next(entry for entry in payload["nodes"] if entry["name"] == "Activity Theory")
+    assert set(stored_entry.get("keywords", [])) >= {"digital aging", "biomarkers"}
+    assert manager.has_node("Adaptive Candidate")
+
+    enrichment = summary.get("enrichment", {})
+    assert enrichment.get("expansion_keywords") == [
+        "digital aging",
+        "biomarkers",
+        "frailty",
+        "resilience",
+    ]
+    assert enrichment.get("expansion_candidates") == ["digital aging", "biomarkers"]
+    assert enrichment.get("bootstrap_labels", {}).get("expansion::child") == ["Adaptive Candidate"]
+
+    state_payload = retriever.state_store.data.get("activity::expansion")
+    assert state_payload and "enrichment" in state_payload
+    expansion_state = state_payload["enrichment"].get("expansion")
+    assert expansion_state
+    assert expansion_state["keywords"] == [
+        "digital aging",
+        "biomarkers",
+        "frailty",
+        "resilience",
+    ]
+    assert expansion_state["bootstrap_candidates"] == ["digital aging", "biomarkers"]
+    assert expansion_state["bootstrap_generated"] == ["Adaptive Candidate"]

@@ -45,6 +45,34 @@ def test_ontology_manager_updates_classifier(tmp_path: Path) -> None:
     assert provenance.get("source") == "test"
 
 
+def test_update_keywords_refreshes_classifier(tmp_path: Path) -> None:
+    storage = tmp_path / "runtime.json"
+    manager = OntologyManager({"Activity Theory": {"target": 1}}, storage_path=storage)
+    classifier = TheoryClassifier({"Activity Theory": ["activity"]}, manager.ontology)
+    classifier.attach_manager(manager)
+
+    paper = PaperMetadata(
+        identifier="p-keyword",
+        title="Digital aging interventions",
+        authors=("Author",),
+        abstract="Study of digital aging technologies in older adults.",
+        source="Test",
+    )
+
+    initial_assignments = classifier.classify(paper)
+    assert not any(assignment.theory == "Activity Theory" for assignment in initial_assignments)
+
+    changed = manager.update_keywords("Activity Theory", ["digital aging"], merge=True)
+    assert changed is True
+
+    payload = json.loads(storage.read_text(encoding="utf-8"))
+    stored_entry = next(entry for entry in payload["nodes"] if entry["name"] == "Activity Theory")
+    assert "digital aging" in stored_entry.get("keywords", [])
+
+    updated_assignments = classifier.classify(paper)
+    assert any(assignment.theory == "Activity Theory" for assignment in updated_assignments)
+
+
 def test_append_sibling_infers_parent(tmp_path: Path) -> None:
     storage = tmp_path / "runtime.json"
     manager = OntologyManager(

@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shlex
+import string
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -62,6 +65,10 @@ class QueryExpansionSettings:
     embedding_neighbors: int = 5
     embedding_ngram_min: int = 1
     embedding_ngram_max: int = 2
+    bootstrap_new_theories: bool = False
+    bootstrap_candidate_limit: int | None = None
+    bootstrap_mode: str = "child"
+    bootstrap_max_labels: int | None = None
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
     gpt_prompt: str = DEFAULT_GPT_PROMPT
 
@@ -88,13 +95,24 @@ class QueryExpansionSettings:
                     continue
                 if key == "cache_dir" and value is not None:
                     kwargs[key] = Path(value)
-                elif key in {"embedding_ngram_min", "embedding_ngram_max", "max_new_queries", "max_snippets", "max_gpt_queries", "embedding_neighbors"}:
+                elif key in {
+                    "embedding_ngram_min",
+                    "embedding_ngram_max",
+                    "max_new_queries",
+                    "max_snippets",
+                    "max_gpt_queries",
+                    "embedding_neighbors",
+                    "bootstrap_candidate_limit",
+                    "bootstrap_max_labels",
+                }:
                     try:
                         kwargs[key] = int(value)
                     except (TypeError, ValueError):  # pragma: no cover - defensive
                         continue
-                elif key in {"enabled", "use_gpt", "use_embeddings"}:
+                elif key in {"enabled", "use_gpt", "use_embeddings", "bootstrap_new_theories"}:
                     kwargs[key] = bool(value)
+                elif key == "bootstrap_mode" and isinstance(value, str):
+                    kwargs[key] = value
                 elif key == "gpt_prompt" and isinstance(value, str):
                     kwargs[key] = value
                 else:
@@ -131,6 +149,47 @@ class QueryExpansionSession:
 
     def selected_queries(self) -> List[str]:
         return [candidate.query for candidate in self.candidates]
+
+
+_PUNCT_TRIM = string.punctuation.replace("-", "")
+
+
+def queries_to_keywords(queries: Sequence[str]) -> List[str]:
+    """Normalise raw query strings into keyword tokens suitable for storage."""
+
+    if not queries:
+        return []
+    keywords: List[str] = []
+    seen: set[str] = set()
+    for raw in queries:
+        if not isinstance(raw, str):
+            continue
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        cleaned = cleaned.replace("/", " ").replace("|", " ").replace("+", " ")
+        cleaned = cleaned.replace("(", " ").replace(")", " ")
+        cleaned = re.sub(r"\b(?:AND|OR|NOT)\b", " ", cleaned, flags=re.IGNORECASE)
+        for delimiter in ",;":
+            cleaned = cleaned.replace(delimiter, " ")
+        try:
+            parts = shlex.split(cleaned)
+        except ValueError:
+            parts = cleaned.split()
+        for part in parts:
+            token = part.strip()
+            if not token:
+                continue
+            token = token.strip(_PUNCT_TRIM)
+            token = " ".join(token.split())
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            keywords.append(lowered)
+    return keywords
 
 
 class QueryExpansionCache:
@@ -429,4 +488,5 @@ __all__ = [
     "QueryExpansionSettings",
     "QueryExpansionSession",
     "QueryCandidate",
+    "queries_to_keywords",
 ]

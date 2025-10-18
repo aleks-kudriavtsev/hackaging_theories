@@ -27,6 +27,7 @@ class RuntimeLabelRequest:
     parent: str | None
     papers: Sequence[PaperMetadata]
     max_labels: int
+    keywords: Sequence[str] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,9 @@ class RuntimeOntologyBootstrapper:
             f"Parent node: {parent_line}\n"
             f"Provide up to {request.max_labels} labels."
         )
+        if request.keywords:
+            keyword_text = ", ".join(request.keywords)
+            user_prompt = f"{user_prompt}\nCandidate search keywords: {keyword_text}"
         paper_block = "\n\n".join(snippets)
         if paper_block:
             user_prompt = f"{user_prompt}\n\nRecent papers (title/abstract excerpts):\n{paper_block}"

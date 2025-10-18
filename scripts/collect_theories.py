@@ -42,7 +42,12 @@ from theories_pipeline.config_utils import (
 )
 from theories_pipeline.llm import LLMClient, LLMClientConfig
 from theories_pipeline.ontology import CoverageRecord, OntologyNode, TheoryOntology
-from theories_pipeline.query_expansion import QueryExpander, QueryExpansionSettings
+from theories_pipeline.query_expansion import (
+    QueryExpander,
+    QueryExpansionSettings,
+    QueryExpansionSession,
+    queries_to_keywords,
+)
 from theories_pipeline.review_bootstrap import (
     ReviewDocument,
     build_bootstrap_ontology,
@@ -909,7 +914,10 @@ def collect_for_entry(
         elif default_expansion:
             expansion_settings = expander.settings_for({})
 
-    expansion_session = None
+    expansion_session: QueryExpansionSession | None = None
+    expansion_keywords: List[str] = []
+    expansion_candidate_keywords: List[str] = []
+    expansion_generated_labels: List[str] = []
     if (
         expansion_settings
         and expansion_settings.enabled
@@ -928,6 +936,20 @@ def collect_for_entry(
         if expansion_session is not None:
             adaptive_queries = expansion_session.selected_queries()
             if adaptive_queries:
+                expansion_keywords = queries_to_keywords(adaptive_queries)
+                if expansion_keywords and ontology_manager:
+                    update_fn = getattr(ontology_manager, "update_keywords", None)
+                    if callable(update_fn):
+                        try:
+                            update_fn(name, expansion_keywords, merge=True)
+                        except TypeError:
+                            update_fn(name, expansion_keywords)
+                if expansion_settings.bootstrap_new_theories:
+                    limit_value = expansion_settings.bootstrap_candidate_limit
+                    if limit_value is None or limit_value <= 0:
+                        expansion_candidate_keywords = list(expansion_keywords)
+                    else:
+                        expansion_candidate_keywords = list(expansion_keywords[:limit_value])
                 merged_queries = queries + adaptive_queries
                 rerun = retriever.collect_queries(
                     merged_queries,
@@ -961,6 +983,9 @@ def collect_for_entry(
                     "before_total": before_total,
                     "after_total": summary.get("total_unique", 0),
                     "new_unique": new_unique,
+                    "keywords": expansion_keywords,
+                    "bootstrap_candidates": expansion_candidate_keywords,
+                    "bootstrap_generated": [],
                 }
                 expander.record_performance(
                     expansion_session,
@@ -969,9 +994,21 @@ def collect_for_entry(
                     new_unique=new_unique,
                 )
             else:
-                summary["expansion"] = {"enabled": True, "queries": []}
+                summary["expansion"] = {
+                    "enabled": True,
+                    "queries": [],
+                    "keywords": [],
+                    "bootstrap_candidates": [],
+                    "bootstrap_generated": [],
+                }
         else:
-            summary["expansion"] = {"enabled": True, "queries": []}
+            summary["expansion"] = {
+                "enabled": True,
+                "queries": [],
+                "keywords": [],
+                "bootstrap_candidates": [],
+                "bootstrap_generated": [],
+            }
 
     paper_list = list(entry_map.values())
 
@@ -1000,6 +1037,100 @@ def collect_for_entry(
             coverage=coverage_records,
             parent_name=ontology_parent,
         )
+
+    if (
+        expansion_candidate_keywords
+        and expansion_settings
+        and expansion_settings.bootstrap_new_theories
+        and ontology_manager
+        and label_bootstrapper
+        and paper_list
+    ):
+        mode_key = (expansion_settings.bootstrap_mode or "child").strip().lower() or "child"
+        parent_override = name if mode_key == "child" else ontology_parent
+        max_labels = expansion_settings.bootstrap_max_labels
+        if max_labels is None or max_labels <= 0:
+            max_labels = len(expansion_candidate_keywords) or 1
+        request = RuntimeLabelRequest(
+            node=name,
+            mode=mode_key,
+            parent=parent_override,
+            papers=paper_list,
+            max_labels=max_labels,
+            keywords=tuple(expansion_candidate_keywords),
+        )
+        response = label_bootstrapper.propose_labels(request)
+        appended: List[str] = []
+        for spec in response.proposals:
+            provenance_payload = dict(spec.provenance)
+            provenance_payload.setdefault("mode", f"expansion::{mode_key}")
+            provenance_payload.setdefault("trigger", "adaptive_query_expansion")
+            provenance_payload.setdefault("keywords", list(expansion_candidate_keywords))
+            parent_value = spec.parent
+            if parent_value is None:
+                parent_value = parent_override
+            runtime_spec = RuntimeNodeSpec(
+                name=spec.name,
+                parent=parent_value,
+                config=spec.config,
+                keywords=spec.keywords,
+                metadata=spec.metadata,
+                provenance=provenance_payload,
+            )
+            if mode_key == "child":
+                added = ontology_manager.append_child(name, runtime_spec)
+            elif mode_key == "sibling":
+                added = ontology_manager.append_sibling(name, runtime_spec)
+            else:
+                added = ontology_manager.append_node(
+                    runtime_spec.name,
+                    parent=runtime_spec.parent,
+                    config=runtime_spec.config,
+                    keywords=runtime_spec.keywords,
+                    metadata=runtime_spec.metadata,
+                    provenance=runtime_spec.provenance,
+                )
+            if not added:
+                continue
+            appended.append(runtime_spec.name)
+            record = {
+                "name": runtime_spec.name,
+                "parent": runtime_spec.parent or parent_override,
+                "config": runtime_spec.config,
+                "metadata": runtime_spec.metadata,
+                "keywords": list(runtime_spec.keywords) if runtime_spec.keywords else [],
+                "provenance": runtime_spec.provenance,
+            }
+            enrichment_state["new_theories"].setdefault(runtime_spec.name, {}).update(record)
+            added_theories.append(record)
+        if appended:
+            expansion_generated_labels = appended
+            mode_label = f"expansion::{mode_key}"
+            bootstrap_summary[mode_label] = appended
+            bootstrap_reasons[mode_label] = {
+                "keywords": list(expansion_candidate_keywords),
+                "source": "adaptive_query_expansion",
+            }
+            bootstrap_state = enrichment_state.setdefault("bootstrap_labels", {})
+            state_entry = bootstrap_state.setdefault(mode_label, {})
+            state_entry.update(
+                {
+                    "status": "complete",
+                    "updated_at": time.time(),
+                    "generated": appended,
+                    "keywords": list(expansion_candidate_keywords),
+                }
+            )
+            if "expansion" in summary:
+                summary["expansion"]["bootstrap_generated"] = appended
+            else:
+                summary["expansion"] = {
+                    "enabled": True,
+                    "queries": expansion_session.selected_queries() if expansion_session else [],
+                    "keywords": expansion_keywords,
+                    "bootstrap_candidates": expansion_candidate_keywords,
+                    "bootstrap_generated": appended,
+                }
 
     runtime_label_cfg: Mapping[str, Any] | None = None
     raw_runtime_cfg = config.get("runtime_labels")
@@ -1152,6 +1283,18 @@ def collect_for_entry(
             state_payload = {}
         else:
             state_payload = dict(state_payload)
+        if (
+            expansion_keywords
+            or expansion_candidate_keywords
+            or expansion_generated_labels
+        ):
+            expansion_state = enrichment_state.setdefault("expansion", {})
+            if expansion_keywords:
+                expansion_state["keywords"] = list(expansion_keywords)
+            if expansion_candidate_keywords:
+                expansion_state["bootstrap_candidates"] = list(expansion_candidate_keywords)
+            if expansion_generated_labels:
+                expansion_state["bootstrap_generated"] = list(expansion_generated_labels)
         for shard in used_query_shards:
             shard_state = enrichment_state["query_shards"].setdefault(
                 shard["id"], {"query": shard["query"]}
@@ -1191,6 +1334,10 @@ def collect_for_entry(
         enrichment_report["queries_used"] = new_query_list
     if pruned_shards:
         enrichment_report["pruned_queries"] = [item["query"] for item in pruned_shards]
+    if expansion_keywords:
+        enrichment_report["expansion_keywords"] = list(expansion_keywords)
+    if expansion_candidate_keywords:
+        enrichment_report["expansion_candidates"] = list(expansion_candidate_keywords)
     if bootstrap_summary:
         enrichment_report["bootstrap_labels"] = bootstrap_summary
     if bootstrap_reasons:

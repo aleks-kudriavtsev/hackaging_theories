@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 from .llm import LLMClient, LLMClientError, LLMMessage
 from .ontology import TheoryOntology
@@ -32,6 +32,7 @@ class OntologyUpdate:
 
     added: Dict[str, Dict[str, Any]]
     removed: Iterable[str] = ()
+    keyword_updates: Dict[str, Sequence[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,7 @@ class OntologyManager:
             "provenance": stored_provenance,
             "keywords": normalized_keywords,
         }
+        keyword_updates = {name: normalized_keywords} if normalized_keywords else {}
         self._rebuild_and_notify(
             added={
                 name: {
@@ -197,8 +199,73 @@ class OntologyManager:
                     "provenance": stored_provenance,
                     "keywords": normalized_keywords,
                 }
-            }
+            },
+            keyword_updates=keyword_updates,
         )
+        return True
+
+    def update_keywords(
+        self,
+        name: str,
+        keywords: Iterable[str] | None,
+        *,
+        merge: bool = False,
+    ) -> bool:
+        """Update the keyword list associated with ``name``.
+
+        Returns ``True`` when the keyword set changed.
+        """
+
+        if not self.has_node(name):
+            raise KeyError(f"Ontology node '{name}' not found")
+
+        normalized: List[str] = []
+        if keywords:
+            seen: set[str] = set()
+            for raw in keywords:
+                if not isinstance(raw, str):
+                    continue
+                token = raw.strip().lower()
+                if not token or token in seen:
+                    continue
+                seen.add(token)
+                normalized.append(token)
+
+        entry = self._runtime_nodes.get(name)
+        if entry is None:
+            parent: str | None = None
+            try:
+                parent = self._ontology.parent(name)
+            except KeyError:
+                parent = None
+            entry = {
+                "parent": parent,
+                "config": {},
+                "metadata": {},
+                "provenance": {},
+                "keywords": None,
+            }
+            self._runtime_nodes[name] = entry
+
+        existing: List[str] = list(entry.get("keywords") or [])
+        if merge and existing:
+            seen_existing = set(existing)
+            combined = list(existing)
+            for token in normalized:
+                if token not in seen_existing:
+                    seen_existing.add(token)
+                    combined.append(token)
+            target = combined
+        else:
+            target = normalized
+
+        target_value = target or None
+        if (entry.get("keywords") or None) == target_value:
+            return False
+
+        entry["keywords"] = target_value
+        keyword_updates = {name: target} if target else {name: []}
+        self._rebuild_and_notify(keyword_updates=keyword_updates)
         return True
 
     def append_child(
@@ -359,11 +426,24 @@ class OntologyManager:
                         queue.append(sub)
         return None
 
-    def _rebuild_and_notify(self, *, added: Dict[str, Dict[str, Any]] | None = None) -> None:
+    def _rebuild_and_notify(
+        self,
+        *,
+        added: Dict[str, Dict[str, Any]] | None = None,
+        keyword_updates: Mapping[str, Iterable[str]] | None = None,
+    ) -> None:
         config = self._build_config()
         self._ontology = TheoryOntology.from_targets_config(config)
         self._persist()
-        update = OntologyUpdate(added=added or {}, removed=())
+        keyword_payload = {
+            name: list(values)
+            for name, values in (keyword_updates or {}).items()
+        }
+        update = OntologyUpdate(
+            added=added or {},
+            removed=(),
+            keyword_updates=keyword_payload,
+        )
         for listener in list(self._listeners):
             try:
                 listener(self._ontology, update)
