@@ -277,3 +277,67 @@ def test_runtime_bootstrap_persists_between_runs(tmp_path: Path) -> None:
     assert bootstrap_state["status"] == "complete"
     assert summary_two.get("enrichment", {}).get("bootstrap_labels") is None
 
+
+def test_runtime_autofragment_overflow(tmp_path: Path) -> None:
+    storage_path = tmp_path / "runtime.json"
+    manager = OntologyManager(
+        {
+            "Activity Theory": {
+                "target": 2,
+                "subtheories": {
+                    "Engagement": {"target": 1},
+                    "Participation": {"target": 3},
+                },
+            }
+        },
+        storage_path=storage_path,
+    )
+    retriever = _DummyRetriever()
+    proposals = [
+        RuntimeNodeSpec(
+            name="Engagement - Digital", 
+            parent=None,
+            config={"target": 1},
+            keywords=["digital"],
+            metadata={"notes": "auto"},
+            provenance={"mode": "child", "source": "stub"},
+        )
+    ]
+    bootstrapper = _StubBootstrapper(proposals)
+
+    summary, _ = collect_for_entry(
+        retriever,
+        name="Engagement",
+        config={
+            "queries": ["engagement aging"],
+            "target": 1,
+            "runtime_labels": {"threshold": 1, "mode": "sibling", "max_new_labels": 2},
+        },
+        context={"base_query": "activity theory", "theory": "Engagement"},
+        providers=None,
+        resume=True,
+        state_prefix="theory::activity-theory::sub::engagement",
+        ontology_manager=manager,
+        expander=None,
+        default_expansion=None,
+        retrieval_options={},
+        filter_llm_client=None,
+        label_bootstrapper=bootstrapper,
+    )
+
+    assert bootstrapper.requests, "autofragment should invoke bootstrapper"
+    request = bootstrapper.requests[0]
+    assert request.mode == "child"
+    assert request.parent == "Engagement"
+
+    enrichment = summary.get("enrichment", {})
+    reasons = enrichment.get("bootstrap_reasons", {})
+    assert "child" in reasons
+    reason_payload = reasons["child"]
+    assert reason_payload["strategy"] == "sibling_imbalance"
+    assert reason_payload["target_parent"] == "Engagement"
+
+    state_payload = retriever.state_store.get("theory::activity-theory::sub::engagement")
+    stored_reason = state_payload["enrichment"]["bootstrap_reasons"]["child"]
+    assert stored_reason["strategy"] == "sibling_imbalance"
+    assert "Engagement - Digital" in manager.ontology.names()

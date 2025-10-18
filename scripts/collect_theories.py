@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import re
+import math
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -39,7 +41,7 @@ from theories_pipeline.config_utils import (
     resolve_api_keys,
 )
 from theories_pipeline.llm import LLMClient, LLMClientConfig
-from theories_pipeline.ontology import OntologyNode
+from theories_pipeline.ontology import CoverageRecord, OntologyNode, TheoryOntology
 from theories_pipeline.query_expansion import QueryExpander, QueryExpansionSettings
 from theories_pipeline.review_bootstrap import (
     ReviewDocument,
@@ -392,6 +394,133 @@ def _existing_total(retriever: LiteratureRetriever, state_prefix: str) -> int:
     return 0
 
 
+def _build_state_prefix_map(ontology: TheoryOntology) -> Dict[str, str]:
+    prefix_map: Dict[str, str] = {}
+
+    def visit(node_name: str, parent_prefix: str | None) -> None:
+        slug = slugify(node_name)
+        if parent_prefix is None:
+            prefix = f"theory::{slug}"
+        elif parent_prefix == "theory":
+            prefix = f"{parent_prefix}::{slug}"
+        else:
+            prefix = f"{parent_prefix}::sub::{slug}"
+        prefix_map[node_name] = prefix
+        for child in ontology.children(node_name):
+            visit(child, prefix)
+
+    for root in ontology.roots():
+        visit(root, None)
+
+    return prefix_map
+
+
+def _normalized_load(record: CoverageRecord | None) -> float:
+    if record is None:
+        return 0.0
+    if record.target and record.target > 0:
+        return record.count / record.target
+    return float(record.count)
+
+
+def _collect_coverage_counts(
+    retriever: LiteratureRetriever,
+    ontology: TheoryOntology,
+    *,
+    current_name: str,
+    current_total: int,
+) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    prefix_map = _build_state_prefix_map(ontology)
+    for node_name, prefix in prefix_map.items():
+        if node_name == current_name:
+            counts[node_name] = current_total
+        else:
+            counts[node_name] = _existing_total(retriever, prefix)
+    return counts
+
+
+def _select_autofragment_hint(
+    *,
+    node_name: str,
+    ontology: TheoryOntology,
+    coverage: Mapping[str, CoverageRecord],
+    parent_name: str | None,
+) -> Dict[str, Any] | None:
+    current_record = coverage.get(node_name)
+    if current_record is None:
+        return None
+
+    if parent_name:
+        sibling_names = [child for child in ontology.children(parent_name)]
+    else:
+        sibling_names = list(ontology.roots())
+
+    sibling_records = [coverage.get(name) for name in sibling_names]
+    sibling_records = [record for record in sibling_records if record is not None]
+    if len(sibling_records) <= 1:
+        return None
+
+    current_load = _normalized_load(current_record)
+    other_loads = [_normalized_load(record) for record in sibling_records if record.name != node_name]
+    if not other_loads:
+        return None
+
+    median_load = statistics.median(other_loads)
+    peer_loads = [_normalized_load(record) for record in sibling_records]
+    variance = statistics.pvariance(peer_loads) if len(peer_loads) > 1 else 0.0
+    load_delta = current_load - median_load
+    threshold = max(0.3, math.sqrt(variance))
+    if median_load == 0:
+        threshold = max(threshold, 0.5)
+    if load_delta <= threshold:
+        return None
+
+    other_counts = [record.count for record in sibling_records if record.name != node_name]
+    median_count = statistics.median(other_counts) if other_counts else 0.0
+
+    parent_record = coverage.get(parent_name) if parent_name else None
+    parent_load = _normalized_load(parent_record)
+    share_of_parent = None
+    if parent_record and parent_record.count > 0:
+        share_of_parent = current_record.count / parent_record.count
+
+    if (
+        parent_name
+        and parent_record
+        and parent_record.target
+        and parent_record.count >= parent_record.target
+    ):
+        mode = "sibling"
+        target_parent = parent_name
+    else:
+        mode = "child"
+        target_parent = node_name
+
+    hint: Dict[str, Any] = {
+        "mode": mode,
+        "target_parent": target_parent,
+        "strategy": "sibling_imbalance",
+        "current_count": current_record.count,
+        "current_target": current_record.target,
+        "current_load": current_load,
+        "median_peer_load": median_load,
+        "median_peer_count": median_count,
+        "peer_variance": variance,
+        "peer_count": len(sibling_records),
+        "load_delta": load_delta,
+        "threshold": threshold,
+    }
+    if parent_name:
+        hint["parent_node"] = parent_name
+    if parent_load:
+        hint["parent_load"] = parent_load
+    if share_of_parent is not None:
+        hint["share_of_parent"] = share_of_parent
+
+    return hint
+
+
 def _has_expansion_config(targets: Mapping[str, Any]) -> bool:
     for data in targets.values():
         if not isinstance(data, Mapping):
@@ -539,6 +668,7 @@ def collect_for_entry(
         "new_theories": {},
         "query_shards": {},
         "bootstrap_labels": {},
+        "bootstrap_reasons": {},
     }
     if isinstance(enrichment_state_raw, Mapping):
         stored_theories = enrichment_state_raw.get("new_theories")
@@ -559,9 +689,16 @@ def collect_for_entry(
                 str(key): dict(value) if isinstance(value, Mapping) else {"status": value}
                 for key, value in stored_bootstrap.items()
             }
+        stored_reasons = enrichment_state_raw.get("bootstrap_reasons")
+        if isinstance(stored_reasons, Mapping):
+            enrichment_state["bootstrap_reasons"] = {
+                str(key): dict(value) if isinstance(value, Mapping) else {"value": value}
+                for key, value in stored_reasons.items()
+            }
 
     added_theories: List[Dict[str, Any]] = []
     bootstrap_summary: Dict[str, List[str]] = {}
+    bootstrap_reasons: Dict[str, Any] = {}
     used_query_shards: List[Dict[str, Any]] = []
     pruned_shards: List[Dict[str, Any]] = []
 
@@ -794,6 +931,32 @@ def collect_for_entry(
 
     paper_list = list(entry_map.values())
 
+    coverage_records: Dict[str, CoverageRecord] = {}
+    autofragment_hint: Dict[str, Any] | None = None
+    ontology_parent: str | None = None
+    if ontology is not None:
+        try:
+            ontology_parent = ontology.parent(name)
+        except KeyError:
+            ontology_parent = None
+        try:
+            current_total = int(summary.get("total_unique", len(entry_map)))
+        except (TypeError, ValueError):
+            current_total = len(entry_map)
+        coverage_counts = _collect_coverage_counts(
+            retriever,
+            ontology,
+            current_name=name,
+            current_total=current_total,
+        )
+        coverage_records = ontology.coverage(coverage_counts)
+        autofragment_hint = _select_autofragment_hint(
+            node_name=name,
+            ontology=ontology,
+            coverage=coverage_records,
+            parent_name=ontology_parent,
+        )
+
     runtime_label_cfg: Mapping[str, Any] | None = None
     raw_runtime_cfg = config.get("runtime_labels")
     if isinstance(raw_runtime_cfg, Mapping):
@@ -828,21 +991,36 @@ def collect_for_entry(
             except (TypeError, ValueError):
                 max_new_labels = 1
             bootstrap_state = enrichment_state.setdefault("bootstrap_labels", {})
-            ontology_parent: str | None = None
-            if ontology is not None:
-                try:
-                    ontology_parent = ontology.parent(name)
-                except KeyError:
-                    ontology_parent = None
+            mode_reasons: Dict[str, Any] = {}
+            target_parent_override: str | None = None
+            if autofragment_hint:
+                forced_mode_value = autofragment_hint.get("mode")
+                if isinstance(forced_mode_value, str) and forced_mode_value:
+                    modes = [forced_mode_value] + [mode for mode in modes if mode != forced_mode_value]
+                    parent_candidate = autofragment_hint.get("target_parent")
+                    if parent_candidate is not None:
+                        target_parent_override = str(parent_candidate)
+                    mode_reasons[forced_mode_value] = json.loads(json.dumps(autofragment_hint))
+
             for mode_name in (modes or ["child"]):
                 mode_key = mode_name or "child"
                 state_entry = bootstrap_state.setdefault(mode_key, {})
                 if state_entry.get("status") == "complete":
                     continue
+                if autofragment_hint and autofragment_hint.get("mode") == mode_key:
+                    state_entry["reason"] = json.loads(json.dumps(autofragment_hint))
                 request = RuntimeLabelRequest(
                     node=name,
                     mode=mode_key,
-                    parent=ontology_parent,
+                    parent=(
+                        str(target_parent_override)
+                        if autofragment_hint and autofragment_hint.get("mode") == mode_key and target_parent_override is not None
+                        else (
+                            name
+                            if mode_key == "child"
+                            else ontology_parent
+                        )
+                    ),
                     papers=paper_list,
                     max_labels=max_new_labels,
                 )
@@ -858,6 +1036,11 @@ def collect_for_entry(
                         "papers",
                         [paper.identifier for paper in paper_list],
                     )
+                    if autofragment_hint and autofragment_hint.get("mode") == mode_key:
+                        provenance_payload.setdefault(
+                            "auto_fragment_hint",
+                            json.loads(json.dumps(autofragment_hint)),
+                        )
                     parent_override = spec.parent
                     if parent_override is None:
                         if mode_key == "child":
@@ -910,8 +1093,13 @@ def collect_for_entry(
                 )
                 if appended:
                     bootstrap_summary[mode_key] = appended
-            if bootstrap_summary:
+                if autofragment_hint and autofragment_hint.get("mode") == mode_key:
+                    mode_reasons[mode_key] = json.loads(json.dumps(autofragment_hint))
+            if bootstrap_summary or mode_reasons:
                 ontology = ontology_manager.ontology
+                if mode_reasons:
+                    enrichment_state.setdefault("bootstrap_reasons", {}).update(mode_reasons)
+                    bootstrap_reasons.update(mode_reasons)
 
     timestamp = time.time()
     if state_prefix:
@@ -961,6 +1149,8 @@ def collect_for_entry(
         enrichment_report["pruned_queries"] = [item["query"] for item in pruned_shards]
     if bootstrap_summary:
         enrichment_report["bootstrap_labels"] = bootstrap_summary
+    if bootstrap_reasons:
+        enrichment_report["bootstrap_reasons"] = bootstrap_reasons
     if enrichment_report:
         summary["enrichment"] = enrichment_report
 
