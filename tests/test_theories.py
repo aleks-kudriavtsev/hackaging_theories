@@ -193,3 +193,44 @@ def test_classifier_handles_runtime_appended_nodes(tmp_path) -> None:
     runtime_node = classifier.ontology.get("Activity Theory")
     assert runtime_node.metadata["bootstrap"]["citations"] == 120
     assert runtime_node.metadata["source"] == "review_bootstrap"
+
+
+def test_format_ontology_prompt_includes_metadata() -> None:
+    ontology = TheoryOntology.from_targets_config(
+        {
+            "Activity Theory": {
+                "metadata": {
+                    "summary": "Active engagement fosters healthy aging.",
+                    "bootstrap": {
+                        "citations": 120,
+                        "reviews": ["rev-1", "rev-2"],
+                        "queries": ["activity aging"],
+                    },
+                    "quotes": ["Active participation supports well-being."],
+                },
+                "subtheories": {
+                    "Participation": {
+                        "metadata": {},
+                    }
+                },
+            }
+        }
+    )
+    classifier = TheoryClassifier(
+        {
+            "Activity Theory": ["activity", "engagement"],
+            "Participation": ["participation"],
+        },
+        ontology,
+    )
+    prompt = classifier._format_ontology_prompt()
+    lines = prompt.splitlines()
+    assert any("Activity Theory" in line and "Active engagement fosters healthy aging." in line for line in lines)
+    assert any("Key terms: activity, engagement" in line for line in lines)
+    assert any("Bootstrap: citations=120; reviews=rev-1, rev-2; queries=activity aging" in line for line in lines)
+    assert any("Quote: Active participation supports well-being." in line for line in lines)
+    assert any(
+        "Participation" in line
+        and "focuses on participation in aging research" in line.lower()
+        for line in lines
+    )

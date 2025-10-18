@@ -71,6 +71,22 @@ def test_append_sibling_infers_parent(tmp_path: Path) -> None:
     assert saved["provenance"]["mode"] == "sibling"
 
 
+def test_append_node_generates_summary_when_missing(tmp_path: Path) -> None:
+    storage = tmp_path / "runtime.json"
+    manager = OntologyManager({"Activity Theory": {"target": 1}}, storage_path=storage)
+    added = manager.append_node(
+        "Digital Engagement",
+        parent="Activity Theory",
+        keywords=["digital", "engagement"],
+        metadata={},
+    )
+    assert added is True
+    node = manager.ontology.get("Digital Engagement")
+    summary = node.metadata.get("summary")
+    assert isinstance(summary, str) and summary
+    assert "digital" in summary.lower()
+
+
 class _DummyStateStore:
     def __init__(self) -> None:
         self._data: Dict[str, Dict[str, Any]] = {}

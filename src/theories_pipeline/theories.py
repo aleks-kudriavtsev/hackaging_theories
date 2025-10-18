@@ -11,6 +11,13 @@ from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, TYPE
 from .literature import PaperMetadata
 from .ontology import TheoryOntology
 from .llm import LLMClient, LLMClientError, LLMMessage, LLMRateLimitError, LLMResponse
+from .ontology_summaries import (
+    clean_summary,
+    extract_quote_snippets,
+    fallback_summary,
+    format_bootstrap_highlights,
+    format_keywords_line,
+)
 
 if TYPE_CHECKING:
     from .ontology_manager import OntologyManager, OntologyUpdate
@@ -229,13 +236,33 @@ class TheoryClassifier:
         lines: List[str] = []
         for depth in sorted(levels):
             indent = "  " * depth
-            children = sorted(levels[depth])
-            for name in children:
-                parent = self.ontology.parent(name)
+            for name in sorted(levels[depth]):
+                node = self.ontology.get(name)
+                parent = node.parent
+                keywords = self.keyword_map.get(name)
+                summary = clean_summary(node.metadata.get("summary"))
+                if not summary:
+                    bootstrap_meta = node.metadata.get("bootstrap") if isinstance(node.metadata, Mapping) else None
+                    summary = fallback_summary(
+                        name,
+                        keywords=keywords,
+                        bootstrap=bootstrap_meta if isinstance(bootstrap_meta, Mapping) else None,
+                    )
+                header = f"{indent}- {name}"
                 if parent:
-                    lines.append(f"{indent}- {name} (child of {parent})")
-                else:
-                    lines.append(f"{indent}- {name}")
+                    header += f" (child of {parent})"
+                if summary:
+                    header += f": {summary}"
+                lines.append(header)
+                detail_indent = f"{indent}    "
+                keyword_line = format_keywords_line(keywords)
+                if keyword_line:
+                    lines.append(f"{detail_indent}Key terms: {keyword_line}")
+                bootstrap_line = format_bootstrap_highlights(node.metadata)
+                if bootstrap_line:
+                    lines.append(f"{detail_indent}Bootstrap: {bootstrap_line}")
+                for quote in extract_quote_snippets(node.metadata):
+                    lines.append(f"{detail_indent}Quote: {quote}")
         return "\n".join(lines)
 
     def _format_paper_prompt(self, paper: PaperMetadata) -> str:
