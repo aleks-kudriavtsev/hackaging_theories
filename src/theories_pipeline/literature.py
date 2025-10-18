@@ -19,6 +19,7 @@ import re
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -1816,6 +1817,7 @@ class LiteratureRetriever:
 
         collected: List[PaperMetadata] = []
         accepted_identifiers: set[str] = set()
+        per_query_added: defaultdict[str, List[str]] = defaultdict(list)
         for paper in stored_papers_raw:
             if _passes_filters(paper):
                 collected.append(paper)
@@ -1858,6 +1860,7 @@ class LiteratureRetriever:
             *,
             final_query: str,
             shard_state: Dict[str, Any],
+            query_key: str,
         ) -> None:
             nonlocal newly_added
             cursor = shard_state.get("cursor")
@@ -1906,6 +1909,7 @@ class LiteratureRetriever:
                             accepted_identifiers.add(key)
                             newly_added += 1
                             provider_totals[provider.name] = provider_totals.get(provider.name, 0) + 1
+                            per_query_added[query_key].append(key)
                         else:
                             provider_totals.setdefault(provider.name, 0)
                     next_cursor = page.next_cursor
@@ -1958,6 +1962,7 @@ class LiteratureRetriever:
                                 shard_states[str(shard_key)] = {}
                     provider_state["shards"] = shard_states
 
+                    per_query_added.setdefault(query, [])
                     for index, shard_template in enumerate(provider.query_shards):
                         if _target_met():
                             break
@@ -1973,6 +1978,7 @@ class LiteratureRetriever:
                                     provider,
                                     final_query=final_query,
                                     shard_state=shard_state,
+                                    query_key=query,
                                 )
                             )
                         else:
@@ -1980,6 +1986,7 @@ class LiteratureRetriever:
                                 provider,
                                 final_query=final_query,
                                 shard_state=shard_state,
+                                query_key=query,
                             )
                             if _target_met():
                                 stop_event.set()
@@ -2049,6 +2056,17 @@ class LiteratureRetriever:
 
         if sorted_info is not None:
             summary["sorted"] = sorted_info
+
+        if queries:
+            for query in queries:
+                per_query_added.setdefault(query, [])
+        per_query_summary = {query: len(keys) for query, keys in per_query_added.items()}
+        if per_query_summary:
+            summary["per_query_new_unique"] = per_query_summary
+            summary["per_query_new_identifiers"] = {
+                query: list(keys)
+                for query, keys in per_query_added.items()
+            }
 
         return RetrievalResult(papers=collected, newly_added=newly_added, summary=summary)
 
