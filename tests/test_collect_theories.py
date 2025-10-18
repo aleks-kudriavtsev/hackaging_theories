@@ -8,9 +8,10 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from theories_pipeline.literature import PaperMetadata
-from theories_pipeline.ontology_manager import OntologyManager, RuntimeNodeSpec
+from theories_pipeline.ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
 from theories_pipeline.query_expansion import (
     QueryCandidate,
+    QueryExpander,
     QueryExpansionSession,
     QueryExpansionSettings,
 )
@@ -703,3 +704,88 @@ def test_query_expansion_keywords_and_bootstrap(tmp_path: Path, monkeypatch) -> 
     ]
     assert expansion_state["bootstrap_candidates"] == ["digital aging", "biomarkers"]
     assert expansion_state["bootstrap_generated"] == ["Adaptive Candidate"]
+
+
+def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "query-cache"
+    settings = QueryExpansionSettings(cache_dir=cache_dir)
+    expander = QueryExpander(llm_client=None, default_settings=settings)
+    manager = OntologyManager({"Activity Theory": {"target": 1}}, storage_path=tmp_path / "runtime.json")
+    updates: List[OntologyUpdate] = []
+
+    def _listener(_ontology, update: OntologyUpdate) -> None:
+        updates.append(update)
+
+    manager.register_listener(_listener)
+
+    def _paper(identifier: str, title: str) -> PaperMetadata:
+        return PaperMetadata(
+            identifier=identifier,
+            title=title,
+            authors=("Author",),
+            abstract="Explores digital biomarkers and resilience in ageing.",
+            source="Test",
+        )
+
+    session_one = QueryExpansionSession(
+        session_id="s1",
+        node_name="Activity Theory",
+        base_queries=["activity theory"],
+        candidates=[QueryCandidate(query="digital biomarkers", source="gpt")],
+    )
+    papers_one = [_paper("p1", "Digital biomarkers in social engagement")]
+    expander.record_performance(
+        session_one,
+        before_total=0,
+        after_total=2,
+        new_unique=len(papers_one),
+        new_papers=papers_one,
+    )
+
+    session_two = QueryExpansionSession(
+        session_id="s2",
+        node_name="Activity Theory",
+        base_queries=["activity theory"],
+        candidates=[QueryCandidate(query="digital biomarkers", source="gpt")],
+    )
+    papers_two = [
+        _paper("p2", "Wearables and digital biomarkers for ageing"),
+        _paper("p3", "Community resilience and technology"),
+    ]
+    expander.record_performance(
+        session_two,
+        before_total=2,
+        after_total=5,
+        new_unique=len(papers_two),
+        new_papers=papers_two,
+    )
+
+    records = expander.consistent_queries(
+        "Activity Theory",
+        selected_queries=["digital biomarkers"],
+        min_successes=2,
+        min_new_unique=2,
+    )
+    assert records and records[0].new_unique_total >= 3
+
+    promoted = collect_theories._promote_successful_queries(
+        expander=expander,
+        ontology_manager=manager,
+        node_name="Activity Theory",
+        selected_queries=["digital biomarkers"],
+        new_papers=papers_two,
+        min_successes=2,
+        min_new_unique=2,
+    )
+
+    assert promoted, "Adaptive query should produce a runtime node"
+    assert updates, "Ontology manager should emit an update"
+    latest_update = updates[-1]
+    added_names = set(latest_update.added)
+    assert set(promoted) <= added_names
+
+    promoted_name = promoted[0]
+    node = manager.ontology.get(promoted_name)
+    provenance = node.metadata.get("runtime_provenance", {})
+    assert provenance.get("query") == "digital biomarkers"
+    assert provenance.get("supporting_papers"), "Provenance should list supporting papers"

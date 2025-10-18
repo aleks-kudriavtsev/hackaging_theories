@@ -570,6 +570,54 @@ def _select_autofragment_hint(
     return hint
 
 
+def _promote_successful_queries(
+    *,
+    expander: QueryExpander,
+    ontology_manager: OntologyManager,
+    node_name: str,
+    selected_queries: Sequence[str],
+    new_papers: Sequence[PaperMetadata],
+    min_successes: int = 2,
+    min_new_unique: int = 2,
+) -> List[str]:
+    if not selected_queries:
+        return []
+    records = expander.consistent_queries(
+        node_name,
+        selected_queries=selected_queries,
+        min_successes=min_successes,
+        min_new_unique=min_new_unique,
+    )
+    if not records:
+        return []
+    appended: List[str] = []
+    existing_names: List[str] = list(ontology_manager.ontology.names())
+    for record in records:
+        if record.promoted_nodes:
+            continue
+        spec = expander.build_runtime_spec(
+            record,
+            parent=None,
+            new_papers=new_papers,
+            existing_names=existing_names,
+        )
+        if spec is None:
+            continue
+        added = ontology_manager.append_child(node_name, spec)
+        if not added:
+            continue
+        appended.append(spec.name)
+        existing_names.append(spec.name)
+        expander.mark_query_promoted(node_name, record.query, spec.name)
+        logger.info(
+            "Promoted adaptive query '%s' into runtime ontology node '%s' under %s",
+            record.query,
+            spec.name,
+            node_name,
+        )
+    return appended
+
+
 def _has_expansion_config(targets: Mapping[str, Any]) -> bool:
     for data in targets.values():
         if not isinstance(data, Mapping):
@@ -988,6 +1036,7 @@ def collect_for_entry(
                     else:
                         expansion_candidate_keywords = list(expansion_keywords[:limit_value])
                 merged_queries = queries + adaptive_queries
+                prior_keys = {paper.dedupe_key for paper in entry_map.values()}
                 rerun = retriever.collect_queries(
                     merged_queries,
                     target=target,
@@ -1013,7 +1062,16 @@ def collect_for_entry(
                     "threshold": relevance_filter.threshold,
                 }
                 entry_map = {paper.identifier: paper for paper in accepted_papers}
+                new_papers: List[PaperMetadata] = []
+                seen_keys = set(prior_keys)
+                for paper in accepted_papers:
+                    key = paper.dedupe_key
+                    if key not in seen_keys:
+                        new_papers.append(paper)
+                    seen_keys.add(key)
                 new_unique = max(0, summary.get("total_unique", 0) - before_total)
+                if new_papers:
+                    new_unique = max(new_unique, len(new_papers))
                 summary["expansion"] = {
                     "enabled": True,
                     "queries": adaptive_queries,
@@ -1029,7 +1087,21 @@ def collect_for_entry(
                     before_total=before_total,
                     after_total=summary.get("total_unique", 0),
                     new_unique=new_unique,
+                    new_papers=new_papers,
                 )
+                if ontology_manager and new_papers:
+                    promoted = _promote_successful_queries(
+                        expander=expander,
+                        ontology_manager=ontology_manager,
+                        node_name=name,
+                        selected_queries=adaptive_queries,
+                        new_papers=new_papers,
+                    )
+                    if promoted:
+                        expansion_generated_labels.extend(promoted)
+                        summary.setdefault("expansion", {}).setdefault("runtime_nodes", []).extend(
+                            promoted
+                        )
             else:
                 summary["expansion"] = {
                     "enabled": True,
