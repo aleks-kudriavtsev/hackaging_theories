@@ -19,7 +19,9 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping
 
+from .llm import LLMClient, LLMClientError, LLMMessage
 from .ontology import TheoryOntology
+from .ontology_summaries import clean_summary, fallback_summary
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +49,27 @@ class RuntimeNodeSpec:
 class OntologyManager:
     """Manage runtime updates to a :class:`TheoryOntology` instance."""
 
+    DEFAULT_SUMMARY_SYSTEM_PROMPT = (
+        "You are an expert gerontology ontologist. "
+        "Write a concise definition (max 35 words) for the provided theory."
+    )
+
+    DEFAULT_SUMMARY_USER_PROMPT = (
+        "Theory name: {name}\n"
+        "Parent: {parent}\n"
+        "Keywords: {keywords}\n"
+        "Bootstrap: {bootstrap}\n"
+        "Additional metadata: {metadata}\n"
+        "Respond with a single sentence summary only."
+    )
+
     def __init__(
         self,
         base_config: Mapping[str, Mapping[str, Any]],
         *,
         storage_path: Path | None = None,
+        llm_client: LLMClient | None = None,
+        summary_prompt: str | None = None,
     ) -> None:
         self._base_config = json.loads(json.dumps(base_config))
         self._storage_path = Path(storage_path) if storage_path else Path(
@@ -60,6 +78,9 @@ class OntologyManager:
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._listeners: list[Callable[[TheoryOntology, OntologyUpdate], None]] = []
         self._runtime_nodes: Dict[str, Dict[str, Any]] = {}
+        self._llm_client = llm_client
+        self._summary_system_prompt = self.DEFAULT_SUMMARY_SYSTEM_PROMPT
+        self._summary_user_prompt = summary_prompt or self.DEFAULT_SUMMARY_USER_PROMPT
         self._load()
         self._ontology = TheoryOntology.from_targets_config(self._build_config())
 
@@ -159,6 +180,7 @@ class OntologyManager:
         stored_metadata = dict(metadata) if metadata else {}
         stored_provenance = dict(provenance) if provenance else {}
         normalized_keywords = [kw.lower() for kw in keywords] if keywords else None
+        self._ensure_summary(name, parent, stored_metadata, keywords)
         self._runtime_nodes[name] = {
             "parent": parent,
             "config": stored_config,
@@ -347,6 +369,75 @@ class OntologyManager:
                 listener(self._ontology, update)
             except Exception:  # pragma: no cover - defensive log only
                 logger.exception("Ontology listener %r failed", listener)
+
+    def _ensure_summary(
+        self,
+        name: str,
+        parent: str | None,
+        metadata: Dict[str, Any],
+        keywords: Iterable[str] | None,
+    ) -> None:
+        existing = clean_summary(metadata.get("summary"))
+        if existing:
+            metadata["summary"] = existing
+            return
+        summary_text = self._request_llm_summary(name, parent, metadata, keywords)
+        if not summary_text:
+            bootstrap_meta = metadata.get("bootstrap")
+            summary_text = fallback_summary(
+                name,
+                keywords=keywords,
+                bootstrap=bootstrap_meta if isinstance(bootstrap_meta, Mapping) else None,
+            )
+        cleaned = clean_summary(summary_text)
+        if cleaned:
+            metadata["summary"] = cleaned
+
+    def _request_llm_summary(
+        self,
+        name: str,
+        parent: str | None,
+        metadata: Mapping[str, Any],
+        keywords: Iterable[str] | None,
+    ) -> str | None:
+        if not self._llm_client:
+            return None
+        parent_value = parent or "<root>"
+        keyword_text = ", ".join(str(item) for item in keywords) if keywords else "<none>"
+        bootstrap = metadata.get("bootstrap") if isinstance(metadata, Mapping) else None
+        other_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in {"summary", "bootstrap"}
+        }
+        try:
+            bootstrap_text = json.dumps(bootstrap or {}, ensure_ascii=False, default=str)
+        except TypeError:
+            bootstrap_text = str(bootstrap)
+        try:
+            metadata_text = json.dumps(other_metadata, ensure_ascii=False, default=str)
+        except TypeError:
+            metadata_text = str(other_metadata)
+        user_prompt = self._summary_user_prompt.format(
+            name=name,
+            parent=parent_value,
+            keywords=keyword_text or "<none>",
+            bootstrap=bootstrap_text,
+            metadata=metadata_text,
+        )
+        messages = [
+            LLMMessage(role="system", content=self._summary_system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ]
+        try:
+            response = self._llm_client.generate([messages])[0]
+        except LLMClientError as exc:  # pragma: no cover - exercised via tests without LLM
+            logger.warning("Ontology summary LLM failed for %s: %s", name, exc)
+            return None
+        content = response.content.strip()
+        if not content:
+            return None
+        return content.splitlines()[0]
 
 
 __all__ = ["OntologyManager", "OntologyUpdate", "RuntimeNodeSpec"]
