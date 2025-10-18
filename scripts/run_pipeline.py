@@ -331,7 +331,9 @@ def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) 
         cpu_total = 1
 
     chunk_threshold = 100  # Matches step5_generate_ontology.py default chunk size.
-    return cpu_total if summary_count > chunk_threshold else 1
+    estimated_chunks = max(1, (summary_count + chunk_threshold - 1) // chunk_threshold)
+    auto_processes = cpu_total if summary_count > chunk_threshold else 1
+    return max(1, min(auto_processes, estimated_chunks))
 
 
 def main(argv: List[str] | None = None) -> int:

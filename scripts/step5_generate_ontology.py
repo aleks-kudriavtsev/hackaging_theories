@@ -528,8 +528,9 @@ def main(argv: List[str] | None = None) -> int:
         default=None,
         help=(
             "Number of worker processes for ontology generation. If omitted, the "
-            "script auto-scales to the available CPU count whenever the summary "
-            "exceeds the chunk threshold, otherwise it runs in a single process."
+            "script auto-scales: it uses the available CPU count when the "
+            "summary size exceeds the chunk threshold, otherwise it stays with a "
+            "single process."
         ),
     )
     parser.add_argument(
@@ -569,12 +570,15 @@ def main(argv: List[str] | None = None) -> int:
 
     chunk_threshold = max(args.chunk_size, 1)
 
+    estimated_chunks = max(1, (len(summary) + chunk_threshold - 1) // chunk_threshold)
+
     try:
         cpu_total = multiprocessing.cpu_count()
     except NotImplementedError:  # pragma: no cover - defensive guard
         cpu_total = 1
 
     auto_processes = cpu_total if len(summary) > chunk_threshold else 1
+    auto_processes = max(1, min(auto_processes, estimated_chunks))
 
     if args.processes is None:
         processes = auto_processes
@@ -628,6 +632,16 @@ def main(argv: List[str] | None = None) -> int:
         article_index=article_index,
     )
 
+    reconciliation.setdefault("notes", []).append(
+        {
+            "event": "worker_processes",
+            "process_count": processes,
+            "auto_suggestion": auto_processes,
+            "requested_processes": requested_processes,
+            "configuration": process_source,
+        }
+    )
+
     output_payload = {
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         "model": args.model,
@@ -660,6 +674,12 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(output_payload, fh, ensure_ascii=False, indent=2)
 
+    total_reassignments = len(reconciliation.get("reassignments", []))
+    print(
+        "Reconciliation logged "
+        f"{total_reassignments} adjustment{'s' if total_reassignments != 1 else ''} "
+        f"using {processes} worker process{'es' if processes != 1 else ''}."
+    )
     print(
         "Saved reconciled ontology with "
         f"{len(reconciled_groups)} groups to {args.output}"
