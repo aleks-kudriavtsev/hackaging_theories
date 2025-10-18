@@ -396,3 +396,110 @@ def test_quickstart_reuses_cached_snapshot(monkeypatch, tmp_path):
     slug_path = tmp_path / "data" / "cache" / "ontologies" / "test-query.json"
     persisted = json.loads(slug_path.read_text(encoding="utf-8"))
     assert persisted["target"] == 15, "Target should be updated from CLI flag"
+
+
+def test_subtheory_quota_marks_waiting(monkeypatch):
+    original_collect_for_entry = collect_theories.collect_for_entry
+
+    class DummyDecision:
+        def __init__(self, identifier: str):
+            self.identifier = identifier
+            self.accepted = True
+
+        def to_record(self, *, threshold: float) -> Dict[str, Any]:
+            return {"accepted": True, "score": 1.0, "threshold": threshold}
+
+    class DummyRelevanceFilter:
+        def __init__(self, *args, threshold: float = 0.0, **kwargs):
+            self.threshold = float(threshold)
+
+        def apply(self, papers, *, context, existing_decisions):
+            decisions = [DummyDecision(p.identifier) for p in papers]
+            return list(papers), decisions
+
+    class StubStateStore:
+        def __init__(self):
+            self.storage: Dict[str, Any] = {}
+
+        def get(self, key):
+            return self.storage.get(key, {})
+
+        def set(self, key, value):
+            self.storage[key] = value
+
+    class StubRetriever:
+        def __init__(self):
+            self.state_store = StubStateStore()
+
+        def collect_queries(
+            self,
+            *_args,
+            **_kwargs,
+        ):
+            paper = SimpleNamespace(identifier="root-paper")
+            summary = {"total_unique": 1, "providers": {"stub": 1}}
+            return SimpleNamespace(papers=[paper], summary=summary)
+
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", DummyRelevanceFilter)
+
+    existing_counts = {
+        f"root::sub::{collect_theories.slugify(name)}": count
+        for name, count in {"Alpha": 3, "Beta": 8, "Gamma": 1}.items()
+    }
+    monkeypatch.setattr(
+        collect_theories,
+        "_existing_total",
+        lambda _retriever, prefix: existing_counts.get(prefix, 0),
+    )
+
+    called_subs: List[str] = []
+
+    def stub_collect_for_entry(*args, **kwargs):
+        if kwargs.get("context", {}).get("subtheory"):
+            called_subs.append(kwargs["name"])
+            return {"total_unique": 0}, []
+        return original_collect_for_entry(*args, **kwargs)
+
+    monkeypatch.setattr(collect_theories, "collect_for_entry", stub_collect_for_entry)
+
+    config = {
+        "queries": ["root"],
+        "target": 90,
+        "max_subtheories": 2,
+        "subtheories": {
+            "Alpha": {"queries": ["alpha"], "target": 10},
+            "Beta": {"queries": ["beta"], "target": 10},
+            "Gamma": {"queries": ["gamma"], "target": 10},
+        },
+    }
+
+    retriever = StubRetriever()
+
+    summary, papers = original_collect_for_entry(
+        retriever,
+        name="Root",
+        config=config,
+        context={"base_query": "root"},
+        providers=None,
+        resume=True,
+        state_prefix="root",
+        ontology_manager=None,
+        expander=None,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    assert papers, "Top-level retrieval should return accepted papers"
+    assert len(called_subs) == 2
+    assert set(called_subs) == {"Alpha", "Gamma"}
+
+    sub_summaries = summary.get("subtheories", {})
+    assert summary.get("subtheory_quota") == 2
+    assert summary.get("subtheory_queue") == ["Beta"]
+
+    assert sub_summaries["Beta"]["status"] == "waiting"
+    assert sub_summaries["Beta"]["queue_position"] == 1
+    assert sub_summaries["Alpha"].get("status") == "active"
+    assert sub_summaries["Gamma"].get("status") == "active"
