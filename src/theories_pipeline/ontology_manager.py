@@ -323,6 +323,20 @@ class OntologyManager:
 
         return self._build_config()
 
+    def get_node_config(self, name: str) -> Mapping[str, Any] | None:
+        """Return the merged configuration entry for ``name`` if available."""
+
+        merged = self._build_config()
+        entry: MutableMapping[str, Any] | None = None
+        raw_entry = merged.get(name)
+        if isinstance(raw_entry, MutableMapping):
+            entry = raw_entry
+        else:
+            entry = self._find_node_config(merged, name)
+        if entry is None:
+            return None
+        return json.loads(json.dumps(entry))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

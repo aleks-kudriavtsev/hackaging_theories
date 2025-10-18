@@ -5,7 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Mapping, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
 from theories_pipeline.literature import PaperMetadata
 from theories_pipeline.ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
@@ -66,6 +66,9 @@ class DummyOntologyManager:
     def append_node(self, *args, **kwargs):  # pragma: no cover - unused in tests
         return None
 
+    def get_node_config(self, _name):  # pragma: no cover - defensive stub
+        return {}
+
 
 class RecordingOntologyManager:
     def __init__(self, base_config: Mapping[str, Any], *, storage_path=None):
@@ -108,6 +111,29 @@ class RecordingOntologyManager:
             }
         )
         self._known_nodes.add(name)
+
+    def get_node_config(self, name: str):
+        def _search(mapping: Mapping[str, Any]):
+            for node_name, data in mapping.items():
+                if node_name == name and isinstance(data, Mapping):
+                    return data
+                if isinstance(data, Mapping):
+                    sub_map = data.get("subtheories")
+                    if isinstance(sub_map, Mapping):
+                        found = _search(sub_map)
+                        if found is not None:
+                            return found
+            return None
+
+        base_entry = _search(self.base_config)
+        if base_entry is not None:
+            return base_entry
+        for entry in self.appended:
+            if entry["name"] == name:
+                payload = dict(entry.get("config") or {})
+                payload.setdefault("subtheories", {})
+                return payload
+        return None
 
 class DummyClassifier:
     @classmethod
@@ -704,6 +730,163 @@ def test_query_expansion_keywords_and_bootstrap(tmp_path: Path, monkeypatch) -> 
     ]
     assert expansion_state["bootstrap_candidates"] == ["digital aging", "biomarkers"]
     assert expansion_state["bootstrap_generated"] == ["Adaptive Candidate"]
+
+
+def test_collect_for_entry_processes_runtime_queue(tmp_path: Path, monkeypatch) -> None:
+    storage = tmp_path / "runtime.json"
+    manager = OntologyManager(
+        {"Root Theory": {"queries": ["root aging"], "target": 3}},
+        storage_path=storage,
+    )
+
+    class _StateStore:
+        def __init__(self) -> None:
+            self.data: Dict[str, Any] = {}
+
+        def get(self, _key: str) -> Dict[str, Any]:
+            return {}
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.data[key] = dict(value)
+
+        def write_summary(self, value: Mapping[str, Any]) -> None:
+            self.data["summary"] = dict(value)
+
+    class _Decision:
+        def __init__(self, identifier: str) -> None:
+            self.identifier = identifier
+            self.accepted = True
+
+        def to_record(self, *, threshold: float) -> Dict[str, Any]:
+            return {"accepted": True, "score": 1.0, "threshold": threshold}
+
+    class _AcceptAllFilter:
+        def __init__(self, *args, **kwargs) -> None:
+            self.threshold = 0.0
+
+        def apply(self, papers, *, context, existing_decisions):
+            del context, existing_decisions
+            decisions = [_Decision(paper.identifier) for paper in papers]
+            return list(papers), decisions
+
+    class _StubRetriever:
+        def __init__(self) -> None:
+            self.state_store = _StateStore()
+            self.calls: List[Tuple[str | None, Sequence[str]]] = []
+
+        def collect_queries(
+            self,
+            queries: Sequence[str],
+            *,
+            target: int | None = None,
+            providers: Sequence[str] | None = None,
+            state_key: str | None,
+            resume: bool,
+            min_citation_count: int | None = None,
+            prefer_reviews: bool = False,
+            sort_by_citations: bool = False,
+        ) -> Any:
+            del target, providers, resume, min_citation_count, prefer_reviews, sort_by_citations
+            query_list = [str(item) for item in queries]
+            self.calls.append((state_key, query_list))
+            if state_key and "::runtime::" in state_key:
+                papers = [
+                    PaperMetadata(
+                        identifier="child-2",
+                        title="Child runtime paper",
+                        authors=("Author",),
+                        abstract="",
+                        source="Test",
+                    )
+                ]
+            elif "child followup query" in query_list:
+                papers = [
+                    PaperMetadata(
+                        identifier="child-1",
+                        title="Child theory paper",
+                        authors=("Author",),
+                        abstract="",
+                        source="Test",
+                    )
+                ]
+            else:
+                papers = [
+                    PaperMetadata(
+                        identifier="root-1",
+                        title="Root theory paper",
+                        authors=("Author",),
+                        abstract="",
+                        source="Test",
+                    )
+                ]
+            summary = {
+                "total_unique": len(papers),
+                "providers": {"stub": len(papers)},
+                "queries": query_list,
+            }
+            return SimpleNamespace(papers=papers, summary=summary)
+
+    class _StubSession:
+        def selected_queries(self) -> Sequence[str]:
+            return ["child followup query"]
+
+    class _StubExpander:
+        def __init__(self) -> None:
+            self.settings = QueryExpansionSettings(enabled=True, use_gpt=False, use_embeddings=False)
+
+        def settings_for(self, _override: Mapping[str, Any] | None) -> QueryExpansionSettings:
+            return self.settings
+
+        def expand(self, *args, **kwargs) -> _StubSession:
+            return _StubSession()
+
+        def record_performance(self, *args, **kwargs) -> None:
+            return None
+
+    def _stub_promote(**kwargs) -> List[str]:
+        ontology_manager = kwargs["ontology_manager"]
+        parent_name = kwargs["node_name"]
+        spec = RuntimeNodeSpec(
+            name="Child Theory",
+            parent=parent_name,
+            config={"queries": ["child followup query"], "target": 1},
+            keywords=("child",),
+            metadata={},
+            provenance={"source": "test"},
+        )
+        ontology_manager.append_child(parent_name, spec)
+        return [spec.name]
+
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", _AcceptAllFilter)
+    monkeypatch.setattr(collect_theories, "_promote_successful_queries", _stub_promote)
+
+    retriever = _StubRetriever()
+    expander = _StubExpander()
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="Root Theory",
+        config={"queries": ["root aging"], "target": 3},
+        context={"base_query": "root aging"},
+        providers=None,
+        resume=False,
+        state_prefix="root",
+        ontology_manager=manager,
+        expander=expander,
+        default_expansion=QueryExpansionSettings(enabled=True, use_gpt=False, use_embeddings=False),
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    sub_summaries = summary.get("subtheories", {})
+    assert "Child Theory" in sub_summaries, "Runtime child should be processed"
+    child_summary = sub_summaries["Child Theory"]
+    assert child_summary.get("target") == 1
+    assert any(state_key and "::runtime::" in state_key for state_key, _ in retriever.calls)
+    identifiers = {paper.identifier for paper in papers}
+    assert "child-1" in identifiers
+    assert "child-2" in identifiers
 
 
 def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
