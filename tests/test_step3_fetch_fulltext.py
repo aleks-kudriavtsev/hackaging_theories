@@ -300,3 +300,55 @@ def test_process_records_inner_prefetches_pmc(monkeypatch: pytest.MonkeyPatch) -
 
     pmc_failures = [failure for failure in failures if failure["reason"] == "pmc_missing_body"]
     assert any(failure["pmcid"] == "PMC222" for failure in pmc_failures)
+
+
+def test_process_records_inner_handles_pmc_batch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_pubmed(pmid: str, **_: Any) -> ET.Element:
+        return ET.fromstring(
+            f"""
+            <PubmedArticle>
+              <MedlineCitation>
+                <ArticleIdList>
+                  <ArticleId IdType=\"pmc\">PMC{pmid}</ArticleId>
+                </ArticleIdList>
+              </MedlineCitation>
+            </PubmedArticle>
+            """
+        )
+
+    monkeypatch.setattr(step3, "fetch_pubmed_xml", _fake_fetch_pubmed)
+
+    def _fail_batch(*_: Any, **__: Any) -> Tuple[Dict[str, str], Set[str]]:
+        raise step3.EntrezRequestError("boom", status=500)
+
+    monkeypatch.setattr(step3, "fetch_pmc_fulltexts_batch", _fail_batch)
+
+    def _fail_single(*_: Any, **__: Any) -> None:
+        raise AssertionError("fetch_pmc_fulltext should not be called when batch fails")
+
+    monkeypatch.setattr(step3, "fetch_pmc_fulltext", _fail_single)
+
+    records: List[Dict[str, Any]] = [
+        {"pmid": "101", "id": "record-101", "title": "One"},
+        {"pmid": "202", "id": "record-202", "title": "Two"},
+    ]
+    batch = list(enumerate(records))
+
+    enriched_pairs, failures = step3._process_records_inner(
+        batch,
+        total=2,
+        prefix="[worker-test]",
+        rate_limiter=None,
+        max_attempts=1,
+        retry_wait=0.5,
+        entrez_batch_size=5,
+    )
+
+    enriched_map = {index: rec for index, rec in enriched_pairs}
+    assert enriched_map[0]["full_text"] is None
+    assert enriched_map[0]["pdf_processing"]["failure_reason"] == "pmc_fetch_failed"
+
+    pmc_failures = [failure for failure in failures if failure["reason"] == "pmc_fetch_failed"]
+    assert {failure["pmcid"] for failure in pmc_failures} == {"PMC101", "PMC202"}
