@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import socket
 import sys
@@ -19,6 +20,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, asdict
 from typing import Dict, Iterable, List, Mapping
+
+
+logger = logging.getLogger(__name__)
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -224,10 +228,117 @@ def build_filter_param(extra_filters: Iterable[str] | None = None) -> str:
     return ",".join(filters)
 
 
+class RateLimiter:
+    """Simple rate limiter shared across pagination requests."""
+
+    def __init__(self, interval: float) -> None:
+        self.interval = max(0.0, interval)
+        self._last_called = 0.0
+
+    def wait(self) -> None:
+        if self.interval <= 0:
+            return
+        now = time.monotonic()
+        elapsed = now - self._last_called
+        if elapsed < self.interval:
+            time.sleep(self.interval - elapsed)
+            now = time.monotonic()
+        self._last_called = now
+
+
+def _load_env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise SystemExit(f"Environment variable {name} must be a number, got {value!r}.") from exc
+
+
+def _load_env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise SystemExit(f"Environment variable {name} must be an integer, got {value!r}.") from exc
+
+
+def _request_with_retries(
+    request: urllib.request.Request,
+    *,
+    rate_limiter: RateLimiter,
+    max_attempts: int,
+    retry_wait: float,
+) -> Mapping[str, object]:
+    attempts = max(1, max_attempts)
+    delay = max(0.1, retry_wait)
+    attempt = 1
+    while True:
+        rate_limiter.wait()
+        try:
+            with urllib.request.urlopen(request) as response:  # nosec - OpenAlex API
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            error_body = exc.read().decode("utf-8", errors="ignore")
+            retriable = status == 429 or 500 <= status < 600
+            if retriable and attempt < attempts:
+                logger.warning(
+                    "OpenAlex returned HTTP %s, retrying in %.2f seconds (%d/%d)",
+                    status,
+                    delay,
+                    attempt,
+                    attempts,
+                )
+                time.sleep(delay)
+                delay *= 2
+                attempt += 1
+                continue
+            if retriable:
+                message = (
+                    f"OpenAlex rate limit triggered after {attempts} attempts (HTTP {status}). "
+                    "Increase --request-interval, --max-attempts or --retry-wait and try again."
+                )
+                logger.warning(message)
+                raise RuntimeError(message) from exc
+            raise RuntimeError(
+                f"OpenAlex request failed ({status}): {error_body or exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            reason_text = str(reason).lower()
+            temporary = False
+            if isinstance(reason, socket.timeout):
+                temporary = True
+            elif isinstance(reason, TimeoutError):
+                temporary = True
+            elif "timeout" in reason_text or "temporary failure in name resolution" in reason_text:
+                temporary = True
+            if temporary and attempt < attempts:
+                logger.warning(
+                    "OpenAlex request error '%s', retrying in %.2f seconds (%d/%d)",
+                    reason,
+                    delay,
+                    attempt,
+                    attempts,
+                )
+                time.sleep(delay)
+                delay *= 2
+                attempt += 1
+                continue
+            raise RuntimeError(f"OpenAlex request failed: {reason}") from exc
+
+
 def fetch_openalex(
     term: str,
     per_page: int,
-    delay: float,
+    rate_limiter: RateLimiter,
+    *,
+    max_attempts: int,
+    retry_wait: float,
     extra_filters: Iterable[str] | None = None,
 ) -> List[Mapping[str, object]]:
     cursor = "*"
@@ -258,43 +369,12 @@ def fetch_openalex(
         }
         url = f"{OPENALEX_WORKS_URL}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
-        max_attempts = 5
-        attempt = 0
-        backoff = max(delay, 0.1)
-        try:
-            while True:
-                attempt += 1
-                try:
-                    with urllib.request.urlopen(request) as response:  # nosec - OpenAlex API
-                        payload = json.loads(response.read().decode("utf-8"))
-                    break
-                except urllib.error.HTTPError as exc:
-                    retryable = exc.code == 429 or 500 <= exc.code < 600
-                    if retryable and attempt < max_attempts:
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    raise
-                except urllib.error.URLError as exc:
-                    reason = exc.reason
-                    reason_text = str(reason).lower()
-                    temporary = False
-                    if isinstance(reason, socket.timeout):
-                        temporary = True
-                    elif isinstance(reason, TimeoutError):
-                        temporary = True
-                    elif "timeout" in reason_text or "temporary failure in name resolution" in reason_text:
-                        temporary = True
-                    if temporary and attempt < max_attempts:
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    raise
-        except urllib.error.HTTPError as exc:  # pragma: no cover - network guard
-            body = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"OpenAlex request failed ({exc.code}): {body or exc.reason}") from exc
-        except urllib.error.URLError as exc:  # pragma: no cover - network guard
-            raise RuntimeError(f"OpenAlex request failed: {exc.reason}") from exc
+        payload = _request_with_retries(
+            request,
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
+        )
         items = payload.get("results") if isinstance(payload, Mapping) else None
         if isinstance(items, list):
             results.extend(item for item in items if isinstance(item, Mapping))
@@ -303,23 +383,27 @@ def fetch_openalex(
         if isinstance(meta, Mapping):
             next_cursor = meta.get("next_cursor")
         cursor = next_cursor if isinstance(next_cursor, str) and next_cursor else None
-        if cursor:
-            time.sleep(delay)
     return results
 
 
 def collect_records(
     terms: Iterable[str],
     per_page: int,
-    delay: float,
+    request_interval: float,
+    *,
+    max_attempts: int,
+    retry_wait: float,
     extra_filters: Iterable[str] | None = None,
 ) -> List[OpenAlexRecord]:
     seen: Dict[str, Mapping[str, object]] = {}
+    rate_limiter = RateLimiter(request_interval)
     for term in terms:
         fetched = fetch_openalex(
             term,
             per_page=per_page,
-            delay=delay,
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
             extra_filters=extra_filters,
         )
         for item in fetched:
@@ -344,11 +428,41 @@ def main(argv: List[str] | None = None) -> int:
         default=200,
         help="Number of results to request per page (max 200).",
     )
+    default_interval = _load_env_float("OPENALEX_REQUEST_INTERVAL", 0.2)
+    parser.add_argument(
+        "--request-interval",
+        type=float,
+        default=default_interval,
+        help=(
+            "Seconds to wait between OpenAlex API calls (env OPENALEX_REQUEST_INTERVAL). "
+            "Increase this if you encounter rate limit errors."
+        ),
+    )
     parser.add_argument(
         "--delay",
+        dest="request_interval",
         type=float,
-        default=0.2,
-        help="Delay between paginated API requests (seconds).",
+        help=argparse.SUPPRESS,
+    )
+    default_attempts = _load_env_int("OPENALEX_MAX_ATTEMPTS", 5)
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=default_attempts,
+        help=(
+            "Maximum number of retries when OpenAlex returns HTTP 429/5xx responses "
+            "(env OPENALEX_MAX_ATTEMPTS)."
+        ),
+    )
+    default_retry_wait = _load_env_float("OPENALEX_RETRY_WAIT", 1.0)
+    parser.add_argument(
+        "--retry-wait",
+        type=float,
+        default=default_retry_wait,
+        help=(
+            "Initial backoff delay (seconds) applied after a rate limit response; doubles "
+            "on each retry (env OPENALEX_RETRY_WAIT)."
+        ),
     )
     parser.add_argument(
         "--filter",
@@ -371,7 +485,9 @@ def main(argv: List[str] | None = None) -> int:
         records = collect_records(
             args.terms,
             per_page=args.per_page,
-            delay=args.delay,
+            request_interval=args.request_interval,
+            max_attempts=args.max_attempts,
+            retry_wait=args.retry_wait,
             extra_filters=args.filters,
         )
     except RuntimeError as error:
