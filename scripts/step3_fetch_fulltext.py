@@ -32,6 +32,7 @@ import os
 import queue
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +42,44 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+
+class RateLimiter:
+    """Process-safe rate limiter for Entrez API requests."""
+
+    def __init__(
+        self,
+        interval: float,
+        *,
+        state: multiprocessing.Value | None = None,
+        lock: multiprocessing.synchronize.Lock | None = None,
+    ) -> None:
+        self.interval = max(0.0, interval)
+        self._state = state or multiprocessing.Value("d", 0.0)
+        self._lock = lock or multiprocessing.Lock()
+
+    def wait(self) -> None:
+        """Pause until the shared interval since the last request has elapsed."""
+
+        if self.interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            last_call = self._state.value
+            elapsed = now - last_call
+            if elapsed < self.interval:
+                sleep_for = self.interval - elapsed
+                time.sleep(sleep_for)
+                now = time.monotonic()
+            self._state.value = now
+
+
+class EntrezRequestError(RuntimeError):
+    """Raised when an Entrez request fails with HTTP/URL errors."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def entrez_request(path: str, params: Dict[str, str]) -> bytes:
@@ -61,11 +100,52 @@ def entrez_request(path: str, params: Dict[str, str]) -> bytes:
             return response.read()
     except urllib.error.HTTPError as exc:  # pragma: no cover - network edge case
         error_body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(
-            f"Entrez request failed ({exc.code}): {error_body or exc.reason}"
-        ) from exc
+        message = f"Entrez request failed ({exc.code}): {error_body or exc.reason}"
+        raise EntrezRequestError(message, status=exc.code) from exc
     except urllib.error.URLError as exc:  # pragma: no cover - network edge case
-        raise RuntimeError(f"Entrez request failed: {exc.reason}") from exc
+        raise EntrezRequestError(f"Entrez request failed: {exc.reason}") from exc
+
+
+def _entrez_with_retries(
+    path: str,
+    params: Dict[str, str],
+    *,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
+    context: str,
+) -> bytes:
+    attempts = max(1, max_attempts)
+    delay = max(0.1, retry_wait)
+    attempt = 1
+    while True:
+        if rate_limiter is not None:
+            rate_limiter.wait()
+        try:
+            return entrez_request(path, params)
+        except EntrezRequestError as exc:
+            status = exc.status or 0
+            retriable = status == 429 or 500 <= status < 600
+            if not retriable:
+                raise
+            if attempt >= attempts:
+                message = (
+                    f"{context}: Entrez rate limit triggered after {attempts} attempts "
+                    f"(HTTP {status}). Increase --entrez-interval or retry later."
+                )
+                logger.warning(message)
+                raise RuntimeError(message) from exc
+            logger.warning(
+                "%s: Entrez returned HTTP %s, retrying in %.2f seconds (%d/%d)",
+                context,
+                status,
+                delay,
+                attempt,
+                attempts,
+            )
+            time.sleep(delay)
+            delay *= 2
+            attempt += 1
 
 
 def extract_pmcid(pubmed_xml: ET.Element) -> Optional[str]:
@@ -77,10 +157,20 @@ def extract_pmcid(pubmed_xml: ET.Element) -> Optional[str]:
     return None
 
 
-def fetch_pubmed_xml(pmid: str) -> Optional[ET.Element]:
-    data = entrez_request(
+def fetch_pubmed_xml(
+    pmid: str,
+    *,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
+) -> Optional[ET.Element]:
+    data = _entrez_with_retries(
         "efetch.fcgi",
         {"db": "pubmed", "id": pmid, "retmode": "xml"},
+        rate_limiter=rate_limiter,
+        max_attempts=max_attempts,
+        retry_wait=retry_wait,
+        context=f"PMID {pmid}",
     )
     try:
         root = ET.fromstring(data)
@@ -90,10 +180,20 @@ def fetch_pubmed_xml(pmid: str) -> Optional[ET.Element]:
     return article
 
 
-def fetch_pmc_fulltext(pmcid: str) -> Optional[str]:
-    data = entrez_request(
+def fetch_pmc_fulltext(
+    pmcid: str,
+    *,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
+) -> Optional[str]:
+    data = _entrez_with_retries(
         "efetch.fcgi",
         {"db": "pmc", "id": pmcid, "retmode": "xml"},
+        rate_limiter=rate_limiter,
+        max_attempts=max_attempts,
+        retry_wait=retry_wait,
+        context=f"PMCID {pmcid}",
     )
     try:
         root = ET.fromstring(data)
@@ -276,6 +376,9 @@ def _process_record(
     index: int,
     total: int,
     worker_prefix: str,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
 ) -> Tuple[Dict, Optional[Dict]]:
     pmid = record.get("pmid")
     full_text = None
@@ -286,12 +389,22 @@ def _process_record(
     record.pop("pdf_processing", None)
 
     if pmid:
-        article_xml = fetch_pubmed_xml(pmid)
+        article_xml = fetch_pubmed_xml(
+            pmid,
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
+        )
         if article_xml is not None:
             pmcid = extract_pmcid(article_xml)
             record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
     if pmcid:
-        full_text = fetch_pmc_fulltext(pmcid)
+        full_text = fetch_pmc_fulltext(
+            pmcid,
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
+        )
         if full_text:
             full_text_source = "pmc"
     record["pmcid"] = pmcid
@@ -371,6 +484,9 @@ def _process_batch(
     batch: List[Tuple[int, Dict]],
     result_queue: Any,
     total: int,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
 ) -> None:
     prefix = f"[worker-{worker_id}]"
     enriched_batch: List[Tuple[int, Dict]] = []
@@ -378,7 +494,15 @@ def _process_batch(
     error_message: Optional[str] = None
     try:
         for index, record in batch:
-            enriched_record, failure = _process_record(record, index, total, prefix)
+            enriched_record, failure = _process_record(
+                record,
+                index,
+                total,
+                prefix,
+                rate_limiter,
+                max_attempts,
+                retry_wait,
+            )
             enriched_batch.append((index, enriched_record))
             if failure:
                 failures_batch.append(failure)
@@ -427,18 +551,45 @@ def enrich_records(
     *,
     processes: int = 1,
     concurrency: str = "process",
+    rate_limiter: RateLimiter | None = None,
+    entrez_interval: float = 0.34,
+    entrez_max_attempts: int = 5,
+    entrez_retry_wait: float | None = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     records_list = list(records)
     total = len(records_list)
     if total == 0:
         return [], []
 
+    if rate_limiter is not None:
+        limiter = rate_limiter
+    else:
+        if concurrency == "process":
+            ctx = multiprocessing.get_context("spawn")
+            limiter = RateLimiter(
+                entrez_interval,
+                state=ctx.Value("d", 0.0),
+                lock=ctx.Lock(),
+            )
+        else:
+            limiter = RateLimiter(entrez_interval)
+    retry_wait = entrez_retry_wait if entrez_retry_wait is not None else max(1.0, limiter.interval)
+    attempts = max(1, entrez_max_attempts)
+
     worker_count = max(1, min(processes, total))
     if worker_count == 1:
         enriched: Dict[int, Dict] = {}
         failures: List[Dict] = []
         for index, record in enumerate(records_list):
-            enriched_record, failure = _process_record(record, index, total, "[worker-1]")
+            enriched_record, failure = _process_record(
+                record,
+                index,
+                total,
+                "[worker-1]",
+                limiter,
+                attempts,
+                retry_wait,
+            )
             enriched[index] = enriched_record
             if failure:
                 failures.append(failure)
@@ -459,6 +610,9 @@ def enrich_records(
                     batch,
                     result_queue,
                     total,
+                    limiter,
+                    attempts,
+                    retry_wait,
                 )
                 for worker_id, batch in enumerate(batches, start=1)
             ]
@@ -469,10 +623,19 @@ def enrich_records(
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
         processes_list: List[multiprocessing.Process] = []
+        shared_limiter = limiter
         for worker_id, batch in enumerate(batches, start=1):
             process = ctx.Process(
                 target=_process_batch,
-                args=(worker_id, batch, result_queue, total),
+                args=(
+                    worker_id,
+                    batch,
+                    result_queue,
+                    total,
+                    shared_limiter,
+                    attempts,
+                    retry_wait,
+                ),
             )
             process.start()
             processes_list.append(process)
@@ -517,6 +680,33 @@ def main(argv: List[str] | None = None) -> int:
         default="process",
         help="Concurrency model for workers (default: process).",
     )
+    parser.add_argument(
+        "--entrez-interval",
+        type=float,
+        default=None,
+        help=(
+            "Minimum delay in seconds between Entrez requests. "
+            "Defaults to PUBMED_RATE_INTERVAL or 0.34 when unset."
+        ),
+    )
+    parser.add_argument(
+        "--entrez-max-attempts",
+        type=int,
+        default=None,
+        help=(
+            "Maximum retry attempts for Entrez HTTP 429/5xx responses. "
+            "Defaults to PUBMED_MAX_ATTEMPTS or 5 when unset."
+        ),
+    )
+    parser.add_argument(
+        "--entrez-retry-wait",
+        type=float,
+        default=None,
+        help=(
+            "Initial wait time for Entrez retry backoff. Defaults to the "
+            "effective Entrez interval or PUBMED_RETRY_WAIT when provided."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.input):
@@ -531,10 +721,61 @@ def main(argv: List[str] | None = None) -> int:
     if requested_processes is None:
         cpu_count = os.cpu_count() or 1
         requested_processes = cpu_count if total_records > 100 else 1
+    def _env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Invalid value for %s=%s; falling back to %.2f", name, raw, default)
+            return default
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("Invalid value for %s=%s; falling back to %d", name, raw, default)
+            return default
+
+    entrez_interval = (
+        args.entrez_interval
+        if args.entrez_interval is not None
+        else _env_float("PUBMED_RATE_INTERVAL", 0.34)
+    )
+    entrez_max_attempts = (
+        args.entrez_max_attempts
+        if args.entrez_max_attempts is not None
+        else _env_int("PUBMED_MAX_ATTEMPTS", 5)
+    )
+    entrez_retry_wait = (
+        args.entrez_retry_wait
+        if args.entrez_retry_wait is not None
+        else os.environ.get("PUBMED_RETRY_WAIT")
+    )
+    retry_wait_value = None
+    if entrez_retry_wait is not None:
+        try:
+            retry_wait_value = float(entrez_retry_wait)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid value for PUBMED_RETRY_WAIT=%s; using interval %.2f",
+                entrez_retry_wait,
+                entrez_interval,
+            )
+            retry_wait_value = None
+
     enriched, failures = enrich_records(
         records,
         processes=requested_processes,
         concurrency=args.concurrency,
+        rate_limiter=None,
+        entrez_interval=entrez_interval,
+        entrez_max_attempts=entrez_max_attempts,
+        entrez_retry_wait=retry_wait_value,
     )
 
     output_dir = os.path.dirname(args.output)
