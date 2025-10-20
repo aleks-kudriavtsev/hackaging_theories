@@ -16,6 +16,35 @@ def _raise_remote_disconnected(*args: Any, **kwargs: Any) -> None:  # pragma: no
     raise http.client.RemoteDisconnected("Remote end closed connection")
 
 
+def test_entrez_with_retries_handles_remote_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+
+    def _fake_entrez_request(path: str, params: Dict[str, str]) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise http.client.RemoteDisconnected("Remote end closed connection")
+        return b"<ok/>"
+
+    monkeypatch.setattr(step3, "entrez_request", _fake_entrez_request)
+
+    sleeps: List[float] = []
+    monkeypatch.setattr(step3.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = step3._entrez_with_retries(
+        "efetch.fcgi",
+        {"db": "pubmed"},
+        rate_limiter=None,
+        max_attempts=3,
+        retry_wait=0.01,
+        context="test",
+    )
+
+    assert result == b"<ok/>"
+    assert call_count == 2
+    assert sleeps == [pytest.approx(0.1)]
+
+
 def test_download_binary_handles_remote_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_remote_disconnected)
 

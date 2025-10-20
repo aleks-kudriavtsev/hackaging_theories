@@ -121,6 +121,13 @@ def _entrez_with_retries(
     attempts = max(1, max_attempts)
     delay = max(0.1, retry_wait)
     attempt = 1
+    transient_errors: Tuple[type[BaseException], ...] = (
+        http.client.RemoteDisconnected,
+        ConnectionResetError,
+        TimeoutError,
+        socket.timeout,
+        ssl.SSLError,
+    )
     while True:
         if rate_limiter is not None:
             rate_limiter.wait()
@@ -146,9 +153,25 @@ def _entrez_with_retries(
                 attempt,
                 attempts,
             )
-            time.sleep(delay)
-            delay *= 2
-            attempt += 1
+        except transient_errors as exc:
+            if attempt >= attempts:
+                message = (
+                    f"{context}: Entrez connection failed after {attempts} attempts "
+                    f"({exc.__class__.__name__}: {exc}). Increase --entrez-interval or retry later."
+                )
+                logger.warning(message)
+                raise RuntimeError(message) from exc
+            logger.warning(
+                "%s: Entrez connection error (%s), retrying in %.2f seconds (%d/%d)",
+                context,
+                exc.__class__.__name__,
+                delay,
+                attempt,
+                attempts,
+            )
+        time.sleep(delay)
+        delay *= 2
+        attempt += 1
 
 
 def extract_pmcid(pubmed_xml: ET.Element) -> Optional[str]:
