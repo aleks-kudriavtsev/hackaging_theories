@@ -496,8 +496,14 @@ def _process_record(
     record.pop("pdf_processing", None)
     pdf_processing_meta: Dict[str, Any] = {}
 
+    def _note_pdf_failure(reason: str) -> None:
+        nonlocal pdf_processing_meta
+        pdf_processing_meta = _merge_pdf_processing(
+            pdf_processing_meta, {"failure_reason": reason}
+        )
+
     if pubmed_fetch_failed:
-        pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+        _note_pdf_failure("pubmed_fetch_failed")
 
     article_xml = None
     if pmid and pmcid is None and not pubmed_fetch_failed:
@@ -510,7 +516,7 @@ def _process_record(
             )
         except (EntrezRequestError, RuntimeError) as exc:
             logger.warning("Failed to fetch PubMed XML for %s: %s", pmid, exc)
-            pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+            _note_pdf_failure("pubmed_fetch_failed")
         else:
             if article_xml is not None:
                 pmcid = extract_pmcid(article_xml)
@@ -534,7 +540,7 @@ def _process_record(
                 )
             except (EntrezRequestError, RuntimeError) as exc:
                 logger.warning("Failed to fetch PMC full text for %s: %s", pmcid, exc)
-                pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
+                _note_pdf_failure("pmc_fetch_failed")
                 full_text = None
             if full_text:
                 full_text_source = "pmc"

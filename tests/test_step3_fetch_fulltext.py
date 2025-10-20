@@ -147,6 +147,33 @@ def test_process_record_handles_pubmed_fetch_failure(monkeypatch: pytest.MonkeyP
     assert failure is None
 
 
+def test_process_record_handles_pmc_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_entrez(*args: Any, **kwargs: Any) -> Any:
+        raise step3.EntrezRequestError("boom")
+
+    monkeypatch.setattr(step3, "fetch_pmc_fulltext", _raise_entrez)
+
+    record = {
+        "id": "test-record",
+        "title": "Example",
+    }
+
+    enriched, failure = step3._process_record(
+        record,
+        index=0,
+        total=1,
+        worker_prefix="[worker-test]",
+        rate_limiter=None,
+        max_attempts=1,
+        retry_wait=1.0,
+        resolved_pmcid="PMC123",
+    )
+
+    assert enriched["full_text"] is None
+    assert enriched["pdf_processing"]["failure_reason"] == "pmc_fetch_failed"
+    assert failure is None
+
+
 def test_fetch_pmc_fulltexts_batch_handles_missing_body(monkeypatch: pytest.MonkeyPatch) -> None:
     response_xml = """
     <pmc-articleset>
