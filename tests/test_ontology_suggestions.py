@@ -99,6 +99,7 @@ def test_merge_query_suggestions_updates_targets() -> None:
     beta_entry = targets["Group Beta"]
     assert beta_entry["target"] == 3
     assert beta_entry["suggested_queries"] == ["group beta aging"]
+    assert beta_entry["queries"] == ["group beta aging"], "Suggestions should seed missing queries"
 
     assert applied["Group Alpha"]["suggested_queries"] == [
         "existing alpha",
@@ -108,3 +109,4 @@ def test_merge_query_suggestions_updates_targets() -> None:
         "first theory aging"
     ]
     assert applied["Group Beta"]["suggested_queries"] == ["group beta aging"]
+    assert applied["Group Beta"]["queries"] == ["group beta aging"]

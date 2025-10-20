@@ -212,6 +212,11 @@ def merge_query_suggestions(
             config["suggested_queries"] = loader_suggestions
             node_applied["suggested_queries"] = loader_suggestions
 
+        existing_query_templates = _normalise_strings(config.get("queries"))
+        if not existing_query_templates and final_suggestions:
+            config["queries"] = list(final_suggestions)
+            node_applied["queries"] = list(final_suggestions)
+
         subtargets = config.get("subtheories")
         child_suggestions = suggestion_entry.get("subtheories")
         if isinstance(subtargets, MutableMapping) and isinstance(child_suggestions, Mapping):
