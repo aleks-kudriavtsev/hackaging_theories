@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
-from scripts import collect_theories
+if __package__:
+    from . import collect_theories
+else:
+    import collect_theories
 
 
 def _normalise_doi(doi: str | None) -> str | None:
