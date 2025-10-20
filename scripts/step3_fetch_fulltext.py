@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -183,6 +183,106 @@ def fetch_pubmed_xml(
     return article
 
 
+_PMC_BLOCK_TAGS = {
+    "p",
+    "sec",
+    "title",
+    "abstract",
+    "list-item",
+    "caption",
+    "fig",
+    "table-wrap",
+}
+
+
+def _collect_pmc_text(node: ET.Element, chunks: List[str]) -> None:
+    if node.text:
+        chunks.append(node.text)
+    for child in node:
+        _collect_pmc_text(child, chunks)
+    if node.tag in _PMC_BLOCK_TAGS:
+        chunks.append("\n\n")
+    if node.tail:
+        chunks.append(node.tail)
+
+
+def _extract_pmc_body_text(body: ET.Element) -> Optional[str]:
+    text_chunks: List[str] = []
+    _collect_pmc_text(body, text_chunks)
+    raw_text = "".join(text_chunks)
+    normalized = _normalize_text(raw_text)
+    return normalized or None
+
+
+def fetch_pmc_fulltexts_batch(
+    pmc_ids: Iterable[str],
+    *,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
+    chunk_size: int = 10,
+) -> Tuple[Dict[str, str], Set[str]]:
+    unique_ids: List[str] = []
+    seen: Set[str] = set()
+    for pmcid in pmc_ids:
+        if not pmcid:
+            continue
+        if pmcid not in seen:
+            seen.add(pmcid)
+            unique_ids.append(pmcid)
+
+    if not unique_ids:
+        return {}, set()
+
+    resolved_texts: Dict[str, str] = {}
+    missing_bodies: Set[str] = set()
+    chunk_size = max(1, chunk_size)
+
+    for start in range(0, len(unique_ids), chunk_size):
+        chunk = unique_ids[start : start + chunk_size]
+        context = (
+            f"PMCID {chunk[0]}"
+            if len(chunk) == 1
+            else f"PMCID batch {chunk[0]}-{chunk[-1]}"
+        )
+        data = _entrez_with_retries(
+            "efetch.fcgi",
+            {"db": "pmc", "id": ",".join(chunk), "retmode": "xml"},
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
+            context=context,
+        )
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError as err:  # pragma: no cover - defensive guard
+            raise RuntimeError("Unable to parse PMC XML response") from err
+
+        articles = root.findall(".//article")
+        for article in articles:
+            pmcid_node = article.find(".//article-id[@pub-id-type='pmcid']")
+            if pmcid_node is None:
+                pmcid_node = article.find(".//article-id[@pub-id-type='pmc']")
+            pmcid_value = pmcid_node.text.strip() if pmcid_node is not None and pmcid_node.text else None
+            if not pmcid_value:
+                continue
+            body = article.find("./body")
+            if body is None:
+                missing_bodies.add(pmcid_value)
+                continue
+            text = _extract_pmc_body_text(body)
+            if text:
+                resolved_texts[pmcid_value] = text
+            else:
+                missing_bodies.add(pmcid_value)
+
+        for requested in chunk:
+            if requested not in resolved_texts and requested not in missing_bodies:
+                missing_bodies.add(requested)
+
+    return resolved_texts, missing_bodies
+
+
 def fetch_pmc_fulltext(
     pmcid: str,
     *,
@@ -190,51 +290,16 @@ def fetch_pmc_fulltext(
     max_attempts: int,
     retry_wait: float,
 ) -> Optional[str]:
-    data = _entrez_with_retries(
-        "efetch.fcgi",
-        {"db": "pmc", "id": pmcid, "retmode": "xml"},
+    resolved, missing = fetch_pmc_fulltexts_batch(
+        [pmcid],
         rate_limiter=rate_limiter,
         max_attempts=max_attempts,
         retry_wait=retry_wait,
-        context=f"PMCID {pmcid}",
+        chunk_size=1,
     )
-    try:
-        root = ET.fromstring(data)
-    except ET.ParseError as err:  # pragma: no cover - defensive guard
-        raise RuntimeError("Unable to parse PMC XML response") from err
-    body = root.find(".//body")
-    if body is None:
+    if pmcid in missing:
         return None
-
-    block_tags = {
-        "p",
-        "sec",
-        "title",
-        "abstract",
-        "list-item",
-        "caption",
-        "fig",
-        "table-wrap",
-    }
-
-    def collect_text(node: ET.Element, chunks: List[str]) -> None:
-        if node.text:
-            chunks.append(node.text)
-        for child in node:
-            collect_text(child, chunks)
-        if node.tag in block_tags:
-            chunks.append("\n\n")
-        if node.tail:
-            chunks.append(node.tail)
-
-    text_chunks: List[str] = []
-    collect_text(body, text_chunks)
-    raw_text = "".join(text_chunks)
-    normalized = re.sub(r"[ \t\r\f\v]+", " ", raw_text)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    normalized = re.sub(r" ?\n", "\n", normalized)
-    normalized = normalized.strip()
-    return normalized or None
+    return resolved.get(pmcid)
 
 
 try:  # pragma: no cover - optional dependency
@@ -259,6 +324,7 @@ logger = logging.getLogger(__name__)
 def _normalize_text(text: str) -> str:
     normalized = re.sub(r"[ \t\r\f\v]+", " ", text)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = re.sub(r"\n[ \t]+", "\n", normalized)
     normalized = re.sub(r" ?\n", "\n", normalized)
     return normalized.strip()
 
@@ -413,17 +479,28 @@ def _process_record(
     rate_limiter: RateLimiter | None,
     max_attempts: int,
     retry_wait: float,
+    *,
+    resolved_pmcid: Optional[str] = None,
+    resolved_pubmed_xml: Optional[str] = None,
+    pubmed_fetch_failed: bool = False,
+    pmc_full_text: Optional[str] = None,
+    pmc_missing_body: bool = False,
+    pmc_prefetched: bool = False,
 ) -> Tuple[Dict, Optional[Dict]]:
     pmid = record.get("pmid")
     full_text = None
-    pmcid = None
+    pmcid = resolved_pmcid
     ocr_status = "not_applicable"
     full_text_source = None
     openalex_pdf_url = None
     record.pop("pdf_processing", None)
     pdf_processing_meta: Dict[str, Any] = {}
 
-    if pmid:
+    if pubmed_fetch_failed:
+        pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+
+    article_xml = None
+    if pmid and pmcid is None and not pubmed_fetch_failed:
         try:
             article_xml = fetch_pubmed_xml(
                 pmid,
@@ -434,24 +511,36 @@ def _process_record(
         except (EntrezRequestError, RuntimeError) as exc:
             logger.warning("Failed to fetch PubMed XML for %s: %s", pmid, exc)
             pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
-            article_xml = None
-        if article_xml is not None:
-            pmcid = extract_pmcid(article_xml)
-            record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
-    if pmcid:
-        try:
-            full_text = fetch_pmc_fulltext(
-                pmcid,
-                rate_limiter=rate_limiter,
-                max_attempts=max_attempts,
-                retry_wait=retry_wait,
-            )
-        except (EntrezRequestError, RuntimeError) as exc:
-            logger.warning("Failed to fetch PMC full text for %s: %s", pmcid, exc)
-            pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
-            full_text = None
-        if full_text:
-            full_text_source = "pmc"
+        else:
+            if article_xml is not None:
+                pmcid = extract_pmcid(article_xml)
+                resolved_pubmed_xml = ET.tostring(article_xml, encoding="unicode")
+
+    if resolved_pubmed_xml:
+        record.setdefault("pubmed_xml", resolved_pubmed_xml)
+
+    if pmcid and full_text is None:
+        if pmc_prefetched:
+            if pmc_full_text:
+                full_text = pmc_full_text
+                full_text_source = "pmc"
+        else:
+            try:
+                full_text = fetch_pmc_fulltext(
+                    pmcid,
+                    rate_limiter=rate_limiter,
+                    max_attempts=max_attempts,
+                    retry_wait=retry_wait,
+                )
+            except (EntrezRequestError, RuntimeError) as exc:
+                logger.warning("Failed to fetch PMC full text for %s: %s", pmcid, exc)
+                pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
+                full_text = None
+            if full_text:
+                full_text_source = "pmc"
+
+    if pmcid and pmc_missing_body and not full_text:
+        pdf_processing_meta.setdefault("failure_reason", "pmc_missing_body")
     record["pmcid"] = pmcid
 
     extraction_meta: Dict[str, Optional[str]] | None = None
@@ -533,6 +622,91 @@ def _process_record(
     return record, failure_payload
 
 
+def _process_records_inner(
+    batch: List[Tuple[int, Dict]],
+    total: int,
+    prefix: str,
+    rate_limiter: RateLimiter | None,
+    max_attempts: int,
+    retry_wait: float,
+    entrez_batch_size: int,
+) -> Tuple[List[Tuple[int, Dict]], List[Dict]]:
+    prepared: List[Tuple[int, Dict, Optional[str], Optional[str], bool]] = []
+    requested_pmcids: List[str] = []
+    for index, record in batch:
+        pmid = record.get("pmid")
+        pmcid: Optional[str] = None
+        pubmed_xml_str: Optional[str] = None
+        pubmed_failed = False
+        if pmid:
+            try:
+                article_xml = fetch_pubmed_xml(
+                    pmid,
+                    rate_limiter=rate_limiter,
+                    max_attempts=max_attempts,
+                    retry_wait=retry_wait,
+                )
+            except (EntrezRequestError, RuntimeError) as exc:
+                logger.warning("Failed to fetch PubMed XML for %s: %s", pmid, exc)
+                pubmed_failed = True
+            else:
+                if article_xml is not None:
+                    pmcid = extract_pmcid(article_xml)
+                    pubmed_xml_str = ET.tostring(article_xml, encoding="unicode")
+        prepared.append((index, record, pmcid, pubmed_xml_str, pubmed_failed))
+        if pmcid:
+            requested_pmcids.append(pmcid)
+
+    pmc_texts: Dict[str, str] = {}
+    missing_bodies: Set[str] = set()
+    if requested_pmcids:
+        pmc_texts, missing_bodies = fetch_pmc_fulltexts_batch(
+            requested_pmcids,
+            rate_limiter=rate_limiter,
+            max_attempts=max_attempts,
+            retry_wait=retry_wait,
+            chunk_size=max(1, entrez_batch_size),
+        )
+        for pmcid in requested_pmcids:
+            if pmcid not in pmc_texts and pmcid not in missing_bodies:
+                missing_bodies.add(pmcid)
+
+    enriched_batch: List[Tuple[int, Dict]] = []
+    failures_batch: List[Dict] = []
+    for index, record, pmcid, pubmed_xml_str, pubmed_failed in prepared:
+        pmc_text = pmc_texts.get(pmcid) if pmcid else None
+        missing_body = pmcid in missing_bodies if pmcid else False
+        enriched_record, failure = _process_record(
+            record,
+            index,
+            total,
+            prefix,
+            rate_limiter,
+            max_attempts,
+            retry_wait,
+            resolved_pmcid=pmcid,
+            resolved_pubmed_xml=pubmed_xml_str,
+            pubmed_fetch_failed=pubmed_failed,
+            pmc_full_text=pmc_text,
+            pmc_missing_body=missing_body,
+            pmc_prefetched=pmcid is not None,
+        )
+        enriched_batch.append((index, enriched_record))
+        if failure:
+            failures_batch.append(failure)
+        if missing_body:
+            failures_batch.append(
+                {
+                    "pmid": record.get("pmid"),
+                    "pmcid": pmcid,
+                    "reason": "pmc_missing_body",
+                    "url": None,
+                    "metadata": None,
+                }
+            )
+    return enriched_batch, failures_batch
+
+
 def _process_batch(
     worker_id: int,
     batch: List[Tuple[int, Dict]],
@@ -541,25 +715,22 @@ def _process_batch(
     rate_limiter: RateLimiter | None,
     max_attempts: int,
     retry_wait: float,
+    entrez_batch_size: int,
 ) -> None:
     prefix = f"[worker-{worker_id}]"
     enriched_batch: List[Tuple[int, Dict]] = []
     failures_batch: List[Dict] = []
     error_message: Optional[str] = None
     try:
-        for index, record in batch:
-            enriched_record, failure = _process_record(
-                record,
-                index,
-                total,
-                prefix,
-                rate_limiter,
-                max_attempts,
-                retry_wait,
-            )
-            enriched_batch.append((index, enriched_record))
-            if failure:
-                failures_batch.append(failure)
+        enriched_batch, failures_batch = _process_records_inner(
+            batch,
+            total,
+            prefix,
+            rate_limiter,
+            max_attempts,
+            retry_wait,
+            entrez_batch_size,
+        )
     except Exception as exc:  # pragma: no cover - worker protection
         error_message = f"{type(exc).__name__}: {exc}"
         logger.exception("%s Worker encountered an error", prefix)
@@ -609,6 +780,7 @@ def enrich_records(
     entrez_interval: float = 0.34,
     entrez_max_attempts: int = 5,
     entrez_retry_wait: float | None = None,
+    entrez_batch_size: int = 10,
 ) -> Tuple[List[Dict], List[Dict]]:
     records_list = list(records)
     total = len(records_list)
@@ -632,22 +804,18 @@ def enrich_records(
 
     worker_count = max(1, min(processes, total))
     if worker_count == 1:
-        enriched: Dict[int, Dict] = {}
-        failures: List[Dict] = []
-        for index, record in enumerate(records_list):
-            enriched_record, failure = _process_record(
-                record,
-                index,
-                total,
-                "[worker-1]",
-                limiter,
-                attempts,
-                retry_wait,
-            )
-            enriched[index] = enriched_record
-            if failure:
-                failures.append(failure)
-        ordered = [enriched[idx] for idx in range(total)]
+        single_batch = [(idx, records_list[idx]) for idx in range(total)]
+        enriched_pairs, failures = _process_records_inner(
+            single_batch,
+            total,
+            "[worker-1]",
+            limiter,
+            attempts,
+            retry_wait,
+            entrez_batch_size,
+        )
+        enriched_map = {idx: record for idx, record in enriched_pairs}
+        ordered = [enriched_map[idx] for idx in range(total)]
         return ordered, failures
 
     batches = _build_batches(records_list, worker_count)
@@ -667,6 +835,7 @@ def enrich_records(
                     limiter,
                     attempts,
                     retry_wait,
+                    entrez_batch_size,
                 )
                 for worker_id, batch in enumerate(batches, start=1)
             ]
@@ -689,6 +858,7 @@ def enrich_records(
                     shared_limiter,
                     attempts,
                     retry_wait,
+                    entrez_batch_size,
                 ),
             )
             process.start()
@@ -761,6 +931,15 @@ def main(argv: List[str] | None = None) -> int:
             "effective Entrez interval or PUBMED_RETRY_WAIT when provided."
         ),
     )
+    parser.add_argument(
+        "--entrez-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Number of PMCIDs to request per Entrez efetch call. "
+            "Defaults to PUBMED_BATCH_SIZE or 10 when unset."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.input):
@@ -810,6 +989,11 @@ def main(argv: List[str] | None = None) -> int:
         if args.entrez_retry_wait is not None
         else os.environ.get("PUBMED_RETRY_WAIT")
     )
+    entrez_batch_size = (
+        args.entrez_batch_size
+        if args.entrez_batch_size is not None
+        else _env_int("PUBMED_BATCH_SIZE", 10)
+    )
     retry_wait_value = None
     if entrez_retry_wait is not None:
         try:
@@ -830,6 +1014,7 @@ def main(argv: List[str] | None = None) -> int:
         entrez_interval=entrez_interval,
         entrez_max_attempts=entrez_max_attempts,
         entrez_retry_wait=retry_wait_value,
+        entrez_batch_size=max(1, entrez_batch_size),
     )
 
     output_dir = os.path.dirname(args.output)
