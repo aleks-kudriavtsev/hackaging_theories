@@ -112,6 +112,25 @@ Collector-specific flags such as `--limit` and `--state-dir` now propagate
 through the unified runner so you can cap exported papers or pin the retrieval
 cache without switching to the standalone `collect_theories.py` entry point.
 
+### 2a. Loop the full review → ontology → enrichment cycle
+
+Operators who want the freshly generated ontology to immediately seed the
+general-literature crawl can rely on the new convenience wrapper:
+
+```bash
+python scripts/run_full_cycle.py --workdir data/pipeline
+```
+
+The command first invokes `run_pipeline.py` to rebuild steps 1–5 inside the
+chosen work directory. It then parses `aging_ontology.json`, converts the final
+theory groups into the `corpus.targets` structure used by
+`collect_theories.py`, merges any `suggested_queries`, and runs the retrieval
+and promotion phase. The collector persists its state, CSV exports, and runtime
+ontology updates under the same workdir, so a single folder captures both the
+review bootstrap artefacts and the subsequent enrichment results. Pass through
+options such as `--limit`, `--providers`, or `--no-resume` when you need to
+fine-tune the second phase.
+
 **Recommended model mix.** For a balanced run that keeps the end-to-end spend
 close to $10 per million processed articles:
 
