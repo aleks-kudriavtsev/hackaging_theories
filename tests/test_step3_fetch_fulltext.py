@@ -34,6 +34,41 @@ def test_download_binary_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result is None
 
 
+def test_download_binary_handles_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_value_error(url: str, *args: Any, **kwargs: Any) -> None:
+        raise ValueError("invalid URL")
+
+    monkeypatch.setattr(step3.urllib.request, "Request", _raise_value_error)
+
+    malformed_url = "https://example.test/has space.pdf"
+
+    result = step3._download_binary(malformed_url)
+
+    assert result is None
+
+    record = {
+        "id": "value-error-record",
+        "title": "Example",
+        "fulltext_links": {"pdf": malformed_url},
+    }
+
+    enriched, failure = step3._process_record(
+        record,
+        index=0,
+        total=1,
+        worker_prefix="[worker-test]",
+        rate_limiter=None,
+        max_attempts=1,
+        retry_wait=1.0,
+    )
+
+    assert enriched["full_text"] is None
+    assert enriched["ocr_status"] == "pdf_download_failed"
+    assert enriched["pdf_processing"]["failure_reason"] == "pdf_download_failed"
+    assert failure is not None
+    assert failure["reason"] == "pdf_download_failed"
+
+
 def test_process_record_records_pdf_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_remote_disconnected)
 
