@@ -33,6 +33,7 @@ import os
 import queue
 import re
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -305,6 +306,8 @@ def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
         socket.timeout,
         TimeoutError,
         ConnectionError,
+        ssl.SSLError,
+        OSError,
     ) as exc:  # pragma: no cover - network failure
         logger.debug("Failed to download %s: %s", url, exc)
         return None
