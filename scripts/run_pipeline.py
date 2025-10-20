@@ -509,6 +509,8 @@ def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) 
 def main(argv: List[str] | None = None) -> int:
     args = parse_args(argv)
     paths = build_paths(args.workdir)
+    workdir_path = Path(args.workdir)
+    workdir_path.mkdir(parents=True, exist_ok=True)
 
     if args.compat_max_chars is not None:
         args.chunk_chars = args.compat_max_chars
@@ -750,9 +752,22 @@ def main(argv: List[str] | None = None) -> int:
             ) from exc
 
         collector_config = copy.deepcopy(base_collector_config)
+        collector_outputs_dir = workdir_path / "collector"
+        collector_outputs_dir.mkdir(parents=True, exist_ok=True)
+
         corpus_cfg = dict(collector_config.get("corpus") or {})
         corpus_cfg["targets"] = ontology_targets
+        corpus_cfg["ontology_suggestions_path"] = paths.ontology
         collector_config["corpus"] = corpus_cfg
+
+        outputs_cfg = dict(collector_config.get("outputs") or {})
+        outputs_cfg["papers"] = str(collector_outputs_dir / "papers.csv")
+        outputs_cfg["theories"] = str(collector_outputs_dir / "theories.csv")
+        outputs_cfg["questions"] = str(collector_outputs_dir / "questions.csv")
+        outputs_cfg["cache_dir"] = str(collector_outputs_dir / "cache")
+        collector_config["outputs"] = outputs_cfg
+
+        os.makedirs(outputs_cfg["cache_dir"], exist_ok=True)
 
         collector_args: List[str] = [str(args.collector_query)]
         if args.limit is not None:

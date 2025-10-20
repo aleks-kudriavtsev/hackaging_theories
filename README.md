@@ -1,13 +1,14 @@
 # Aging Theory Literature Pipeline
 
-This repository bundles a lightweight, four-stage workflow for harvesting PubMed
-reviews about aging theories, curating the relevant subset with OpenAI, pulling
-open-access full texts, and extracting the theories they discuss. Each stage is
-implemented as a standalone script so you can inspect or extend the behaviour in
-isolation, and a convenience runner (`scripts/run_pipeline.py`) chains them into
-a single command for day-to-day use. The legacy
-`scripts/run_full_pipeline.py` module now forwards to the same entrypoint so
-existing automation keeps working.
+This repository bundles an end-to-end workflow for harvesting PubMed reviews
+about aging theories, curating the relevant subset with OpenAI, pulling
+open-access full texts, extracting the theories they discuss, and then rolling
+those ontology outputs straight into the general-literature collector and
+classifier. Each stage is implemented as a standalone script so you can inspect
+or extend the behaviour in isolation, and a convenience runner
+(`scripts/run_pipeline.py`) chains them into a single command for day-to-day
+use. The legacy `scripts/run_full_pipeline.py` module now forwards to the same
+entrypoint so existing automation keeps working.
 
 > **Note**  
 > The project ships without vendored credentials. Export the API keys you are
@@ -33,11 +34,13 @@ that the Hackaging organisers require for leaderboard submissions.
 
 ## Aging theory review bootstrap pipeline
 
-The repository now includes a four-stage bootstrap that focuses specifically on
-aging-theory review articles retrieved from PubMed. The helper scripts live in
+The repository now includes a multi-stage bootstrap that focuses specifically on
+aging-theory review articles retrieved from PubMed and continues through to
+ontology-driven retrieval/classification. The helper scripts live in
 `scripts/step[1-5]_*.py`, and a convenience orchestrator
 (`scripts/run_pipeline.py`) runs the entire sequence end-to-end while merging
-records from PubMed, OpenAlex, and optional Google Scholar collectors.
+records from PubMed, OpenAlex, optional Google Scholar collectors, and the
+follow-on literature crawl.
 
 ### 1. Configure credentials
 
@@ -96,7 +99,8 @@ By default this performs:
    theory into transient retrieval targets, expands their suggested queries, and
    runs the literature collector/classifier using an in-memory
    `config/pipeline.yaml` snapshot. The exported papers, assignments, and
-   question answers mirror the standalone collector's CSV outputs.
+   question answers mirror the standalone collector's CSV outputs and are saved
+   under `<workdir>/collector/` by default (alongside the collector cache).
 
 The orchestrator skips steps whose outputs already exist unless `--force` is
 supplied. Use `--query`, `--collector-query` (or the alias `--base-query`),
