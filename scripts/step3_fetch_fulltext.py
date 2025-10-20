@@ -23,6 +23,7 @@ python scripts/step3_fetch_fulltext.py \
 from __future__ import annotations
 
 import argparse
+import http.client
 import io
 import json
 import logging
@@ -31,6 +32,7 @@ import multiprocessing
 import os
 import queue
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -296,7 +298,14 @@ def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec - trusted endpoint
             return response.read()
-    except urllib.error.URLError as exc:  # pragma: no cover - network failure
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        http.client.HTTPException,
+        socket.timeout,
+        TimeoutError,
+        ConnectionError,
+    ) as exc:  # pragma: no cover - network failure
         logger.debug("Failed to download %s: %s", url, exc)
         return None
 
