@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 import urllib.error
@@ -257,9 +258,38 @@ def fetch_openalex(
         }
         url = f"{OPENALEX_WORKS_URL}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        max_attempts = 5
+        attempt = 0
+        backoff = max(delay, 0.1)
         try:
-            with urllib.request.urlopen(request) as response:  # nosec - OpenAlex API
-                payload = json.loads(response.read().decode("utf-8"))
+            while True:
+                attempt += 1
+                try:
+                    with urllib.request.urlopen(request) as response:  # nosec - OpenAlex API
+                        payload = json.loads(response.read().decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as exc:
+                    retryable = exc.code == 429 or 500 <= exc.code < 600
+                    if retryable and attempt < max_attempts:
+                        time.sleep(backoff)
+                        backoff *= 2
+                        continue
+                    raise
+                except urllib.error.URLError as exc:
+                    reason = exc.reason
+                    reason_text = str(reason).lower()
+                    temporary = False
+                    if isinstance(reason, socket.timeout):
+                        temporary = True
+                    elif isinstance(reason, TimeoutError):
+                        temporary = True
+                    elif "timeout" in reason_text or "temporary failure in name resolution" in reason_text:
+                        temporary = True
+                    if temporary and attempt < max_attempts:
+                        time.sleep(backoff)
+                        backoff *= 2
+                        continue
+                    raise
         except urllib.error.HTTPError as exc:  # pragma: no cover - network guard
             body = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"OpenAlex request failed ({exc.code}): {body or exc.reason}") from exc
