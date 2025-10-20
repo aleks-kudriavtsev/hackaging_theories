@@ -486,6 +486,7 @@ def _process_record(
     pmc_full_text: Optional[str] = None,
     pmc_missing_body: bool = False,
     pmc_prefetched: bool = False,
+    pmc_fetch_failed: bool = False,
 ) -> Tuple[Dict, Optional[Dict]]:
     pmid = record.get("pmid")
     full_text = None
@@ -498,6 +499,8 @@ def _process_record(
 
     if pubmed_fetch_failed:
         pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+    if pmc_fetch_failed:
+        pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
 
     article_xml = None
     if pmid and pmcid is None and not pubmed_fetch_failed:
@@ -659,23 +662,33 @@ def _process_records_inner(
 
     pmc_texts: Dict[str, str] = {}
     missing_bodies: Set[str] = set()
+    pmc_fetch_failures: Set[str] = set()
     if requested_pmcids:
-        pmc_texts, missing_bodies = fetch_pmc_fulltexts_batch(
-            requested_pmcids,
-            rate_limiter=rate_limiter,
-            max_attempts=max_attempts,
-            retry_wait=retry_wait,
-            chunk_size=max(1, entrez_batch_size),
-        )
-        for pmcid in requested_pmcids:
-            if pmcid not in pmc_texts and pmcid not in missing_bodies:
-                missing_bodies.add(pmcid)
+        try:
+            pmc_texts, missing_bodies = fetch_pmc_fulltexts_batch(
+                requested_pmcids,
+                rate_limiter=rate_limiter,
+                max_attempts=max_attempts,
+                retry_wait=retry_wait,
+                chunk_size=max(1, entrez_batch_size),
+            )
+        except (EntrezRequestError, RuntimeError) as exc:
+            joined_ids = ",".join(requested_pmcids)
+            logger.warning(
+                "Failed to fetch PMC batch for %s: %s", joined_ids or "<empty>", exc
+            )
+            pmc_fetch_failures.update(requested_pmcids)
+        else:
+            for pmcid in requested_pmcids:
+                if pmcid not in pmc_texts and pmcid not in missing_bodies:
+                    missing_bodies.add(pmcid)
 
     enriched_batch: List[Tuple[int, Dict]] = []
     failures_batch: List[Dict] = []
     for index, record, pmcid, pubmed_xml_str, pubmed_failed in prepared:
         pmc_text = pmc_texts.get(pmcid) if pmcid else None
         missing_body = pmcid in missing_bodies if pmcid else False
+        pmc_batch_failed = pmcid in pmc_fetch_failures if pmcid else False
         enriched_record, failure = _process_record(
             record,
             index,
@@ -690,6 +703,7 @@ def _process_records_inner(
             pmc_full_text=pmc_text,
             pmc_missing_body=missing_body,
             pmc_prefetched=pmcid is not None,
+            pmc_fetch_failed=pmc_batch_failed,
         )
         enriched_batch.append((index, enriched_record))
         if failure:
@@ -700,6 +714,16 @@ def _process_records_inner(
                     "pmid": record.get("pmid"),
                     "pmcid": pmcid,
                     "reason": "pmc_missing_body",
+                    "url": None,
+                    "metadata": None,
+                }
+            )
+        if pmc_batch_failed:
+            failures_batch.append(
+                {
+                    "pmid": record.get("pmid"),
+                    "pmcid": pmcid,
+                    "reason": "pmc_fetch_failed",
                     "url": None,
                     "metadata": None,
                 }
