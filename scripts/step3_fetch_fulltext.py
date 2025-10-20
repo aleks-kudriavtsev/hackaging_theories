@@ -220,7 +220,7 @@ def fetch_pmc_fulltexts_batch(
     rate_limiter: RateLimiter | None,
     max_attempts: int,
     retry_wait: float,
-    chunk_size: int = 10,
+    chunk_size: int = 200,
 ) -> Tuple[Dict[str, str], Set[str]]:
     unique_ids: List[str] = []
     seen: Set[str] = set()
@@ -780,7 +780,7 @@ def enrich_records(
     entrez_interval: float = 0.34,
     entrez_max_attempts: int = 5,
     entrez_retry_wait: float | None = None,
-    entrez_batch_size: int = 10,
+    entrez_batch_size: int = 200,
 ) -> Tuple[List[Dict], List[Dict]]:
     records_list = list(records)
     total = len(records_list)
@@ -937,7 +937,7 @@ def main(argv: List[str] | None = None) -> int:
         default=None,
         help=(
             "Number of PMCIDs to request per Entrez efetch call. "
-            "Defaults to PUBMED_BATCH_SIZE or 10 when unset."
+            "Defaults to PUBMED_BATCH_SIZE or 200 when unset."
         ),
     )
     args = parser.parse_args(argv)
@@ -992,7 +992,7 @@ def main(argv: List[str] | None = None) -> int:
     entrez_batch_size = (
         args.entrez_batch_size
         if args.entrez_batch_size is not None
-        else _env_int("PUBMED_BATCH_SIZE", 10)
+        else _env_int("PUBMED_BATCH_SIZE", 200)
     )
     retry_wait_value = None
     if entrez_retry_wait is not None:
