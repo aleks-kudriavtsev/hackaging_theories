@@ -71,7 +71,11 @@ them into end-to-end commands that scale to very large corpora.
    for large queues. Decisions are stored in `filtered_reviews.json`.
 3. **Full-text enrichment (`step3_fetch_fulltext.py`).** PubMed Central (PMC)
    open-access copies are downloaded when available and normalised to plain
-   text, saving results to `filtered_reviews_fulltext.json`.
+   text, saving results to `filtered_reviews_fulltext.json`. The script batches
+   PMCID lookups by default—200 articles per Entrez `efetch` call—to stay within
+   NCBI response limits while keeping 10k–100k review queues manageable. Override
+   this with `--entrez-batch-size <N>` or `PUBMED_BATCH_SIZE=<N>` if you need a
+   different cadence.
 4. **Theory extraction (`step4_extract_theories.py`).** Long reviews are chunked
    and sent to the LLM to identify aging theories. Outputs include per-review
    annotations and a consolidated registry in `aging_theories.json`.

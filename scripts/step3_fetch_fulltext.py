@@ -121,6 +121,13 @@ def _entrez_with_retries(
     attempts = max(1, max_attempts)
     delay = max(0.1, retry_wait)
     attempt = 1
+    transient_errors: Tuple[type[BaseException], ...] = (
+        http.client.RemoteDisconnected,
+        ConnectionResetError,
+        TimeoutError,
+        socket.timeout,
+        ssl.SSLError,
+    )
     while True:
         if rate_limiter is not None:
             rate_limiter.wait()
@@ -146,9 +153,25 @@ def _entrez_with_retries(
                 attempt,
                 attempts,
             )
-            time.sleep(delay)
-            delay *= 2
-            attempt += 1
+        except transient_errors as exc:
+            if attempt >= attempts:
+                message = (
+                    f"{context}: Entrez connection failed after {attempts} attempts "
+                    f"({exc.__class__.__name__}: {exc}). Increase --entrez-interval or retry later."
+                )
+                logger.warning(message)
+                raise RuntimeError(message) from exc
+            logger.warning(
+                "%s: Entrez connection error (%s), retrying in %.2f seconds (%d/%d)",
+                context,
+                exc.__class__.__name__,
+                delay,
+                attempt,
+                attempts,
+            )
+        time.sleep(delay)
+        delay *= 2
+        attempt += 1
 
 
 def extract_pmcid(pubmed_xml: ET.Element) -> Optional[str]:
@@ -220,7 +243,7 @@ def fetch_pmc_fulltexts_batch(
     rate_limiter: RateLimiter | None,
     max_attempts: int,
     retry_wait: float,
-    chunk_size: int = 10,
+    chunk_size: int = 200,
 ) -> Tuple[Dict[str, str], Set[str]]:
     unique_ids: List[str] = []
     seen: Set[str] = set()
@@ -355,14 +378,12 @@ def _find_openalex_pdf_url(record: Dict) -> Optional[str]:
 
 
 def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
+    headers = {
+        "User-Agent": "hackaging-theories-fulltext/1.0",
+        "Accept": "application/pdf, */*",
+    }
     try:
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "hackaging-theories-fulltext/1.0",
-                "Accept": "application/pdf, */*",
-            },
-        )
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec - trusted endpoint
             return response.read()
     except (
@@ -374,7 +395,7 @@ def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
         ConnectionError,
         ssl.SSLError,
         OSError,
-        ValueError,
+        ValueError,  # covers http.client.InvalidURL from malformed inputs
     ) as exc:  # pragma: no cover - network failure
         logger.debug("Failed to download %s: %s", url, exc)
         return None
@@ -497,6 +518,12 @@ def _process_record(
     record.pop("pdf_processing", None)
     pdf_processing_meta: Dict[str, Any] = {}
 
+    def _note_pdf_failure(reason: str) -> None:
+        nonlocal pdf_processing_meta
+        pdf_processing_meta = _merge_pdf_processing(
+            pdf_processing_meta, {"failure_reason": reason}
+        )
+
     if pubmed_fetch_failed:
         pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
     if pmc_fetch_failed:
@@ -513,7 +540,7 @@ def _process_record(
             )
         except (EntrezRequestError, RuntimeError) as exc:
             logger.warning("Failed to fetch PubMed XML for %s: %s", pmid, exc)
-            pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+            _note_pdf_failure("pubmed_fetch_failed")
         else:
             if article_xml is not None:
                 pmcid = extract_pmcid(article_xml)
@@ -537,7 +564,7 @@ def _process_record(
                 )
             except (EntrezRequestError, RuntimeError) as exc:
                 logger.warning("Failed to fetch PMC full text for %s: %s", pmcid, exc)
-                pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
+                _note_pdf_failure("pmc_fetch_failed")
                 full_text = None
             if full_text:
                 full_text_source = "pmc"
@@ -804,7 +831,7 @@ def enrich_records(
     entrez_interval: float = 0.34,
     entrez_max_attempts: int = 5,
     entrez_retry_wait: float | None = None,
-    entrez_batch_size: int = 10,
+    entrez_batch_size: int = 200,
 ) -> Tuple[List[Dict], List[Dict]]:
     records_list = list(records)
     total = len(records_list)
@@ -961,7 +988,7 @@ def main(argv: List[str] | None = None) -> int:
         default=None,
         help=(
             "Number of PMCIDs to request per Entrez efetch call. "
-            "Defaults to PUBMED_BATCH_SIZE or 10 when unset."
+            "Defaults to PUBMED_BATCH_SIZE or 200 when unset."
         ),
     )
     args = parser.parse_args(argv)
@@ -1016,7 +1043,7 @@ def main(argv: List[str] | None = None) -> int:
     entrez_batch_size = (
         args.entrez_batch_size
         if args.entrez_batch_size is not None
-        else _env_int("PUBMED_BATCH_SIZE", 10)
+        else _env_int("PUBMED_BATCH_SIZE", 200)
     )
     retry_wait_value = None
     if entrez_retry_wait is not None:

@@ -1,4 +1,5 @@
 import http.client
+import ssl
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set, Tuple
@@ -15,6 +16,35 @@ def _raise_remote_disconnected(*args: Any, **kwargs: Any) -> None:  # pragma: no
     raise http.client.RemoteDisconnected("Remote end closed connection")
 
 
+def test_entrez_with_retries_handles_remote_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = 0
+
+    def _fake_entrez_request(path: str, params: Dict[str, str]) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise http.client.RemoteDisconnected("Remote end closed connection")
+        return b"<ok/>"
+
+    monkeypatch.setattr(step3, "entrez_request", _fake_entrez_request)
+
+    sleeps: List[float] = []
+    monkeypatch.setattr(step3.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = step3._entrez_with_retries(
+        "efetch.fcgi",
+        {"db": "pubmed"},
+        rate_limiter=None,
+        max_attempts=3,
+        retry_wait=0.01,
+        context="test",
+    )
+
+    assert result == b"<ok/>"
+    assert call_count == 2
+    assert sleeps == [pytest.approx(0.1)]
+
+
 def test_download_binary_handles_remote_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_remote_disconnected)
 
@@ -23,12 +53,21 @@ def test_download_binary_handles_remote_disconnected(monkeypatch: pytest.MonkeyP
     assert result is None
 
 
-def _raise_timeout(*args: Any, **kwargs: Any) -> None:  # pragma: no cover - helper
-    raise TimeoutError("timed out")
+@pytest.mark.parametrize("exception", [TimeoutError("timed out"), ssl.SSLError("boom")])
+def test_download_binary_handles_read_errors(
+    monkeypatch: pytest.MonkeyPatch, exception: BaseException
+) -> None:
+    class _ErrorResponse:
+        def __enter__(self) -> "_ErrorResponse":
+            return self
 
+        def __exit__(self, *exc_info: Any) -> None:
+            return None
 
-def test_download_binary_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_timeout)
+        def read(self) -> bytes:
+            raise exception
+
+    monkeypatch.setattr(step3.urllib.request, "urlopen", lambda *args, **kwargs: _ErrorResponse())
 
     result = step3._download_binary("https://example.test/paper.pdf")
 
@@ -36,10 +75,17 @@ def test_download_binary_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_download_binary_handles_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _raise_value_error(url: str, *args: Any, **kwargs: Any) -> None:
+    class _DummyRequest:
+        def __init__(self, url: str, headers: Dict[str, str]) -> None:
+            assert " " in url  # ensure malformed URL propagated
+            self.url = url
+            self.headers = headers
+
+    def _raise_value_error(_request: _DummyRequest, *args: Any, **kwargs: Any) -> None:
         raise ValueError("invalid URL")
 
-    monkeypatch.setattr(step3.urllib.request, "Request", _raise_value_error)
+    monkeypatch.setattr(step3.urllib.request, "Request", _DummyRequest)
+    monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_value_error)
 
     malformed_url = "https://example.test/has space.pdf"
 
@@ -119,6 +165,33 @@ def test_process_record_handles_pubmed_fetch_failure(monkeypatch: pytest.MonkeyP
 
     assert enriched["full_text"] is None
     assert enriched["pdf_processing"]["failure_reason"] == "pubmed_fetch_failed"
+    assert failure is None
+
+
+def test_process_record_handles_pmc_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_entrez(*args: Any, **kwargs: Any) -> Any:
+        raise step3.EntrezRequestError("boom")
+
+    monkeypatch.setattr(step3, "fetch_pmc_fulltext", _raise_entrez)
+
+    record = {
+        "id": "test-record",
+        "title": "Example",
+    }
+
+    enriched, failure = step3._process_record(
+        record,
+        index=0,
+        total=1,
+        worker_prefix="[worker-test]",
+        rate_limiter=None,
+        max_attempts=1,
+        retry_wait=1.0,
+        resolved_pmcid="PMC123",
+    )
+
+    assert enriched["full_text"] is None
+    assert enriched["pdf_processing"]["failure_reason"] == "pmc_fetch_failed"
     assert failure is None
 
 
