@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import logging
-import re
 import math
 import statistics
 import sys
@@ -14,6 +13,9 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Set, Tuple
+from urllib.parse import urlparse
+
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -25,6 +27,7 @@ from theories_pipeline import (
     OntologyManager,
     PaperMetadata,
     ProviderConfig,
+    FilterDecision,
     QuestionExtractor,
     RuntimeLabelRequest,
     RuntimeOntologyBootstrapper,
@@ -66,6 +69,75 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_doi(value: str | None) -> str:
+    if not value:
+        return ""
+    doi = value.strip().lower()
+    if not doi:
+        return ""
+    if doi.startswith("https://doi.org/"):
+        doi = doi.split("https://doi.org/", 1)[1]
+    if doi.startswith("http://doi.org/"):
+        doi = doi.split("http://doi.org/", 1)[1]
+    if doi.startswith("doi:"):
+        doi = doi.split("doi:", 1)[1]
+    return doi.strip()
+
+
+def _normalize_openalex(identifier: str) -> str | None:
+    if not identifier:
+        return None
+    value = identifier.strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered.startswith("openalex:"):
+        suffix = value.split(":", 1)[1].strip()
+        if suffix:
+            return f"openalex:{suffix.lower()}"
+        return None
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    if parsed.netloc and "openalex.org" in parsed.netloc:
+        path = parsed.path.strip("/")
+        if path:
+            return f"openalex:{path.lower()}"
+    return None
+
+
+def _rejection_keys_for_paper(paper: PaperMetadata) -> List[str]:
+    keys: List[str] = []
+    doi = _normalize_doi(paper.doi if isinstance(paper.doi, str) else None)
+    if doi:
+        keys.append(f"doi:{doi}")
+    identifier = (paper.identifier or "").strip()
+    if identifier:
+        lowered = identifier.lower()
+        if lowered.startswith("pubmed:"):
+            pmid = identifier.split(":", 1)[1].strip()
+            if pmid:
+                keys.append(f"pmid:{pmid.lower()}")
+        elif lowered.startswith("pmid:"):
+            pmid = identifier.split(":", 1)[1].strip()
+            if pmid:
+                keys.append(f"pmid:{pmid.lower()}")
+        elif "pubmed.ncbi.nlm.nih.gov" in lowered:
+            match = re.search(r"/(\d+)/?", lowered)
+            if match:
+                keys.append(f"pmid:{match.group(1)}")
+        openalex_key = _normalize_openalex(identifier)
+        if openalex_key:
+            keys.append(openalex_key)
+    # Remove duplicates while preserving order
+    deduped: List[str] = []
+    for key in keys:
+        if key not in deduped:
+            deduped.append(key)
+    return deduped
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -889,6 +961,101 @@ def collect_for_entry(
         max_text_chars=max_chars_int,
     )
 
+    state_store = getattr(retriever, "state_store", None)
+    registry_enabled = bool(
+        state_store
+        and hasattr(state_store, "latest_rejection")
+        and hasattr(state_store, "record_rejection")
+    )
+
+    def _registry_record_for(paper: PaperMetadata) -> Dict[str, Any] | None:
+        if not registry_enabled or state_store is None:
+            return None
+        for key in _rejection_keys_for_paper(paper):
+            latest = state_store.latest_rejection(key)
+            if not isinstance(latest, Mapping):
+                continue
+            details_payload: Dict[str, Any] = {}
+            raw_details = latest.get("details")
+            if isinstance(raw_details, Mapping):
+                details_payload.update(raw_details)
+            details_payload.update(
+                {
+                    "source": "global_registry",
+                    "node": latest.get("node"),
+                    "registry_key": key,
+                    "identifier": latest.get("identifier"),
+                }
+            )
+            threshold_value_local = latest.get("threshold")
+            try:
+                stored_threshold = (
+                    float(threshold_value_local)
+                    if threshold_value_local is not None
+                    else relevance_filter.threshold
+                )
+            except (TypeError, ValueError):
+                stored_threshold = relevance_filter.threshold
+            score_value = latest.get("score")
+            try:
+                stored_score = float(score_value) if score_value is not None else 0.0
+            except (TypeError, ValueError):
+                stored_score = 0.0
+            rationale_value = latest.get("rationale")
+            rationale_text = rationale_value if isinstance(rationale_value, str) else None
+            return {
+                "score": stored_score,
+                "accepted": False,
+                "threshold": stored_threshold,
+                "rationale": rationale_text,
+                "details": details_payload,
+            }
+        return None
+
+    def _inject_registry_decisions(papers: Sequence[PaperMetadata]) -> None:
+        if not registry_enabled:
+            return
+        for paper in papers:
+            if paper.identifier in filter_state:
+                continue
+            record = _registry_record_for(paper)
+            if record:
+                filter_state[paper.identifier] = record
+
+    def _record_registry_rejections(
+        papers: Sequence[PaperMetadata],
+        decisions: Sequence[FilterDecision],
+    ) -> None:
+        if not registry_enabled or not decisions or not papers or state_store is None:
+            return
+        paper_lookup: Dict[str, PaperMetadata] = {paper.identifier: paper for paper in papers}
+        timestamp = time.time()
+        for decision in decisions:
+            if decision.accepted:
+                continue
+            details = decision.details if isinstance(decision.details, Mapping) else {}
+            if details.get("source") == "global_registry":
+                continue
+            paper = paper_lookup.get(decision.identifier)
+            if paper is None:
+                continue
+            keys = _rejection_keys_for_paper(paper)
+            if not keys:
+                continue
+            record_rejection = getattr(state_store, "record_rejection", None)
+            if not callable(record_rejection):
+                continue
+            record_rejection(
+                keys,
+                identifier=paper.identifier,
+                node=name,
+                rationale=decision.rationale,
+                score=decision.score,
+                threshold=relevance_filter.threshold,
+                details=dict(details) if details else None,
+                timestamp=timestamp,
+            )
+
     enrichment_sources: List[Mapping[str, Any]] = []
     config_enrichment = config.get("enrichment")
     if isinstance(config_enrichment, Mapping):
@@ -1087,11 +1254,13 @@ def collect_for_entry(
         "queries": queries,
     }
 
+    _inject_registry_decisions(result.papers)
     accepted_papers, filter_decisions = relevance_filter.apply(
         result.papers,
         context=context_payload,
         existing_decisions=filter_state,
     )
+    _record_registry_rejections(result.papers, filter_decisions)
 
     summary = dict(result.summary)
     summary["retrieved_total"] = summary.get("total_unique", len(result.papers))
@@ -1179,11 +1348,13 @@ def collect_for_entry(
                 before_total = summary.get("total_unique", 0)
                 summary = dict(rerun.summary)
                 summary["retrieved_total"] = summary.get("total_unique", len(rerun.papers))
+                _inject_registry_decisions(rerun.papers)
                 accepted_papers, filter_decisions = relevance_filter.apply(
                     rerun.papers,
                     context=context_payload,
                     existing_decisions=filter_state,
                 )
+                _record_registry_rejections(rerun.papers, filter_decisions)
                 summary["total_unique"] = len(accepted_papers)
                 summary["filtering"] = {
                     "accepted": sum(1 for decision in filter_decisions if decision.accepted),
