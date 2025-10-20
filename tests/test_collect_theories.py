@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
+from theories_pipeline.filtering import FilterDecision
 from theories_pipeline.literature import PaperMetadata
 from theories_pipeline.ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
 from theories_pipeline.query_expansion import (
@@ -789,3 +790,206 @@ def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
     provenance = node.metadata.get("runtime_provenance", {})
     assert provenance.get("query") == "digital biomarkers"
     assert provenance.get("supporting_papers"), "Provenance should list supporting papers"
+
+
+def test_collect_for_entry_uses_global_rejections(monkeypatch) -> None:
+    class _StateStore:
+        def __init__(self) -> None:
+            self.storage: Dict[str, Any] = {}
+            self.rejections: Dict[str, Any] = {
+                "doi:10.123/example": {
+                    "decision": {
+                        "identifier": "https://openalex.org/W123456",
+                        "score": 0.1,
+                        "accepted": False,
+                        "threshold": 0.5,
+                        "rationale": "Marked irrelevant",
+                    },
+                    "node": "Other",
+                    "rationale": "Marked irrelevant",
+                }
+            }
+            self.registered: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
+
+        def get(self, key: str) -> Dict[str, Any]:
+            return dict(self.storage.get(key, {}))
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.storage[key] = dict(value)
+
+        def write_summary(self, value: Mapping[str, Any]) -> None:
+            self.storage["summary"] = dict(value)
+
+        def find_rejection(self, keys: Sequence[str]) -> Mapping[str, Any] | None:
+            for key in keys:
+                entry = self.rejections.get(key)
+                if entry:
+                    return json.loads(json.dumps(entry))
+            return None
+
+        def register_rejection(self, keys: Sequence[str], payload: Mapping[str, Any]) -> None:
+            record = json.loads(json.dumps(payload))
+            self.registered.append((tuple(keys), record))
+            for key in keys:
+                self.rejections[key] = record
+
+    class _Retriever:
+        def __init__(self) -> None:
+            self.state_store = _StateStore()
+
+        def collect_queries(self, *args, **kwargs):
+            del args, kwargs
+            paper = PaperMetadata(
+                identifier="https://openalex.org/W123456",
+                title="Aging dynamics",
+                authors=("Alex",),
+                abstract="",
+                source="openalex",
+                doi="10.123/example",
+            )
+            return SimpleNamespace(papers=[paper], summary={"total_unique": 1})
+
+    class _RecordingFilter:
+        def __init__(self, *args, **kwargs) -> None:
+            self.threshold = 0.5
+            self.calls: list[Mapping[str, Any] | None] = []
+
+        def apply(self, papers, *, context, existing_decisions):
+            del context
+            snapshot = {paper.identifier: existing_decisions.get(paper.identifier) for paper in papers}
+            self.calls.append(snapshot)
+            decisions = []
+            accepted = []
+            for paper in papers:
+                record = existing_decisions.get(paper.identifier, {})
+                if not record or record.get("accepted", True):
+                    decisions.append(
+                        FilterDecision(
+                            identifier=paper.identifier,
+                            score=1.0,
+                            accepted=True,
+                            rationale="",
+                            details={},
+                        )
+                    )
+                    accepted.append(paper)
+                else:
+                    decisions.append(
+                        FilterDecision(
+                            identifier=paper.identifier,
+                            score=float(record.get("score", 0.0)),
+                            accepted=False,
+                            rationale=record.get("rationale"),
+                            details={},
+                        )
+                    )
+            return accepted, decisions
+
+    retriever = _Retriever()
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", _RecordingFilter)
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="Registry Node",
+        config={"queries": ["registry"]},
+        context={"base_query": "registry"},
+        providers=None,
+        resume=False,
+        state_prefix="registry",
+        ontology_manager=None,
+        expander=None,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    assert not papers, "Global rejection should skip accepted papers"
+    filtering_summary = summary.get("filtering", {})
+    assert filtering_summary.get("rejected") == 1
+    assert filtering_summary.get("accepted") == 0
+    state_payload = retriever.state_store.storage.get("registry", {})
+    record = state_payload.get("filtering", {}).get("https://openalex.org/W123456")
+    assert record and record.get("accepted") is False
+    assert retriever.state_store.registered, "Registry reuse should be recorded"
+
+
+def test_collect_for_entry_registers_rejections(monkeypatch) -> None:
+    class _StateStore:
+        def __init__(self) -> None:
+            self.storage: Dict[str, Any] = {}
+            self.logged: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
+
+        def get(self, key: str) -> Dict[str, Any]:
+            return dict(self.storage.get(key, {}))
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.storage[key] = dict(value)
+
+        def write_summary(self, value: Mapping[str, Any]) -> None:
+            self.storage["summary"] = dict(value)
+
+        def register_rejection(self, keys: Sequence[str], payload: Mapping[str, Any]) -> None:
+            self.logged.append((tuple(keys), json.loads(json.dumps(payload))))
+
+    class _Retriever:
+        def __init__(self) -> None:
+            self.state_store = _StateStore()
+
+        def collect_queries(self, *args, **kwargs):
+            del args, kwargs
+            paper = PaperMetadata(
+                identifier="pubmed:999",
+                title="Irrelevant aging topic",
+                authors=("Jamie",),
+                abstract="",
+                source="pubmed",
+                doi="10.555/example",
+            )
+            return SimpleNamespace(papers=[paper], summary={"total_unique": 1})
+
+    class _RejectingFilter:
+        def __init__(self, *args, **kwargs) -> None:
+            self.threshold = 0.5
+
+        def apply(self, papers, *, context, existing_decisions):
+            del context, existing_decisions
+            decisions = [
+                FilterDecision(
+                    identifier=paper.identifier,
+                    score=0.1,
+                    accepted=False,
+                    rationale="Off topic",
+                    details={},
+                )
+                for paper in papers
+            ]
+            return [], decisions
+
+    retriever = _Retriever()
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", _RejectingFilter)
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="New Node",
+        config={"queries": ["aging"]},
+        context={"base_query": "aging"},
+        providers=None,
+        resume=False,
+        state_prefix="new-node",
+        ontology_manager=None,
+        expander=None,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    assert not papers
+    filtering_summary = summary.get("filtering", {})
+    assert filtering_summary.get("rejected") == 1
+    logged = retriever.state_store.logged
+    assert logged, "Rejections should be registered in the state store"
+    keys, payload = logged[0]
+    assert "doi:10.555/example" in keys
+    assert payload.get("node") == "New Node"

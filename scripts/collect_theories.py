@@ -1065,6 +1065,78 @@ def collect_for_entry(
         prefer_reviews=prefer_reviews_flag,
         sort_by_citations=sort_by_citations_flag,
     )
+
+    paper_lookup: Dict[str, PaperMetadata] = {}
+    state_store = getattr(retriever, "state_store", None)
+    find_rejection = getattr(state_store, "find_rejection", None)
+    register_rejection_fn = getattr(state_store, "register_rejection", None)
+
+    def _apply_global_rejections(papers: Sequence[PaperMetadata]) -> None:
+        if not callable(find_rejection):
+            for item in papers:
+                paper_lookup[item.identifier] = item
+            return
+        for item in papers:
+            paper_lookup[item.identifier] = item
+            entry = find_rejection(item.rejection_keys())
+            if not entry:
+                continue
+            decision_record = entry.get("decision") if isinstance(entry.get("decision"), Mapping) else None
+            if isinstance(decision_record, Mapping):
+                record_payload = dict(decision_record)
+            else:
+                record_payload = {}
+            if "identifier" not in record_payload:
+                record_payload["identifier"] = item.identifier
+            if "score" not in record_payload:
+                fallback_score = entry.get("score")
+                try:
+                    record_payload["score"] = float(fallback_score) if fallback_score is not None else 0.0
+                except (TypeError, ValueError):
+                    record_payload["score"] = 0.0
+            record_payload["accepted"] = False
+            record_payload.setdefault("threshold", relevance_filter.threshold)
+            rationale_value = entry.get("rationale")
+            if isinstance(rationale_value, str) and rationale_value.strip():
+                record_payload.setdefault("rationale", rationale_value)
+            details_mapping = record_payload.get("details")
+            if isinstance(details_mapping, Mapping):
+                details = dict(details_mapping)
+            else:
+                details = {}
+            details.setdefault("method", "registry")
+            node_value = entry.get("node")
+            if isinstance(node_value, str) and node_value:
+                details.setdefault("node", node_value)
+            record_payload["details"] = details
+            filter_state[item.identifier] = record_payload
+
+    def _record_rejections(decisions: Sequence[Any]) -> None:
+        if not callable(register_rejection_fn):
+            return
+        if not decisions:
+            return
+        recorded_at = time.time()
+        for decision in decisions:
+            if getattr(decision, "accepted", True):
+                continue
+            identifier = getattr(decision, "identifier", None)
+            if not identifier:
+                continue
+            paper = paper_lookup.get(identifier)
+            if paper is None:
+                continue
+            payload = {
+                "identifier": identifier,
+                "node": name,
+                "rationale": getattr(decision, "rationale", None),
+                "decision": decision.to_record(threshold=relevance_filter.threshold),
+                "recorded_at": recorded_at,
+            }
+            register_rejection_fn(paper.rejection_keys(), payload)
+
+    _apply_global_rejections(result.papers)
+
     context_payload = {
         "name": name,
         "theory": context.get("theory", name),
@@ -1079,6 +1151,7 @@ def collect_for_entry(
         context=context_payload,
         existing_decisions=filter_state,
     )
+    _record_rejections(filter_decisions)
 
     summary = dict(result.summary)
     summary["retrieved_total"] = summary.get("total_unique", len(result.papers))
@@ -1161,11 +1234,13 @@ def collect_for_entry(
                 before_total = summary.get("total_unique", 0)
                 summary = dict(rerun.summary)
                 summary["retrieved_total"] = summary.get("total_unique", len(rerun.papers))
+                _apply_global_rejections(rerun.papers)
                 accepted_papers, filter_decisions = relevance_filter.apply(
                     rerun.papers,
                     context=context_payload,
                     existing_decisions=filter_state,
                 )
+                _record_rejections(filter_decisions)
                 summary["total_unique"] = len(accepted_papers)
                 summary["filtering"] = {
                     "accepted": sum(1 for decision in filter_decisions if decision.accepted),
@@ -1961,7 +2036,10 @@ def run_pipeline(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        args = parser.parse_args()
+    else:
+        args = parser.parse_args(argv)
     config_path = Path(args.config)
     config = load_config(config_path)
     return run_pipeline(args, parser=parser, config=config, config_path=config_path)

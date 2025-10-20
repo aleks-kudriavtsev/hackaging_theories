@@ -378,3 +378,32 @@ def test_resolve_full_text_extracts_pdf(monkeypatch: pytest.MonkeyPatch, tmp_pat
     provider.session.get = _fail  # type: ignore[assignment]
     cached_again = provider._resolve_full_text("paper-1", None, [url])
     assert cached_again == text
+
+
+def test_paper_metadata_rejection_keys() -> None:
+    paper = PaperMetadata(
+        identifier="https://openalex.org/W1234567890",
+        title="Mechanisms of aging",
+        authors=("Alex",),
+        abstract="",
+        source="openalex",
+        doi="10.987/example",
+    )
+    keys = paper.rejection_keys()
+    assert "doi:10.987/example" in keys
+    assert "openalex:w1234567890" in keys
+    assert "https://openalex.org/w1234567890" in keys
+
+
+def test_state_store_rejection_registry(tmp_path: Path) -> None:
+    store = literature.StateStore(tmp_path)
+    payload = {
+        "identifier": "pubmed:123",
+        "node": "Registry",
+        "decision": {"identifier": "pubmed:123", "score": 0.1, "accepted": False, "threshold": 0.5},
+    }
+    store.register_rejection(["pmid:123", "doi:10.111/example"], payload)
+    reloaded = literature.StateStore(tmp_path)
+    found = reloaded.find_rejection(["doi:10.111/example", "pmid:123"])
+    assert found and found.get("node") == "Registry"
+    assert "pmid:123" in reloaded.get_rejections()

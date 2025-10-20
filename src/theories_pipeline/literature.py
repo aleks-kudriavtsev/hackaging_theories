@@ -169,6 +169,10 @@ class PaperMetadata:
             canonical_parts.append("authors:" + "-".join(sorted(author_tokens)))
         return "|".join(canonical_parts)
 
+    def rejection_keys(self) -> Tuple[str, ...]:
+        """Return canonical rejection keys for this paper."""
+        return _build_rejection_keys(self.identifier, self.doi)
+
     @property
     def analysis_text(self) -> str:
         if self.full_text and self.full_text.strip():
@@ -186,6 +190,89 @@ class PaperMetadata:
             if joined:
                 return joined
         return self.abstract
+
+
+def _clean_rejection_fragment(value: str | None) -> str:
+    fragment = str(value or "").strip()
+    if not fragment:
+        return ""
+    fragment = fragment.split("#", 1)[0]
+    fragment = fragment.split("?", 1)[0]
+    return fragment.strip().strip("/")
+
+
+def _identifier_rejection_keys(identifier: str | None) -> list[str]:
+    if not identifier:
+        return []
+    value = str(identifier).strip()
+    if not value:
+        return []
+    lower = value.lower()
+    keys: list[str] = []
+
+    def add(key: str | None) -> None:
+        if key and key not in keys:
+            keys.append(key)
+
+    if lower.startswith("doi:"):
+        candidate = _clean_rejection_fragment(lower.split(":", 1)[1])
+        if candidate:
+            add(f"doi:{candidate}")
+    elif lower.startswith("crossref:"):
+        candidate = _clean_rejection_fragment(lower.split(":", 1)[1])
+        if candidate:
+            add(f"doi:{candidate}")
+    elif lower.startswith("pmid:") or lower.startswith("pubmed:"):
+        candidate = _clean_rejection_fragment(lower.split(":", 1)[1])
+        if candidate:
+            add(f"pmid:{candidate}")
+    elif lower.startswith("openalex:"):
+        candidate = _clean_rejection_fragment(lower.split(":", 1)[1])
+        if candidate:
+            add(f"openalex:{candidate}")
+    else:
+        if "doi.org/" in lower:
+            candidate = _clean_rejection_fragment(lower.split("doi.org/", 1)[1])
+            if candidate:
+                add(f"doi:{candidate}")
+        if "openalex.org/" in lower:
+            candidate = _clean_rejection_fragment(lower.split("openalex.org/", 1)[1])
+            if candidate:
+                add(f"openalex:{candidate}")
+        if "pubmed.ncbi.nlm.nih.gov/" in lower:
+            candidate = _clean_rejection_fragment(lower.split("pubmed.ncbi.nlm.nih.gov/", 1)[1])
+            if candidate:
+                add(f"pmid:{candidate}")
+        if "ncbi.nlm.nih.gov/pubmed/" in lower:
+            candidate = _clean_rejection_fragment(lower.split("ncbi.nlm.nih.gov/pubmed/", 1)[1])
+            if candidate:
+                add(f"pmid:{candidate}")
+    fallback = _clean_rejection_fragment(lower)
+    if fallback:
+        add(fallback)
+    return keys
+
+
+def _build_rejection_keys(identifier: str, doi: str | None) -> Tuple[str, ...]:
+    keys: list[str] = []
+
+    def add(key: str | None) -> None:
+        if key and key not in keys:
+            keys.append(key)
+
+    if doi:
+        doi_lower = str(doi).strip().lower()
+        if doi_lower:
+            candidate = _clean_rejection_fragment(doi_lower)
+            if candidate.startswith("doi:"):
+                candidate = _clean_rejection_fragment(candidate.split(":", 1)[1])
+            if candidate:
+                add(f"doi:{candidate}")
+
+    for key in _identifier_rejection_keys(identifier):
+        add(key)
+
+    return tuple(keys)
 
 
 @dataclass
@@ -245,10 +332,23 @@ class StateStore:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.state_path = self.directory / "literature_state.json"
+        self.rejections_path = self.directory / "literature_rejections.json"
+        self._data: Dict[str, Any] = {}
         if self.state_path.exists():
-            self._data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        else:
-            self._data = {}
+            try:
+                payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                self._data = payload
+        self._rejections: Dict[str, Any] = {}
+        if self.rejections_path.exists():
+            try:
+                payload = json.loads(self.rejections_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                self._rejections = payload
 
     def get(self, key: str) -> Dict[str, Any]:
         data = self._data.get(key, {})
@@ -267,8 +367,38 @@ class StateStore:
         summary_path = self.directory / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
+    def get_rejections(self) -> Dict[str, Any]:
+        return json.loads(json.dumps(self._rejections))
+
+    def find_rejection(self, keys: Iterable[str]) -> Dict[str, Any] | None:
+        for key in keys:
+            if not key:
+                continue
+            entry = self._rejections.get(key)
+            if entry is not None:
+                return json.loads(json.dumps(entry))
+        return None
+
+    def register_rejection(self, keys: Iterable[str], payload: Mapping[str, Any]) -> None:
+        serializable = json.loads(json.dumps(payload))
+        updated = False
+        for key in keys:
+            if not key:
+                continue
+            if self._rejections.get(key) != serializable:
+                self._rejections[key] = serializable
+                updated = True
+        if updated:
+            self._flush_rejections()
+
     def _flush(self) -> None:
         self.state_path.write_text(json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _flush_rejections(self) -> None:
+        self.rejections_path.write_text(
+            json.dumps(self._rejections, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
 
 class BaseProvider:
