@@ -767,9 +767,6 @@ def collect_for_entry(
         visited_nodes = visited
     visited_nodes.add(name)
 
-    query_templates = config.get("queries")
-    query_source = "configured"
-
     def _coerce_templates(payload: Any) -> List[str]:
         if isinstance(payload, Mapping):
             return [str(item) for item in payload.values() if str(item).strip()]
@@ -780,12 +777,14 @@ def collect_for_entry(
             return [stripped] if stripped else []
         return []
 
+    query_templates = config.get("queries")
+    suggestion_templates = _coerce_templates(config.get("suggested_queries"))
+    query_source = "configured"
+
     templates = _coerce_templates(query_templates)
-    if not templates:
-        suggestions = _coerce_templates(config.get("suggested_queries"))
-        if suggestions:
-            templates = suggestions
-            query_source = "suggested"
+    if not templates and suggestion_templates:
+        templates = suggestion_templates
+        query_source = "suggested"
 
     if not templates:
         fallback_template = str(context.get("base_query") or name)
@@ -1099,6 +1098,9 @@ def collect_for_entry(
     summary["total_unique"] = len(accepted_papers)
     summary["queries"] = base_queries
     summary["query_source"] = query_source
+    if suggestion_templates:
+        summary["suggested_queries"] = suggestion_templates
+        summary["suggested_queries_used"] = query_source == "suggested"
     summary["filtering"] = {
         "accepted": sum(1 for decision in filter_decisions if decision.accepted),
         "rejected": sum(1 for decision in filter_decisions if not decision.accepted),
@@ -1562,6 +1564,18 @@ def collect_for_entry(
             record = filter_state.setdefault(decision.identifier, {})
             record.update(decision.to_record(threshold=relevance_filter.threshold))
             record["updated_at"] = filter_timestamp
+        query_state_raw = state_payload.get("queries") if isinstance(state_payload.get("queries"), Mapping) else {}
+        query_state: Dict[str, Any] = dict(query_state_raw) if isinstance(query_state_raw, Mapping) else {}
+        query_state["templates"] = list(base_queries)
+        query_state["source"] = query_source
+        query_state["updated_at"] = timestamp
+        if suggestion_templates:
+            query_state["suggested"] = suggestion_templates
+            query_state["suggested_used"] = query_source == "suggested"
+        else:
+            query_state.pop("suggested", None)
+            query_state.pop("suggested_used", None)
+        state_payload["queries"] = query_state
         state_payload["enrichment"] = enrichment_state
         if filter_state:
             state_payload["filtering"] = filter_state
@@ -1995,7 +2009,29 @@ def run_pipeline(
                 hints = [raw_hints.strip()]
             if hints:
                 theory_summary = dict(theory_summary)
-                theory_summary["suggested_queries"] = hints
+                existing_hints_raw = theory_summary.get("suggested_queries")
+                existing_hints: List[str] = []
+                if isinstance(existing_hints_raw, Sequence) and not isinstance(
+                    existing_hints_raw, (str, bytes)
+                ):
+                    existing_hints = [
+                        str(item).strip() for item in existing_hints_raw if str(item).strip()
+                    ]
+                elif isinstance(existing_hints_raw, str) and existing_hints_raw.strip():
+                    existing_hints = [existing_hints_raw.strip()]
+
+                merged_hints: List[str] = []
+                seen_hints: set[str] = set()
+                for value in existing_hints + hints:
+                    text = str(value).strip()
+                    if not text:
+                        continue
+                    lowered = text.lower()
+                    if lowered in seen_hints:
+                        continue
+                    seen_hints.add(lowered)
+                    merged_hints.append(text)
+                theory_summary["suggested_queries"] = merged_hints
         summary_report[theory_name] = theory_summary
         for paper in theory_papers:
             collected_papers.setdefault(paper.identifier, paper)
