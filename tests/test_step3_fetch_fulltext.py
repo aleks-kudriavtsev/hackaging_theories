@@ -57,3 +57,30 @@ def test_process_record_records_pdf_download_failure(monkeypatch: pytest.MonkeyP
     assert enriched["ocr_status"] == "pdf_download_failed"
     assert failure is not None
     assert failure["reason"] == "pdf_download_failed"
+
+
+def test_process_record_handles_pubmed_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_entrez(*args: Any, **kwargs: Any) -> Any:
+        raise step3.EntrezRequestError("boom")
+
+    monkeypatch.setattr(step3, "fetch_pubmed_xml", _raise_entrez)
+
+    record = {
+        "id": "test-record",
+        "pmid": "123456",
+        "title": "Example",
+    }
+
+    enriched, failure = step3._process_record(
+        record,
+        index=0,
+        total=1,
+        worker_prefix="[worker-test]",
+        rate_limiter=None,
+        max_attempts=1,
+        retry_wait=1.0,
+    )
+
+    assert enriched["full_text"] is None
+    assert enriched["pdf_processing"]["failure_reason"] == "pubmed_fetch_failed"
+    assert failure is None
