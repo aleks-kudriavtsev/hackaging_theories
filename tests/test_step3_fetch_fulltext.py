@@ -1,4 +1,5 @@
 import http.client
+import ssl
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set, Tuple
@@ -23,12 +24,36 @@ def test_download_binary_handles_remote_disconnected(monkeypatch: pytest.MonkeyP
     assert result is None
 
 
-def _raise_timeout(*args: Any, **kwargs: Any) -> None:  # pragma: no cover - helper
-    raise TimeoutError("timed out")
-
-
 def test_download_binary_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_timeout)
+    class _TimeoutResponse:
+        def read(self) -> bytes:
+            raise TimeoutError("timed out")
+
+        def __enter__(self) -> "_TimeoutResponse":
+            return self
+
+        def __exit__(self, *exc_info: Any) -> None:
+            return None
+
+    monkeypatch.setattr(step3.urllib.request, "urlopen", lambda *args, **kwargs: _TimeoutResponse())
+
+    result = step3._download_binary("https://example.test/paper.pdf")
+
+    assert result is None
+
+
+def test_download_binary_handles_ssl_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _SSLResponse:
+        def read(self) -> bytes:
+            raise ssl.SSLError("boom")
+
+        def __enter__(self) -> "_SSLResponse":
+            return self
+
+        def __exit__(self, *exc_info: Any) -> None:
+            return None
+
+    monkeypatch.setattr(step3.urllib.request, "urlopen", lambda *args, **kwargs: _SSLResponse())
 
     result = step3._download_binary("https://example.test/paper.pdf")
 
