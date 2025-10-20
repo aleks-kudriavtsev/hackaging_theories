@@ -355,14 +355,12 @@ def _find_openalex_pdf_url(record: Dict) -> Optional[str]:
 
 
 def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
+    headers = {
+        "User-Agent": "hackaging-theories-fulltext/1.0",
+        "Accept": "application/pdf, */*",
+    }
     try:
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "hackaging-theories-fulltext/1.0",
-                "Accept": "application/pdf, */*",
-            },
-        )
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec - trusted endpoint
             return response.read()
     except (
@@ -374,7 +372,7 @@ def _download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
         ConnectionError,
         ssl.SSLError,
         OSError,
-        ValueError,
+        ValueError,  # covers http.client.InvalidURL from malformed inputs
     ) as exc:  # pragma: no cover - network failure
         logger.debug("Failed to download %s: %s", url, exc)
         return None

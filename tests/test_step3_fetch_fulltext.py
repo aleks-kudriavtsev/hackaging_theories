@@ -61,10 +61,17 @@ def test_download_binary_handles_ssl_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_download_binary_handles_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _raise_value_error(url: str, *args: Any, **kwargs: Any) -> None:
+    class _DummyRequest:
+        def __init__(self, url: str, headers: Dict[str, str]) -> None:
+            assert " " in url  # ensure malformed URL propagated
+            self.url = url
+            self.headers = headers
+
+    def _raise_value_error(_request: _DummyRequest, *args: Any, **kwargs: Any) -> None:
         raise ValueError("invalid URL")
 
-    monkeypatch.setattr(step3.urllib.request, "Request", _raise_value_error)
+    monkeypatch.setattr(step3.urllib.request, "Request", _DummyRequest)
+    monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_value_error)
 
     malformed_url = "https://example.test/has space.pdf"
 
