@@ -383,6 +383,27 @@ def _extract_pdf_text(pdf_bytes: bytes) -> Tuple[Optional[str], Dict[str, Option
     return None, metadata
 
 
+def _merge_pdf_processing(
+    existing: Dict[str, Any], update: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Merge ``pdf_processing`` metadata without clobbering fetch failures."""
+
+    if not update:
+        return existing
+
+    if not existing:
+        return update.copy()
+
+    merged = existing.copy()
+    for key, value in update.items():
+        if key == "failure_reason" and merged.get("failure_reason"):
+            if value and merged["failure_reason"] != value:
+                merged.setdefault("secondary_failure_reason", value)
+            continue
+        merged[key] = value
+    return merged
+
+
 def _process_record(
     record: Dict,
     index: int,
@@ -399,24 +420,35 @@ def _process_record(
     full_text_source = None
     openalex_pdf_url = None
     record.pop("pdf_processing", None)
+    pdf_processing_meta: Dict[str, Any] = {}
 
     if pmid:
-        article_xml = fetch_pubmed_xml(
-            pmid,
-            rate_limiter=rate_limiter,
-            max_attempts=max_attempts,
-            retry_wait=retry_wait,
-        )
+        try:
+            article_xml = fetch_pubmed_xml(
+                pmid,
+                rate_limiter=rate_limiter,
+                max_attempts=max_attempts,
+                retry_wait=retry_wait,
+            )
+        except (EntrezRequestError, RuntimeError) as exc:
+            logger.warning("Failed to fetch PubMed XML for %s: %s", pmid, exc)
+            pdf_processing_meta.setdefault("failure_reason", "pubmed_fetch_failed")
+            article_xml = None
         if article_xml is not None:
             pmcid = extract_pmcid(article_xml)
             record.setdefault("pubmed_xml", ET.tostring(article_xml, encoding="unicode"))
     if pmcid:
-        full_text = fetch_pmc_fulltext(
-            pmcid,
-            rate_limiter=rate_limiter,
-            max_attempts=max_attempts,
-            retry_wait=retry_wait,
-        )
+        try:
+            full_text = fetch_pmc_fulltext(
+                pmcid,
+                rate_limiter=rate_limiter,
+                max_attempts=max_attempts,
+                retry_wait=retry_wait,
+            )
+        except (EntrezRequestError, RuntimeError) as exc:
+            logger.warning("Failed to fetch PMC full text for %s: %s", pmcid, exc)
+            pdf_processing_meta.setdefault("failure_reason", "pmc_fetch_failed")
+            full_text = None
         if full_text:
             full_text_source = "pmc"
     record["pmcid"] = pmcid
@@ -430,7 +462,9 @@ def _process_record(
             if pdf_bytes:
                 pdf_text, extraction_meta = _extract_pdf_text(pdf_bytes)
                 if extraction_meta:
-                    record["pdf_processing"] = extraction_meta
+                    pdf_processing_meta = _merge_pdf_processing(
+                        pdf_processing_meta, extraction_meta
+                    )
                     ocr_status = extraction_meta.get("ocr_status") or ocr_status
                 if pdf_text:
                     full_text = pdf_text
@@ -449,7 +483,9 @@ def _process_record(
                     "failure_reason": "pdf_download_failed",
                     "method": None,
                 }
-                record["pdf_processing"] = extraction_meta
+                pdf_processing_meta = _merge_pdf_processing(
+                    pdf_processing_meta, extraction_meta
+                )
         else:
             ocr_status = "no_pdf_url"
             extraction_meta = {
@@ -458,9 +494,14 @@ def _process_record(
                 "failure_reason": "no_pdf_url",
                 "method": None,
             }
-            record["pdf_processing"] = extraction_meta
+            pdf_processing_meta = _merge_pdf_processing(
+                pdf_processing_meta, extraction_meta
+            )
     else:
         record["openalex_pdf_url"] = None
+
+    if pdf_processing_meta:
+        record["pdf_processing"] = pdf_processing_meta
 
     failure_reason = None
     if extraction_meta and extraction_meta.get("failure_reason"):
