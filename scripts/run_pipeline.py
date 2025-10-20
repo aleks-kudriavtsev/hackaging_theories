@@ -364,6 +364,14 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Delay between OpenAI calls during filtering (seconds).",
     )
     parser.add_argument(
+        "--filter-processes",
+        type=int,
+        help=(
+            "Number of worker processes to use during step 2 filtering. "
+            "Defaults to the auto-scaling behaviour inside the step when omitted."
+        ),
+    )
+    parser.add_argument(
         "--theory-model",
         "--extract-model",
         dest="theory_model",
@@ -394,6 +402,16 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help=(
             "Delay between OpenAI calls during theory extraction (seconds). "
             "(--extract-delay is accepted for backwards compatibility.)"
+        ),
+    )
+    parser.add_argument(
+        "--theory-processes",
+        "--extract-processes",
+        dest="theory_processes",
+        type=int,
+        help=(
+            "Number of worker processes to use during step 4 theory extraction. "
+            "(--extract-processes is accepted for backwards compatibility.)"
         ),
     )
     parser.add_argument(
@@ -649,6 +667,11 @@ def main(argv: List[str] | None = None) -> int:
                 args.filter_model,
                 "--delay",
                 str(args.filter_delay),
+                *(
+                    ["--processes", str(args.filter_processes)]
+                    if args.filter_processes is not None
+                    else []
+                ),
             ],
             "Filter reviews with OpenAI",
         )
@@ -694,6 +717,11 @@ def main(argv: List[str] | None = None) -> int:
                 str(args.chunk_chars),
                 "--chunk-overlap",
                 str(args.chunk_overlap),
+                *(
+                    ["--processes", str(args.theory_processes)]
+                    if args.theory_processes is not None
+                    else []
+                ),
             ],
             "Extract theories from reviews",
         )
