@@ -9,6 +9,13 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
 
+if __package__ is None:  # pragma: no cover - convenience for direct execution
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
 from scripts import collect_theories, run_pipeline
 
 logger = logging.getLogger(__name__)
