@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -972,3 +973,166 @@ def test_promote_successful_queries_emits_update(tmp_path: Path) -> None:
     provenance = node.metadata.get("runtime_provenance", {})
     assert provenance.get("query") == "digital biomarkers"
     assert provenance.get("supporting_papers"), "Provenance should list supporting papers"
+
+def test_collect_for_entry_records_rejection_registry(monkeypatch):
+    recorded: List[tuple[tuple[str, ...], Dict[str, Any]]] = []
+
+    class RegistryStateStore:
+        def __init__(self) -> None:
+            self.storage: Dict[str, Any] = {}
+
+        def get(self, key: str) -> Dict[str, Any]:
+            return copy.deepcopy(self.storage.get(key, {}))
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.storage[key] = copy.deepcopy(dict(value))
+
+        def latest_rejection(self, _key: str):  # pragma: no cover - unused in this test
+            return None
+
+        def record_rejection(self, keys, **payload) -> None:
+            recorded.append((tuple(keys), dict(payload)))
+
+    class RegistryRetriever:
+        def __init__(self) -> None:
+            self.state_store = RegistryStateStore()
+
+        def collect_queries(self, *_args, **_kwargs):
+            paper = PaperMetadata(
+                identifier="https://openalex.org/W1234567890",
+                title="Aging Theory",
+                authors=(),
+                abstract="",
+                source="openalex",
+                doi="10.1000/test",
+            )
+            summary = {"total_unique": 1, "providers": {"stub": 1}}
+            return SimpleNamespace(papers=[paper], summary=summary)
+
+    class RejectingFilter:
+        def __init__(self, *args, threshold: float = 0.0, **kwargs) -> None:
+            self.threshold = float(threshold)
+
+        def apply(self, papers, *, context, existing_decisions):
+            decisions = [
+                collect_theories.FilterDecision(
+                    identifier=paper.identifier,
+                    score=0.0,
+                    accepted=False,
+                    rationale="irrelevant",
+                    details={"reason": "test"},
+                )
+                for paper in papers
+            ]
+            return [], decisions
+
+    monkeypatch.setattr(collect_theories, "RelevanceFilter", RejectingFilter)
+
+    retriever = RegistryRetriever()
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="Aging",
+        config={"queries": ["aging"]},
+        context={"base_query": "aging"},
+        providers=None,
+        resume=False,
+        state_prefix="aging",
+        ontology_manager=None,
+        expander=None,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    assert not papers
+    assert summary["filtering"]["rejected"] == 1
+    assert recorded, "Rejected paper should be written to registry"
+    keys, payload = recorded[0]
+    assert "doi:10.1000/test" in keys
+    assert payload["node"] == "Aging"
+
+
+def test_collect_for_entry_respects_rejection_registry(monkeypatch):
+    class RegistryStateStore:
+        def __init__(self) -> None:
+            self.storage: Dict[str, Any] = {}
+            self.registry: Dict[str, Any] = {
+                "doi:10.2000/skip": {
+                    "decisions": [
+                        {
+                            "identifier": "https://openalex.org/W999",
+                            "node": "SeedNode",
+                            "rationale": "cached rejection",
+                            "score": 0.05,
+                            "threshold": 0.6,
+                            "accepted": False,
+                            "details": {"note": "existing"},
+                        }
+                    ]
+                }
+            }
+
+        def get(self, key: str) -> Dict[str, Any]:
+            return copy.deepcopy(self.storage.get(key, {}))
+
+        def set(self, key: str, value: Mapping[str, Any]) -> None:
+            self.storage[key] = copy.deepcopy(dict(value))
+
+        def latest_rejection(self, key: str):
+            entry = self.registry.get(key)
+            if not entry:
+                return None
+            decisions = entry.get("decisions")
+            if not decisions:
+                return None
+            return copy.deepcopy(decisions[-1])
+
+        def record_rejection(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Registry should not record duplicate rejections")
+
+    class RegistryRetriever:
+        def __init__(self) -> None:
+            self.state_store = RegistryStateStore()
+
+        def collect_queries(self, *_args, **_kwargs):
+            paper = PaperMetadata(
+                identifier="https://openalex.org/W999",
+                title="Existing Paper",
+                authors=(),
+                abstract="",
+                source="openalex",
+                doi="10.2000/skip",
+            )
+            summary = {"total_unique": 1, "providers": {"stub": 1}}
+            return SimpleNamespace(papers=[paper], summary=summary)
+
+    def fail_score(self, paper, *, context):  # pragma: no cover - defensive
+        raise AssertionError("_score_paper should not be called for registered rejection")
+
+    monkeypatch.setattr(collect_theories.RelevanceFilter, "_score_paper", fail_score)
+
+    retriever = RegistryRetriever()
+
+    summary, papers = collect_theories.collect_for_entry(
+        retriever,
+        name="SkipNode",
+        config={"queries": ["skip"], "filtering": {"threshold": 0.6}},
+        context={"base_query": "skip"},
+        providers=None,
+        resume=False,
+        state_prefix="skip",
+        ontology_manager=None,
+        expander=None,
+        default_expansion=None,
+        retrieval_options=None,
+        filter_llm_client=None,
+        label_bootstrapper=None,
+    )
+
+    assert not papers
+    assert summary["filtering"]["rejected"] == 1
+    stored = retriever.state_store.storage["skip"]["filtering"]
+    record = stored["https://openalex.org/W999"]
+    assert record["details"]["source"] == "global_registry"

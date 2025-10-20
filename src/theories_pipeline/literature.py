@@ -245,10 +245,24 @@ class StateStore:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.state_path = self.directory / "literature_state.json"
+        self.rejections_path = self.directory / "literature_rejections.json"
         if self.state_path.exists():
             self._data = json.loads(self.state_path.read_text(encoding="utf-8"))
         else:
             self._data = {}
+        if self.rejections_path.exists():
+            try:
+                self._rejections = json.loads(
+                    self.rejections_path.read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to parse rejection registry at %s; starting fresh",
+                    self.rejections_path,
+                )
+                self._rejections = {}
+        else:
+            self._rejections = {}
 
     def get(self, key: str) -> Dict[str, Any]:
         data = self._data.get(key, {})
@@ -267,8 +281,94 @@ class StateStore:
         summary_path = self.directory / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
+    def get_rejection_registry(self) -> Dict[str, Any]:
+        return json.loads(json.dumps(self._rejections))
+
+    def latest_rejection(self, key: str) -> Dict[str, Any] | None:
+        entry = self._rejections.get(key)
+        if not isinstance(entry, Mapping):
+            return None
+        decisions = entry.get("decisions")
+        if not isinstance(decisions, list) or not decisions:
+            return None
+        return json.loads(json.dumps(decisions[-1]))
+
+    def record_rejection(
+        self,
+        keys: Sequence[str],
+        *,
+        identifier: str,
+        node: str,
+        rationale: str | None,
+        score: float | None,
+        threshold: float | None,
+        details: Mapping[str, Any] | None = None,
+        timestamp: float | None = None,
+    ) -> None:
+        if not keys:
+            return
+        if timestamp is None:
+            timestamp = time.time()
+        changed = False
+        for key in keys:
+            normalized = str(key).strip()
+            if not normalized:
+                continue
+            entry = self._rejections.setdefault(normalized, {})
+            if not isinstance(entry, MutableMapping):
+                entry = {}
+                self._rejections[normalized] = entry
+            decisions = entry.setdefault("decisions", [])
+            if not isinstance(decisions, list):
+                decisions = []
+                entry["decisions"] = decisions
+            payload: Dict[str, Any] = {
+                "identifier": identifier,
+                "node": node,
+                "timestamp": float(timestamp),
+            }
+            if rationale:
+                payload["rationale"] = rationale
+            if score is not None:
+                payload["score"] = float(score)
+            if threshold is not None:
+                payload["threshold"] = float(threshold)
+            if details:
+                payload["details"] = dict(details)
+            existing = None
+            for record in decisions:
+                if (
+                    isinstance(record, MutableMapping)
+                    and record.get("identifier") == identifier
+                    and record.get("node") == node
+                ):
+                    existing = record
+                    break
+            if existing is not None:
+                updated = False
+                for field, value in payload.items():
+                    if existing.get(field) != value:
+                        existing[field] = value
+                        updated = True
+                if updated:
+                    changed = True
+            else:
+                decisions.append(payload)
+                changed = True
+            if "first_seen" not in entry:
+                entry["first_seen"] = float(timestamp)
+            entry["updated_at"] = float(timestamp)
+        if changed:
+            self._flush_rejections()
+
     def _flush(self) -> None:
         self.state_path.write_text(json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _flush_rejections(self) -> None:
+        self.rejections_path.write_text(
+            json.dumps(self._rejections, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
 
 class BaseProvider:
