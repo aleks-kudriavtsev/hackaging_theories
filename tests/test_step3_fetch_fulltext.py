@@ -22,6 +22,18 @@ def test_download_binary_handles_remote_disconnected(monkeypatch: pytest.MonkeyP
     assert result is None
 
 
+def _raise_timeout(*args: Any, **kwargs: Any) -> None:  # pragma: no cover - helper
+    raise TimeoutError("timed out")
+
+
+def test_download_binary_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_timeout)
+
+    result = step3._download_binary("https://example.test/paper.pdf")
+
+    assert result is None
+
+
 def test_process_record_records_pdf_download_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step3.urllib.request, "urlopen", _raise_remote_disconnected)
 
