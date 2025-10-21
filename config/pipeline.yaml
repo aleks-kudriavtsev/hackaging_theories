@@ -1,15 +1,19 @@
 api_keys:
   openalex:
     env: OPENALEX_API_KEY
+    default: "set-your-openalex-token"
   crossref_contact:
     env: CROSSREF_API_KEY
     default: "you@example.com"
   pubmed:
     env: PUBMED_API_KEY
+    default: "set-your-pubmed-token"
   serpapi:
     env: SERPAPI_KEY
+    default: "set-your-serpapi-token"
   semantic_scholar:
     env: SEMANTIC_SCHOLAR_KEY
+    default: "set-your-semanticscholar-token"
   openai:
     env: OPENAI_API_KEY
   scihub_email:
@@ -42,7 +46,7 @@ providers:
       - "{query}"
   - name: serpapi_scholar
     type: serpapi_scholar
-    enabled: false
+    enabled: true
     api_key_key: serpapi
     base_url: https://serpapi.com/search.json
     batch_size: 10
@@ -52,7 +56,7 @@ providers:
       max_page_size: 10
   - name: semantic_scholar
     type: semantic_scholar
-    enabled: false
+    enabled: true
     api_key_key: semantic_scholar
     base_url: https://api.semanticscholar.org/graph/v1/paper/search
     batch_size: 100
@@ -189,24 +193,49 @@ classification:
 
 corpus:
   ontology_suggestions_path: data/pipeline/aging_ontology.json
+  base_query: "aging theory"
   bootstrap:
     enabled: true
     queries:
-      reviews:
-        query: "{base_query} review"
+      aging_theory_reviews:
+        query: '"aging theory" review'
         providers:
           - pubmed
+          - openalex
+        min_citations: 35
+        max_reviews: 8
+      hallmarks_of_aging:
+        query: '"hallmarks of aging" review'
+        providers:
+          - pubmed
+          - semantic_scholar
+        min_citations: 40
+        max_reviews: 6
+      damage_accumulation:
+        query: '"damage accumulation" aging review'
+        providers:
+          - openalex
+          - serpapi_scholar
         min_citations: 25
         max_reviews: 6
+      longevity_pathways:
+        query: '"longevity pathway" aging theory review'
+        providers:
+          - pubmed
+          - semantic_scholar
+        min_citations: 20
+        max_reviews: 5
     providers:
       - pubmed
       - openalex
+      - semantic_scholar
+      - serpapi_scholar
     min_citations: 20
-    limit_per_query: 40
-    max_per_query: 8
+    limit_per_query: 60
+    max_per_query: 10
     resume: true
     state_prefix: "bootstrap::reviews"
-    max_theories: 8
+    max_theories: 10
     balance:
       max_children: 6
     cache_path: data/cache/bootstrap_ontology.json
@@ -217,64 +246,128 @@ corpus:
   sort_by_citations: true
   global_limit: 1500
   expansion:
-    enabled: false  # Set to true to allow adaptive query exploration
-    max_new_queries: 4
-    max_snippets: 10
-    max_gpt_queries: 3
-    embedding_neighbors: 4
+    enabled: true
+    max_new_queries: 5
+    max_snippets: 12
+    max_gpt_queries: 4
+    embedding_neighbors: 6
     gpt_prompt: |
       You are helping expand literature search queries for the Hackaging project.
-      Return a JSON array of new search strings based on the supplied snippets.
+      Return a JSON array of 3-5 new search strings grounded in the supplied snippets.
       Avoid duplicates of the existing queries and keep each query under 12 words.
+      Prioritise mechanistic or pathway-oriented phrases tied to aging theories.
   targets:
     Free Radical Theory:
       target: 480
       queries:
         - "{base_query} free radical theory of aging"
         - "oxidative stress lifespan decline"
+      expansion:
+        enabled: true
+        max_new_queries: 4
+        max_snippets: 12
+        max_gpt_queries: 3
+        gpt_prompt: |
+          Suggest concise oxidative stress literature search strings as a JSON array.
+          Focus on ROS mechanisms, antioxidant interventions, and mitochondrial damage in aging.
       subtheories:
         Mitochondrial Free Radical Theory:
           target: 220
           queries:
             - "{base_query} mitochondrial free radical theory"
             - "mitochondrial ros aging damage"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            embedding_neighbors: 5
+            gpt_prompt: |
+              Provide up to three mitochondrial ROS aging search phrases as JSON.
+              Highlight mitophagy, mtDNA damage, or respiratory chain dysfunction.
         Antioxidant Defense Decline:
           target: 160
           queries:
             - "{base_query} antioxidant defense aging"
             - "superoxide dismutase aging"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            max_gpt_queries: 2
+            gpt_prompt: |
+              Return a JSON array of antioxidant defense aging search queries.
+              Emphasise glutathione, catalase, and enzymatic protection pathways.
     Telomere Shortening Theory:
       target: 420
       queries:
         - "{base_query} telomere shortening aging"
         - "telomerase lifespan extension"
+      expansion:
+        enabled: true
+        max_new_queries: 4
+        max_snippets: 10
+        gpt_prompt: |
+          Generate telomere and telomerase-focused aging search strings as JSON.
+          Keep terms actionable for literature retrieval (e.g. telomere instability, telomerase therapy).
       subtheories:
         Telomerase Activation Strategies:
           target: 180
           queries:
             - "{base_query} telomerase activation therapy"
             - "tert activation aging"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            max_snippets: 8
+            gpt_prompt: |
+              Produce a JSON array of telomerase activation aging queries.
+              Include gene therapy, small molecules, or telomerase regulation.
         Shelterin Complex Dysfunction:
           target: 150
           queries:
             - "{base_query} shelterin complex aging"
             - "trf2 protection telomeres"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            embedding_neighbors: 5
+            gpt_prompt: |
+              Suggest shelterin complex failure search strings as JSON.
+              Highlight TRF1/TRF2 loss, POT1 mutations, or telomere uncapping in aging.
     Disposable Soma Theory:
       target: 360
       queries:
         - "{base_query} disposable soma theory"
         - "resource allocation longevity"
+      expansion:
+        enabled: true
+        max_new_queries: 4
+        max_snippets: 10
+        gpt_prompt: |
+          Provide JSON-formatted search strings on somatic maintenance trade-offs in aging.
+          Blend terms spanning energetics, reproduction, and repair prioritisation.
       subtheories:
         Energy Allocation Trade-offs:
           target: 160
           queries:
             - "{base_query} energy allocation aging"
             - "reproduction longevity trade-off"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            gpt_prompt: |
+              List up to three search strings on energy allocation and aging as JSON.
+              Include caloric restriction, reproductive cost, or life-history trade-offs.
         Maintenance Investment Strategies:
           target: 140
           queries:
             - "{base_query} somatic maintenance aging"
             - "repair investment lifespan"
+          expansion:
+            enabled: true
+            max_new_queries: 3
+            max_snippets: 8
+            gpt_prompt: |
+              Return JSON search strings on maintenance investment and organismal longevity.
+              Consider proteostasis, autophagy, and repair pathway prioritisation.
 extraction:
   llm:
     enabled: true
