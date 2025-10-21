@@ -42,20 +42,18 @@ corpus:
     queries:
       reviews:
         query: "{base_query} review"
-        providers: ["openalex"]
-        min_citations: 30
-        max_reviews: 5
-    providers: ["openalex", "pubmed"]
+        providers: ["pubmed"]
+        min_citations: 25
+        max_reviews: 6
+    providers: ["pubmed", "openalex"]
     min_citations: 20
     limit_per_query: 40
     max_per_query: 8
     resume: true
     state_prefix: "bootstrap::reviews"
-    citation_overrides:
-      openalex:W12345: 120
-    context:
-      year: 2024
-    max_theories: 6
+    max_theories: 8
+    balance:
+      max_children: 6
     cache_path: data/cache/bootstrap_ontology.json
     update_targets: false
 ```
@@ -78,7 +76,9 @@ corpus:
 Follow the steps below to run the bootstrapper end-to-end with a single CLI
 command. The example assumes you are starting from
 [`config/pipeline.yaml`](../config/pipeline.yaml), which already contains a
-`corpus.bootstrap` block.
+`corpus.bootstrap` block. The default configuration couples the bootstrapper
+with biological aging targets—Free Radical Theory, Telomere Shortening Theory,
+and Disposable Soma Theory—under `corpus.targets`.
 
 1. **Provide API credentials.** Export the keys that your chosen providers
    require, or pass them directly to the collector using the CLI overrides. For

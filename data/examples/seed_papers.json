@@ -1,20 +1,29 @@
 [
   {
-    "identifier": "paper-001",
-    "title": "Engagement and Participation in Later Life Activities",
-    "authors": ["A. Researcher", "B. Scholar"],
-    "abstract": "This mixed-method study explores how older adults maintain activity engagement through community programs and the role of socioemotional goals in participation.",
+    "identifier": "paper-fr-001",
+    "title": "Mitochondrial ROS Drive Muscle Aging in Murine Models",
+    "authors": ["E. Radical", "F. Oxidant"],
+    "abstract": "Longitudinal profiling of murine skeletal muscle demonstrates that mitochondrial reactive oxygen species accelerate sarcomeric damage and frailty; antioxidant supplementation mitigates the phenotype.",
     "source": "Seed Dataset",
-    "year": 2021,
-    "doi": "10.1000/example-doi1"
+    "year": 2022,
+    "doi": "10.1000/example-fr1"
   },
   {
-    "identifier": "paper-002",
-    "title": "Socioemotional Selectivity in Digital Learning for Seniors",
-    "authors": ["C. Analyst"],
-    "abstract": "We analyze qualitative interviews on goal prioritization and socioemotional motivations among seniors adopting digital learning interventions.",
+    "identifier": "paper-tel-001",
+    "title": "Telomerase Activation Restores Replicative Capacity in Senescent Fibroblasts",
+    "authors": ["G. Telomere", "H. Shelterin"],
+    "abstract": "Primary fibroblasts engineered to express TERT regain telomere length, reactivate shelterin components, and recover proliferative potential without malignant transformation.",
+    "source": "Seed Dataset",
+    "year": 2021,
+    "doi": "10.1000/example-tel1"
+  },
+  {
+    "identifier": "paper-ds-001",
+    "title": "Energy Allocation Trade-offs Shape Longevity in Seasonal Killifish",
+    "authors": ["I. Soma", "J. Allocation"],
+    "abstract": "Comparative life-history analyses reveal that reproductive effort during rainy seasons reduces somatic maintenance and shortens lifespan, aligning with disposable soma predictions.",
     "source": "Seed Dataset",
     "year": 2020,
-    "doi": "10.1000/example-doi2"
+    "doi": "10.1000/example-ds1"
   }
 ]

@@ -138,18 +138,54 @@ classification:
     retry_backoff: 2.0
     request_timeout: 60
   keywords:
-    Activity Theory:
-      - activity
-      - engagement
-      - participation
-    Socioemotional Selectivity Theory:
-      - socioemotional
-      - goal
-      - emotional
-    Disengagement Theory:
-      - disengagement
-      - withdrawal
-      - detach
+    Free Radical Theory:
+      keywords:
+        - "free radical theory"
+        - "oxidative stress"
+        - "reactive oxygen species"
+      subtheories:
+        Mitochondrial Free Radical Theory:
+          keywords:
+            - "mitochondrial free radical"
+            - "mtdna damage"
+            - "mitochondrial ros"
+        Antioxidant Defense Decline:
+          keywords:
+            - "antioxidant defense"
+            - "glutathione depletion"
+            - "superoxide dismutase"
+    Telomere Shortening Theory:
+      keywords:
+        - "telomere shortening"
+        - "telomerase"
+        - "chromosome end protection"
+      subtheories:
+        Telomerase Activation Strategies:
+          keywords:
+            - "telomerase activation"
+            - "tert upregulation"
+            - "telomere elongation"
+        Shelterin Complex Dysfunction:
+          keywords:
+            - "shelterin complex"
+            - "trf2 loss"
+            - "t-loop destabilization"
+    Disposable Soma Theory:
+      keywords:
+        - "disposable soma"
+        - "energy allocation"
+        - "maintenance trade-off"
+      subtheories:
+        Energy Allocation Trade-offs:
+          keywords:
+            - "energy allocation trade-off"
+            - "reproductive investment"
+            - "somatic maintenance"
+        Damage Repair Prioritization:
+          keywords:
+            - "damage repair prioritization"
+            - "maintenance cost"
+            - "resource allocation repair"
 
 corpus:
   ontology_suggestions_path: data/pipeline/aging_ontology.json
@@ -191,45 +227,54 @@ corpus:
       Return a JSON array of new search strings based on the supplied snippets.
       Avoid duplicates of the existing queries and keep each query under 12 words.
   targets:
-    Activity Theory:
-      target: 600
+    Free Radical Theory:
+      target: 480
       queries:
-        - "{base_query} activity theory"
-        - "activity theory older adults"
-      expansion:
-        enabled: true
-        max_new_queries: 3
-        max_snippets: 8
+        - "{base_query} free radical theory of aging"
+        - "oxidative stress lifespan decline"
       subtheories:
-        Engagement:
-          target: 300
+        Mitochondrial Free Radical Theory:
+          target: 220
           queries:
-            - "activity theory engagement older adults"
-        Participation:
-          target: 200
+            - "{base_query} mitochondrial free radical theory"
+            - "mitochondrial ros aging damage"
+        Antioxidant Defense Decline:
+          target: 160
           queries:
-            - "activity theory participation aging"
-    Socioemotional Selectivity Theory:
-      target: 500
+            - "{base_query} antioxidant defense aging"
+            - "superoxide dismutase aging"
+    Telomere Shortening Theory:
+      target: 420
       queries:
-        - "{base_query} socioemotional selectivity theory"
-        - "socioemotional selectivity older adults"
-      expansion:
-        enabled: true
-        use_embeddings: true
-        use_gpt: false
-    Disengagement Theory:
-      target: 400
+        - "{base_query} telomere shortening aging"
+        - "telomerase lifespan extension"
+      subtheories:
+        Telomerase Activation Strategies:
+          target: 180
+          queries:
+            - "{base_query} telomerase activation therapy"
+            - "tert activation aging"
+        Shelterin Complex Dysfunction:
+          target: 150
+          queries:
+            - "{base_query} shelterin complex aging"
+            - "trf2 protection telomeres"
+    Disposable Soma Theory:
+      target: 360
       queries:
-        - "{base_query} disengagement theory"
-        - "aging disengagement theory"
-      expansion:
-        enabled: true
-        gpt_prompt: |
-          Generate at most 2 concise search strings as a JSON array.
-          Focus on methodological keywords or populations that appear in the snippets.
-        max_new_queries: 2
-
+        - "{base_query} disposable soma theory"
+        - "resource allocation longevity"
+      subtheories:
+        Energy Allocation Trade-offs:
+          target: 160
+          queries:
+            - "{base_query} energy allocation aging"
+            - "reproduction longevity trade-off"
+        Maintenance Investment Strategies:
+          target: 140
+          queries:
+            - "{base_query} somatic maintenance aging"
+            - "repair investment lifespan"
 extraction:
   llm:
     enabled: true
