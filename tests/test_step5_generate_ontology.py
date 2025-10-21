@@ -11,6 +11,7 @@ SPEC.loader.exec_module(_MODULE)
 
 _coerce_articles_from_documents = _MODULE._coerce_articles_from_documents
 _load_json_payload = _MODULE._load_json_payload
+_load_registry_builder = _MODULE._load_registry_builder
 
 
 def test_load_json_payload_returns_documents_when_registry_missing(tmp_path: Path) -> None:
@@ -62,3 +63,8 @@ def test_coerce_articles_accepts_standalone_records() -> None:
 
     articles = _coerce_articles_from_documents(documents)
     assert [article["id"] for article in articles] == ["solo"]
+
+
+def test_load_registry_builder_recovers_helper_via_path() -> None:
+    builder = _load_registry_builder()
+    assert callable(builder)
