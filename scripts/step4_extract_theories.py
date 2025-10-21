@@ -34,6 +34,7 @@ import difflib
 import json
 import math
 import multiprocessing
+from multiprocessing.managers import SyncManager
 import os
 import re
 import socket
@@ -42,7 +43,7 @@ import textwrap
 import time
 import unicodedata
 import threading
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import urllib.error
 import urllib.request
 
@@ -232,7 +233,7 @@ def process_batch(
         int,
         int,
         Optional[float],
-        Optional[multiprocessing.queues.Queue],
+        Optional[Any],
     ]
 ) -> List[Tuple[int, Dict]]:
     (
@@ -373,7 +374,7 @@ def run_extraction(
     processes: int,
     request_timeout: Optional[float],
     processed_indices: Set[int],
-    result_queue: Optional[multiprocessing.queues.Queue],
+    result_queue: Optional[Any],
 ) -> List[Tuple[int, Dict]]:
     records_list = list(records)
     total_records = len(records_list)
@@ -421,7 +422,8 @@ def run_extraction(
             )
             for batch in batches
         ]
-        with multiprocessing.Pool(processes=processes) as pool:
+        ctx = multiprocessing.get_context()
+        with ctx.Pool(processes=processes) as pool:
             results = pool.map(process_batch, payloads)
         annotated_pairs = [pair for chunk in results for pair in chunk]
         annotated_pairs.sort(key=lambda item: item[0])
@@ -897,10 +899,12 @@ def main(argv: List[str] | None = None) -> int:
     pending_indices = [idx for idx in range(total_records) if idx not in processed_indices]
 
     queue_ctx = multiprocessing.get_context()
+    manager: Optional[SyncManager] = None
     result_queue = None
     writer_thread: Optional[threading.Thread] = None
     if pending_indices:
-        result_queue = queue_ctx.Queue()
+        manager = queue_ctx.Manager()
+        result_queue = manager.Queue()
         writer_thread = threading.Thread(
             target=checkpoint_writer,
             args=(result_queue, checkpoint_path, checkpoint_annotations),
@@ -935,8 +939,23 @@ def main(argv: List[str] | None = None) -> int:
                         flush=True,
                     )
             if result_queue is not None:
-                result_queue.close()
-                result_queue.join_thread()
+                close = getattr(result_queue, "close", None)
+                join_thread = getattr(result_queue, "join_thread", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                if callable(join_thread):
+                    try:
+                        join_thread()
+                    except Exception:
+                        pass
+            if manager is not None:
+                try:
+                    manager.shutdown()
+                except Exception:
+                    pass
     else:
         print("All records already processed; skipping extraction phase.", flush=True)
 

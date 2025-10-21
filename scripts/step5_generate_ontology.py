@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import importlib.util
 import json
 import math
 import multiprocessing
@@ -44,7 +45,8 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -101,9 +103,44 @@ def _load_json_payload(path: str) -> Mapping[str, object] | Sequence[object]:
             )
             return payload
 
-    raise RuntimeError(
-        f"None of the concatenated JSON documents in {path} contain 'theory_registry'."
-    )
+    return documents
+
+
+def _coerce_articles_from_documents(
+    documents: Sequence[Mapping[str, object]]
+) -> List[Dict[str, object]]:
+    """Extract article annotations from checkpoint-like JSON documents."""
+
+    if not documents:
+        return []
+
+    by_index: Dict[int, Dict[str, object]] = {}
+    collected_articles: List[Dict[str, object]] = []
+
+    for entry in documents:
+        raw_articles = entry.get("articles")
+        if isinstance(raw_articles, Sequence) and not isinstance(raw_articles, (str, bytes)):
+            items = [item for item in raw_articles if isinstance(item, Mapping)]
+            if items:
+                collected_articles.extend(dict(item) for item in items)
+                continue
+
+        idx = entry.get("index")
+        record = entry.get("record")
+        if isinstance(idx, int) and isinstance(record, Mapping):
+            by_index[idx] = dict(record)
+            continue
+
+        if isinstance(entry.get("theory_extraction"), Mapping):
+            collected_articles.append(dict(entry))
+
+    if by_index:
+        return [by_index[idx] for idx in sorted(by_index)]
+
+    if collected_articles:
+        return collected_articles
+
+    return []
 
 
 def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
@@ -782,6 +819,23 @@ def main(argv: List[str] | None = None) -> int:
             "Set to 0 to disable article examples."
         ),
     )
+    parser.add_argument(
+        "--registry-model",
+        default="gpt-5-nano",
+        help=(
+            "OpenAI chat completion model used when reconstructing the canonical "
+            "theory registry from checkpoint records."
+        ),
+    )
+    parser.add_argument(
+        "--registry-request-timeout",
+        type=float,
+        default=60.0,
+        help=(
+            "Timeout (in seconds) for OpenAI calls performed during registry "
+            "reconstruction when the input lacks a canonical registry."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -799,17 +853,72 @@ def main(argv: List[str] | None = None) -> int:
         print(f"Failed to load JSON from {args.input}: {err}", file=sys.stderr)
         return 1
 
-    registry = data.get("theory_registry") if isinstance(data, Mapping) else None
+    data_mapping: Optional[Mapping[str, object]] = None
+    fallback_documents: List[Mapping[str, object]] = []
+
+    if isinstance(data, Mapping):
+        data_mapping = data
+    elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+        fallback_documents = [
+            entry for entry in data if isinstance(entry, Mapping)
+        ]
+        for entry in fallback_documents:
+            registry_candidate = entry.get("theory_registry")
+            if isinstance(registry_candidate, Mapping):
+                data_mapping = entry
+                break
+
+    registry = data_mapping.get("theory_registry") if isinstance(data_mapping, Mapping) else None
+    article_records: List[Mapping[str, object]] = []
+    registry_source = "embedded"
+
+    if isinstance(data_mapping, Mapping):
+        raw_articles = data_mapping.get("articles")
+        if isinstance(raw_articles, Sequence) and not isinstance(raw_articles, (str, bytes)):
+            article_records = [
+                record for record in raw_articles if isinstance(record, Mapping)
+            ]
+
+    if registry is None and not article_records and fallback_documents:
+        article_records = _coerce_articles_from_documents(fallback_documents)
+
+    registry_reconstructed = False
+    if registry is None and article_records:
+        build_theory_registry = _load_registry_builder()
+
+        if build_theory_registry is None:
+            print(
+                "Input JSON is missing the 'theory_registry' mapping and the fallback "
+                "reconstruction helpers are unavailable.",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(
+            "Input file is missing the canonical theory registry; attempting to "
+            "reconstruct it from checkpoint annotations...",
+            file=sys.stderr,
+        )
+        registry = build_theory_registry(
+            article_records,
+            api_key,
+            args.registry_model,
+            args.registry_request_timeout,
+        )
+        registry_reconstructed = True
+        registry_source = "reconstructed"
+
     if not isinstance(registry, Mapping):
-        print("Input JSON is missing the 'theory_registry' mapping", file=sys.stderr)
+        print(
+            "Input JSON is missing the 'theory_registry' mapping and no annotated "
+            "records were available to rebuild it.",
+            file=sys.stderr,
+        )
         return 1
 
     article_map: Dict[str, Dict[str, object]] = {}
-    raw_articles = data.get("articles") if isinstance(data, Mapping) else None
-    if isinstance(raw_articles, Sequence) and not isinstance(raw_articles, (str, bytes)):
-        article_records = [record for record in raw_articles if isinstance(record, Mapping)]
-        if article_records:
-            article_map = _build_article_map(article_records)
+    if article_records:
+        article_map = _build_article_map(article_records)
 
     total_unique = len(registry)
     examples_per_theory = max(args.examples_per_theory, 0)
@@ -938,12 +1047,25 @@ def main(argv: List[str] | None = None) -> int:
         }
     )
 
+    if registry_reconstructed:
+        reconciliation.setdefault("notes", []).append(
+            {
+                "event": "registry_reconstructed",
+                "record_count": len(article_records),
+                "source": registry_source,
+                "registry_model": args.registry_model,
+                "registry_request_timeout": args.registry_request_timeout,
+            }
+        )
+
     output_payload = {
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         "model": args.model,
         "input_file": args.input,
         "total_unique_theories": total_unique,
         "examples_per_theory": examples_per_theory,
+        "registry_source": registry_source,
+        "registry_reconstructed": registry_reconstructed,
         "worker_processes": processes,
         "auto_processes_suggestion": auto_processes,
         "requested_processes": requested_processes,
@@ -990,3 +1112,42 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
+
+
+def _load_registry_builder() -> Optional[Callable[[Iterable[Dict], str, str, Optional[float]], Dict[str, Dict]]]:
+    """Best-effort loader for :func:`build_theory_registry`.
+
+    The ontology generator is often executed as a standalone script which means the
+    ``scripts`` directory is *not* a Python package on ``sys.path``.  Directly
+    importing ``scripts.step4_extract_theories`` therefore fails on most setups.
+    To keep the command-line UX predictable we try multiple strategies:
+
+    * first attempt a regular import (covers environments where ``scripts`` has
+      been added to ``PYTHONPATH`` or converted into a package);
+    * otherwise load ``step4_extract_theories.py`` via ``importlib`` using a
+      filesystem path relative to this module.
+
+    If the helper cannot be located ``None`` is returned and the caller can abort
+    with a clearer diagnostic.
+    """
+
+    try:
+        from scripts.step4_extract_theories import build_theory_registry  # type: ignore
+    except ImportError:
+        module_path = Path(__file__).resolve().parent / "step4_extract_theories.py"
+        if not module_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location(
+            "step4_extract_theories", module_path
+        )
+        if not spec or not spec.loader:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:  # pragma: no cover - defensive import guard
+            return None
+        build_theory_registry = getattr(module, "build_theory_registry", None)
+    if callable(build_theory_registry):
+        return build_theory_registry
+    return None
