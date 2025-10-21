@@ -1,0 +1,32 @@
+[
+  {
+    "paper_id": "val-biomarker-001",
+    "question_id": "Q1",
+    "answer": "Yes, quantitatively shown",
+    "evidence": "Serum IL-6 concentrations increased 2.3-fold in aged cohorts (p < 0.01)."
+  },
+  {
+    "paper_id": "val-mechanism-001",
+    "question_id": "Q2",
+    "answer": "Mechanism supported by experiments",
+    "evidence": "Genetic ablation of mTORC1 components extended lifespan by 18% in Drosophila."
+  },
+  {
+    "paper_id": "val-intervention-001",
+    "question_id": "Q3",
+    "answer": "Proposed longevity intervention",
+    "evidence": "Authors suggest rapalog microdosing as a plausible geroprotector pending trials."
+  },
+  {
+    "paper_id": "val-body-size-001",
+    "question_id": "Q8",
+    "answer": "Link supported by data",
+    "evidence": "Body mass explained 64% of longevity variance across the sampled primates."
+  },
+  {
+    "paper_id": "val-cr-001",
+    "question_id": "Q9",
+    "answer": "Observational evidence presented",
+    "evidence": "Longitudinal cohort tracking caloric intake linked modest restriction to reduced mortality risk."
+  }
+]

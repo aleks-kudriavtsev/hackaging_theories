@@ -24,15 +24,51 @@ QUESTIONS: Tuple[Tuple[str, str], ...] = (
 
 
 QUESTION_CHOICES: Dict[str, Tuple[str, ...]] = {
-    "Q1": ("yes_quantitative", "yes_unverified", "no"),
-    "Q2": ("mechanistic_evidence", "mechanistic_hypothesis", "no"),
-    "Q3": ("validated_intervention", "proposed_intervention", "no"),
-    "Q4": ("irreversible", "reversible", "not_discussed"),
-    "Q5": ("yes_quantitative", "yes_unverified", "no"),
-    "Q6": ("primary_focus", "mentioned", "no"),
-    "Q7": ("primary_focus", "mentioned", "no"),
-    "Q8": ("supported", "speculative", "no"),
-    "Q9": ("experimental", "observational", "no"),
+    "Q1": (
+        "Yes, quantitatively shown",
+        "Yes, mentioned without data",
+        "No evidence found",
+    ),
+    "Q2": (
+        "Mechanism supported by experiments",
+        "Mechanism hypothesized",
+        "No mechanism discussed",
+    ),
+    "Q3": (
+        "Validated longevity intervention",
+        "Proposed longevity intervention",
+        "No intervention discussed",
+    ),
+    "Q4": (
+        "Changes appear irreversible",
+        "Changes appear reversible",
+        "Not discussed",
+    ),
+    "Q5": (
+        "Yes, quantitatively shown",
+        "Yes, mentioned without data",
+        "No evidence found",
+    ),
+    "Q6": (
+        "Primary focus of the paper",
+        "Mentioned in passing",
+        "Not mentioned",
+    ),
+    "Q7": (
+        "Primary focus of the paper",
+        "Mentioned in passing",
+        "Not mentioned",
+    ),
+    "Q8": (
+        "Link supported by data",
+        "Link is speculative",
+        "No link reported",
+    ),
+    "Q9": (
+        "Experimental evidence presented",
+        "Observational evidence presented",
+        "No evidence presented",
+    ),
 }
 
 
@@ -47,6 +83,7 @@ QUESTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
         "quantified",
         "level",
         "concentration",
+        "quantitative",
     ),
     "Q2": (
         "mechanism",
@@ -72,6 +109,8 @@ QUESTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
         "regimen",
         "lifespan",
         "longevity",
+        "validated",
+        "proposed",
     ),
     "Q4": (
         "irreversible",
@@ -93,7 +132,15 @@ QUESTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
     ),
     "Q6": ("naked mole rat", "heterocephalus glaber", "nmr", "longevity"),
     "Q7": ("avian", "bird", "avian longevity", "passerine", "galliform"),
-    "Q8": ("body size", "mass", "weight", "allometry", "scaling", "longevity"),
+    "Q8": (
+        "body size",
+        "mass",
+        "weight",
+        "allometry",
+        "scaling",
+        "longevity",
+        "correlated",
+    ),
     "Q9": (
         "calorie restriction",
         "caloric restriction",
@@ -170,16 +217,23 @@ class QuestionExtractor:
         }
         self.llm_system_prompt = llm_config.get(
             "system_prompt",
-            "You are a careful scientific evidence analyst."
-            " Choose the best categorical answer for each question based on the provided sentences."
-            " Reply with a JSON object containing keys 'answer', 'confidence', and 'rationale'."
-            " Use 'unknown' for answer when the evidence is insufficient.",
+            (
+                "You are a careful scientific evidence analyst. "
+                "Choose the best categorical answer for each question using only the provided sentences. "
+                "Respond with a JSON object containing keys 'answer', 'confidence', and 'rationale'. "
+                "The 'answer' must exactly match one of the allowed answers. "
+                "Use 'unknown' when the evidence is insufficient."
+            ),
         )
         self.llm_request_template = llm_config.get(
             "request_template",
-            "Question: {question}\nAllowed answers: {choices}\n"
-            "Evidence sentences:\n{evidence}\n"
-            "Respond strictly in JSON with keys 'answer', 'confidence', and 'rationale'.",
+            (
+                "Question: {question}\n"
+                "Allowed answers: {choices}\n"
+                "Evidence sentences:\n{evidence}\n"
+                "Respond strictly in JSON with keys 'answer', 'confidence', and 'rationale'. "
+                "The 'answer' must exactly match one of the allowed answers."
+            ),
         )
         decline_tokens = llm_config.get("decline_answers", ("unknown", "none", "no_answer"))
         self.llm_decline_answers = {
@@ -263,7 +317,13 @@ class QuestionExtractor:
                 self._classify_calorie_restriction(sentences)
             )
         else:
-            heuristic_answer, heuristic_conf, heuristic_evidence = "no", 0.0, None
+            fallback_choices = QUESTION_CHOICES.get(question_id)
+            heuristic_answer = (
+                fallback_choices[-1]
+                if fallback_choices
+                else "No evidence found"
+            )
+            heuristic_conf, heuristic_evidence = 0.0, None
 
         gpt_result = None
         if self.llm_client and self.llm_enabled:
@@ -279,10 +339,13 @@ class QuestionExtractor:
         return final_answer, final_confidence, evidence, heuristic_conf, gpt_confidence
 
     def _classify_biomarker(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
-        keywords = self._get_keywords("Q1", "yes_unverified", ("biomarker", "marker", "signature"))
+        quantitative_label, qualitative_label, none_label = QUESTION_CHOICES["Q1"]
+        keywords = self._get_keywords(
+            "Q1", qualitative_label, ("biomarker", "marker", "signature")
+        )
         quant_terms = self._get_keywords(
             "Q1",
-            "yes_quantitative",
+            quantitative_label,
             ("measured", "level", "concentration", "quantified", "assay", "mg", "ng", "pg"),
         )
         digit_pattern = re.compile(r"\d")
@@ -290,19 +353,20 @@ class QuestionExtractor:
             lowered = sentence.lower()
             if any(keyword in lowered for keyword in keywords):
                 if any(term in lowered for term in quant_terms) or digit_pattern.search(sentence):
-                    return "yes_quantitative", 0.9, sentence.strip()
-                return "yes_unverified", 0.6, sentence.strip()
-        return "no", 0.1, None
+                    return quantitative_label, 0.9, sentence.strip()
+                return qualitative_label, 0.6, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_mechanism(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        supported_label, hypothesis_label, none_label = QUESTION_CHOICES["Q2"]
         mechanism_terms = self._get_keywords(
             "Q2",
-            "mechanistic_hypothesis",
+            hypothesis_label,
             ("mechanism", "pathway", "molecular", "signaling", "process"),
         )
         evidence_terms = self._get_keywords(
             "Q2",
-            "mechanistic_evidence",
+            supported_label,
             ("experiment", "demonstrate", "showed", "knockout", "mutation", "assay", "inhibited"),
         )
         hypothesis_terms = ("suggest", "propose", "hypothesize", "may", "could")
@@ -310,88 +374,97 @@ class QuestionExtractor:
             lowered = sentence.lower()
             if any(term in lowered for term in mechanism_terms):
                 if any(term in lowered for term in evidence_terms):
-                    return "mechanistic_evidence", 0.85, sentence.strip()
+                    return supported_label, 0.85, sentence.strip()
                 if any(term in lowered for term in hypothesis_terms):
-                    return "mechanistic_hypothesis", 0.6, sentence.strip()
-                return "mechanistic_hypothesis", 0.55, sentence.strip()
-        return "no", 0.1, None
+                    return hypothesis_label, 0.6, sentence.strip()
+                return hypothesis_label, 0.55, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_intervention(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        validated_label, proposed_label, none_label = QUESTION_CHOICES["Q3"]
         intervention_terms = self._get_keywords(
             "Q3",
-            "proposed_intervention",
+            proposed_label,
             ("intervention", "treatment", "therapy", "drug", "compound", "supplement", "regimen"),
         )
         validation_terms = self._get_keywords(
             "Q3",
-            "validated_intervention",
+            validated_label,
             ("extends lifespan", "increased lifespan", "longevity", "survival", "lifespan"),
         )
         for sentence in sentences:
             lowered = sentence.lower()
             if any(term in lowered for term in intervention_terms):
                 if any(term in lowered for term in validation_terms):
-                    return "validated_intervention", 0.9, sentence.strip()
+                    return validated_label, 0.9, sentence.strip()
                 speculative = ("potential", "candidate", "may", "could", "propose", "suggest")
                 if any(term in lowered for term in speculative):
-                    return "proposed_intervention", 0.6, sentence.strip()
+                    return proposed_label, 0.6, sentence.strip()
                 if "lifespan" in lowered or "longevity" in lowered:
-                    return "validated_intervention", 0.75, sentence.strip()
-                return "proposed_intervention", 0.55, sentence.strip()
-        return "no", 0.1, None
+                    return validated_label, 0.75, sentence.strip()
+                return proposed_label, 0.55, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_irreversibility(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        irreversible_label, reversible_label, none_label = QUESTION_CHOICES["Q4"]
         irreversible_terms = self._get_keywords(
-            "Q4", "irreversible", ("irreversible", "permanent", "irreversibly", "cannot be reversed")
+            "Q4",
+            irreversible_label,
+            ("irreversible", "permanent", "irreversibly", "cannot be reversed"),
         )
         reversible_terms = self._get_keywords(
-            "Q4", "reversible", ("reversible", "reversibly", "restored", "rescued", "recovered")
+            "Q4",
+            reversible_label,
+            ("reversible", "reversibly", "restored", "rescued", "recovered"),
         )
         for sentence in sentences:
             lowered = sentence.lower()
             if any(term in lowered for term in irreversible_terms):
-                return "irreversible", 0.8, sentence.strip()
+                return irreversible_label, 0.8, sentence.strip()
             if any(term in lowered for term in reversible_terms):
-                return "reversible", 0.75, sentence.strip()
-        return "not_discussed", 0.2, None
+                return reversible_label, 0.75, sentence.strip()
+        return none_label, 0.2, None
 
     def _classify_cross_species(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        quantitative_label, qualitative_label, none_label = QUESTION_CHOICES["Q5"]
         predictor_terms = self._get_keywords(
             "Q5",
-            "yes_unverified",
+            qualitative_label,
             ("cross-species", "comparative", "predict", "predictor", "phylogenetic", "across species"),
         )
         quant_terms = self._get_keywords(
             "Q5",
-            "yes_quantitative",
+            quantitative_label,
             ("model", "regression", "correlation", "estimate", "coefficient", "dataset", "analysis"),
         )
         for sentence in sentences:
             lowered = sentence.lower()
             if any(term in lowered for term in predictor_terms):
                 if any(term in lowered for term in quant_terms) or re.search(r"\d", sentence):
-                    return "yes_quantitative", 0.85, sentence.strip()
-                return "yes_unverified", 0.55, sentence.strip()
-        return "no", 0.1, None
+                    return quantitative_label, 0.85, sentence.strip()
+                return qualitative_label, 0.55, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_naked_mole_rat(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        primary_label, mention_label, none_label = QUESTION_CHOICES["Q6"]
         focus_terms = self._get_keywords(
             "Q6",
-            "primary_focus",
+            primary_label,
             ("naked mole rat", "heterocephalus glaber", "nmr"),
         )
         for sentence in sentences:
             lowered = sentence.lower()
             if any(term in lowered for term in focus_terms):
                 if "study" in lowered or "experiment" in lowered or "analysis" in lowered:
-                    return "primary_focus", 0.85, sentence.strip()
-                return "mentioned", 0.6, sentence.strip()
-        return "no", 0.1, None
+                    return primary_label, 0.85, sentence.strip()
+                return mention_label, 0.6, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_avian(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        primary_label, mention_label, none_label = QUESTION_CHOICES["Q7"]
         avian_terms = self._get_keywords(
             "Q7",
-            "primary_focus",
+            primary_label,
             ("avian", "bird", "passerine", "avian longevity", "galliform"),
         )
         for sentence in sentences:
@@ -403,15 +476,16 @@ class QuestionExtractor:
                         or "analysis" in lowered
                         or "analyz" in lowered
                     ):
-                        return "primary_focus", 0.8, sentence.strip()
-                    return "mentioned", 0.55, sentence.strip()
-                return "mentioned", 0.5, sentence.strip()
-        return "no", 0.1, None
+                        return primary_label, 0.8, sentence.strip()
+                    return mention_label, 0.55, sentence.strip()
+                return mention_label, 0.5, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_body_size(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        supported_label, speculative_label, none_label = QUESTION_CHOICES["Q8"]
         body_size_terms = self._get_keywords(
             "Q8",
-            "supported",
+            supported_label,
             ("body size", "mass", "weight", "allometry", "scaling"),
         )
         longevity_terms = ("longevity", "lifespan", "life span", "survival")
@@ -422,14 +496,15 @@ class QuestionExtractor:
                 term in lowered for term in longevity_terms
             ):
                 if any(term in lowered for term in quantitative_terms) or re.search(r"\d", sentence):
-                    return "supported", 0.8, sentence.strip()
-                return "speculative", 0.55, sentence.strip()
-        return "no", 0.1, None
+                    return supported_label, 0.8, sentence.strip()
+                return speculative_label, 0.55, sentence.strip()
+        return none_label, 0.1, None
 
     def _classify_calorie_restriction(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
+        experimental_label, observational_label, none_label = QUESTION_CHOICES["Q9"]
         restriction_terms = self._get_keywords(
             "Q9",
-            "experimental",
+            experimental_label,
             (
                 "calorie restriction",
                 "caloric restriction",
@@ -444,11 +519,11 @@ class QuestionExtractor:
             lowered = sentence.lower()
             if any(term in lowered for term in restriction_terms):
                 if any(term in lowered for term in experimental_terms):
-                    return "experimental", 0.85, sentence.strip()
+                    return experimental_label, 0.85, sentence.strip()
                 if any(term in lowered for term in observational_terms):
-                    return "observational", 0.6, sentence.strip()
-                return "observational", 0.55, sentence.strip()
-        return "no", 0.1, None
+                    return observational_label, 0.6, sentence.strip()
+                return observational_label, 0.55, sentence.strip()
+        return none_label, 0.1, None
 
     def _candidate_sentences(
         self,
@@ -520,9 +595,39 @@ class QuestionExtractor:
         except json.JSONDecodeError:
             return _LLMResult(None, None, None, raw_content, candidate_sentences)
 
-        answer = payload.get("answer")
+        answer_payload = payload.get("answer")
         confidence_value: Optional[float]
         confidence_raw = payload.get("confidence")
+
+        answer: Optional[str]
+        if isinstance(answer_payload, Mapping):
+            if confidence_raw is None:
+                confidence_raw = answer_payload.get("confidence")
+            answer = (
+                answer_payload.get("label")
+                or answer_payload.get("value")
+                or answer_payload.get("answer")
+                or answer_payload.get("text")
+            )
+        elif isinstance(answer_payload, Sequence) and not isinstance(answer_payload, (str, bytes)):
+            answer = None
+            for entry in answer_payload:
+                if isinstance(entry, Mapping):
+                    if confidence_raw is None:
+                        confidence_raw = entry.get("confidence")
+                    answer = (
+                        entry.get("label")
+                        or entry.get("value")
+                        or entry.get("answer")
+                        or entry.get("text")
+                    )
+                elif isinstance(entry, str):
+                    answer = entry
+                if answer:
+                    break
+        else:
+            answer = answer_payload
+
         try:
             confidence_value = float(confidence_raw)
         except (TypeError, ValueError):
@@ -551,6 +656,7 @@ class QuestionExtractor:
         gpt_result: Optional[_LLMResult],
     ) -> Tuple[str, float, str, Optional[float]]:
         allowed_answers = QUESTION_CHOICES.get(question_id, ())
+        allowed_lookup = {choice.lower(): choice for choice in allowed_answers}
         final_answer = heuristic_answer
         final_confidence = heuristic_confidence
         gpt_confidence: Optional[float] = None
@@ -567,7 +673,11 @@ class QuestionExtractor:
             normalized_answer = (gpt_result.answer or "").strip()
             lowered = normalized_answer.lower()
             gpt_confidence = gpt_result.confidence
-            valid_choice = normalized_answer in allowed_answers and lowered not in self.llm_decline_answers
+            canonical_answer = allowed_lookup.get(lowered)
+            decline_choice = lowered in self.llm_decline_answers
+            if canonical_answer:
+                normalized_answer = canonical_answer
+            valid_choice = canonical_answer is not None and not decline_choice
 
             evidence_payload["gpt"] = {
                 "answer": gpt_result.answer,
@@ -603,7 +713,7 @@ class QuestionExtractor:
                 gpt_confidence = gpt_conf_value
             else:
                 # Decline or invalid choice – favour heuristic answer but capture rationale
-                if lowered not in self.llm_decline_answers and normalized_answer:
+                if not decline_choice and normalized_answer:
                     final_confidence = max(0.0, heuristic_confidence - self.disagreement_penalty)
         else:
             weight = min(max(self.gpt_weight, 0.0), 1.0)
