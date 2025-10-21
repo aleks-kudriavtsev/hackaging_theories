@@ -835,8 +835,9 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of worker processes to use for LLM calls; defaults to the CPU count "
-            "for queues above 100 items."
+            "Number of worker processes to use for LLM calls; defaults to an "
+            "auto-scaled value that saturates available CPU cores based on the "
+            "pending review queue."
         ),
     )
     parser.add_argument(
@@ -865,13 +866,6 @@ def main(argv: List[str] | None = None) -> int:
         print("Input JSON must contain a list of records", file=sys.stderr)
         return 1
 
-    auto_processes = (os.cpu_count() or 1) if len(records) > 100 else 1
-    processes = args.processes or auto_processes
-    if len(records) == 0:
-        processes = 0
-    else:
-        processes = max(1, min(processes, len(records)))
-
     chunk_chars = args.chunk_chars
     if args.compat_max_chars is not None:
         chunk_chars = args.compat_max_chars
@@ -889,6 +883,26 @@ def main(argv: List[str] | None = None) -> int:
         )
 
     pending_indices = [idx for idx in range(total_records) if idx not in processed_indices]
+
+    pending_count = len(pending_indices)
+    cpu_total = os.cpu_count() or 1
+    auto_processes = 0
+    if pending_count:
+        auto_processes = max(1, min(cpu_total, pending_count))
+
+    requested_processes = args.processes if args.processes and args.processes > 0 else None
+    processes = requested_processes or auto_processes
+    if pending_count:
+        processes = max(1, min(processes, pending_count))
+    else:
+        processes = 0
+
+    if requested_processes is None and processes > 1:
+        print(
+            f"Auto-scaling extraction to {processes} worker processes "
+            f"(pending reviews: {pending_count}, cpu: {cpu_total}).",
+            flush=True,
+        )
 
     queue_ctx = multiprocessing.get_context()
     result_queue = None

@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import math
 import multiprocessing
 import os
 import sys
@@ -738,10 +739,9 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of worker processes for ontology generation. If omitted, the "
-            "script auto-scales: it uses the available CPU count when the "
-            "summary size exceeds the chunk threshold, otherwise it stays with a "
-            "single process."
+            "Number of worker processes for ontology generation. If omitted the "
+            "script auto-scales to the available CPU cores while keeping at least "
+            "one theory summary per worker."
         ),
     )
     parser.add_argument(
@@ -804,24 +804,28 @@ def main(argv: List[str] | None = None) -> int:
         print("No canonical theories available in registry", file=sys.stderr)
         return 1
 
-    chunk_threshold = max(args.chunk_size, 1)
-
-    estimated_chunks = max(1, (len(summary) + chunk_threshold - 1) // chunk_threshold)
+    summary_count = len(summary)
+    chunk_size = max(args.chunk_size, 1)
 
     try:
         cpu_total = multiprocessing.cpu_count()
     except NotImplementedError:  # pragma: no cover - defensive guard
         cpu_total = 1
 
-    auto_processes = cpu_total if len(summary) > chunk_threshold else 1
-    auto_processes = max(1, min(auto_processes, estimated_chunks))
+    auto_processes = 1
+    if summary_count:
+        auto_processes = max(1, min(cpu_total, summary_count))
 
-    if args.processes is None:
-        processes = auto_processes
-        requested_processes: Optional[int] = None
+    requested_processes = args.processes if args.processes and args.processes > 0 else None
+    processes = requested_processes or auto_processes
+    if summary_count:
+        processes = max(1, min(processes, summary_count))
     else:
-        processes = args.processes
-        requested_processes = args.processes
+        processes = 1
+
+    if processes > 1 and summary_count:
+        dynamic_chunk = math.ceil(summary_count / processes)
+        chunk_size = max(1, min(chunk_size, dynamic_chunk))
 
     process_source = (
         "auto" if requested_processes is None or processes == auto_processes else "manual"
@@ -831,15 +835,15 @@ def main(argv: List[str] | None = None) -> int:
         print("--processes must be at least 1", file=sys.stderr)
         return 1
 
-    should_chunk = processes > 1 or len(summary) > chunk_threshold
+    should_chunk = processes > 1 or summary_count > chunk_size
 
     print(
         f"Using {processes} worker process{'es' if processes != 1 else ''} "
-        f"({process_source}; auto suggestion: {auto_processes})."
+        f"({process_source}; auto suggestion: {auto_processes}; chunk size: {chunk_size})."
     )
 
     if should_chunk:
-        summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_threshold))
+        summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_size))
         worker_args = [
             (chunk, total_unique, args.model, api_key)
             for chunk in summary_chunks

@@ -472,9 +472,9 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Number of worker processes to use during ontology generation. If "
-            "omitted, the pipeline mirrors step 5's auto-scaling behaviour: it "
-            "falls back to a single process unless the summary size crosses the "
-            "chunk threshold, in which case it uses the available CPU count."
+            "omitted, the pipeline mirrors step 5's auto-scaling behaviour and "
+            "selects up to one worker per theory while respecting the available "
+            "CPU cores."
         ),
     )
     parser.add_argument(
@@ -526,10 +526,10 @@ def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) 
     except NotImplementedError:  # pragma: no cover - defensive guard
         cpu_total = 1
 
-    chunk_threshold = 100  # Matches step5_generate_ontology.py default chunk size.
-    estimated_chunks = max(1, (summary_count + chunk_threshold - 1) // chunk_threshold)
-    auto_processes = cpu_total if summary_count > chunk_threshold else 1
-    return max(1, min(auto_processes, estimated_chunks))
+    if summary_count <= 0:
+        return None
+
+    return max(1, min(cpu_total, summary_count))
 
 
 def main(argv: List[str] | None = None) -> int:

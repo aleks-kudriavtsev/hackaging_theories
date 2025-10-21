@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from multiprocessing import Process, Queue
@@ -483,8 +484,9 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of OS processes used for filtering. Defaults to CPU count when "
-            "more than 100 records are provided; otherwise runs single-threaded."
+            "Number of OS processes used for filtering. When omitted the script "
+            "auto-scales up to the available CPU cores based on the number of "
+            "batched LLM requests waiting to be processed."
         ),
     )
     args = parser.parse_args(argv)
@@ -502,12 +504,26 @@ def main(argv: List[str] | None = None) -> int:
         print("--processes must be a positive integer", file=sys.stderr)
         return 2
 
-    auto_processes = (os.cpu_count() or 1) if total_records > 100 else 1
-    processes = args.processes or auto_processes
+    cpu_total = os.cpu_count() or 1
+    batch_size = max(args.batch_size, 1)
+    total_batches = math.ceil(total_records / batch_size) if total_records else 0
+    auto_processes = 1
+    if total_records:
+        auto_processes = max(1, min(cpu_total, total_batches, total_records))
+
+    requested_processes = args.processes if args.processes and args.processes > 0 else None
+    processes = requested_processes or auto_processes
     if total_records > 0:
-        processes = min(processes, total_records)
+        processes = max(1, min(processes, total_records))
     else:
         processes = 1
+
+    if requested_processes is None and processes > 1:
+        print(
+            f"Auto-scaling filtering to {processes} worker processes "
+            f"(batches: {total_batches}, cpu: {cpu_total}).",
+            flush=True,
+        )
 
     if total_records == 0:
         kept: List[Dict] = []
