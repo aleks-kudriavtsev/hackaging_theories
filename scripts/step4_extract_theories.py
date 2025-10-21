@@ -835,8 +835,9 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of worker processes to use for LLM calls; defaults to the CPU count "
-            "for queues above 100 items."
+            "Number of worker processes to use for LLM calls; when omitted the script "
+            "auto-scales using the available CPU cores while keeping roughly 25 "
+            "reviews per worker."
         ),
     )
     parser.add_argument(
@@ -865,7 +866,12 @@ def main(argv: List[str] | None = None) -> int:
         print("Input JSON must contain a list of records", file=sys.stderr)
         return 1
 
-    auto_processes = (os.cpu_count() or 1) if len(records) > 100 else 1
+    cpu_total = os.cpu_count() or 1
+    min_records_per_worker = 25
+    if len(records):
+        auto_processes = min(cpu_total, max(1, math.ceil(len(records) / min_records_per_worker)))
+    else:
+        auto_processes = 1
     processes = args.processes or auto_processes
     if len(records) == 0:
         processes = 0

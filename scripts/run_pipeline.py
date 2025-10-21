@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import multiprocessing
 import os
 import subprocess
 import sys
@@ -471,10 +470,10 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Number of worker processes to use during ontology generation. If "
-            "omitted, the pipeline mirrors step 5's auto-scaling behaviour: it "
-            "falls back to a single process unless the summary size crosses the "
-            "chunk threshold, in which case it uses the available CPU count."
+            "Number of worker processes to use during ontology generation. When "
+            "omitted, step 5 auto-scales based on the registry size, targeting "
+            "roughly 25 theories per worker while respecting the available CPU "
+            "cores."
         ),
     )
     parser.add_argument(
@@ -507,29 +506,6 @@ def _load_theory_registry(path: str) -> Mapping[str, Any] | None:
         return None
 
     return registry
-
-
-def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) -> int | None:
-    if args.ontology_processes is not None:
-        return args.ontology_processes
-
-    registry = _load_theory_registry(paths.theories)
-    if registry is None:
-        return None
-
-    total_unique = len(registry)
-    limit = max(args.ontology_top_n, 0)
-    summary_count = total_unique if limit == 0 else min(total_unique, limit)
-
-    try:
-        cpu_total = multiprocessing.cpu_count()
-    except NotImplementedError:  # pragma: no cover - defensive guard
-        cpu_total = 1
-
-    chunk_threshold = 100  # Matches step5_generate_ontology.py default chunk size.
-    estimated_chunks = max(1, (summary_count + chunk_threshold - 1) // chunk_threshold)
-    auto_processes = cpu_total if summary_count > chunk_threshold else 1
-    return max(1, min(auto_processes, estimated_chunks))
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -755,7 +731,6 @@ def main(argv: List[str] | None = None) -> int:
             raise SystemExit(
                 f"Step 5 requires the output from step 4 ({paths.theories}) to exist."
             )
-        resolved_processes = _resolve_ontology_processes(paths, args)
         run_step(
             [
                 sys.executable,
@@ -771,8 +746,8 @@ def main(argv: List[str] | None = None) -> int:
                 "--examples-per-theory",
                 str(args.ontology_examples),
                 *(
-                    ["--processes", str(resolved_processes)]
-                    if resolved_processes is not None
+                    ["--processes", str(args.ontology_processes)]
+                    if args.ontology_processes is not None
                     else []
                 ),
             ],
