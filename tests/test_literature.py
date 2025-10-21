@@ -16,6 +16,7 @@ from theories_pipeline.literature import (
     ProviderConfig,
     OpenAlexProvider,
     PubMedProvider,
+    decode_openalex_abstract,
 )
 
 
@@ -108,6 +109,16 @@ def test_openalex_provider_uses_query_api_key(monkeypatch: pytest.MonkeyPatch) -
     assert captured["headers"] in (None, {})
     assert page.exhausted is True
     assert page.papers == []
+
+
+def test_decode_openalex_abstract_preserves_order() -> None:
+    index = {
+        "beta": [2],
+        "alpha": [0],
+        "gamma": [1, 3],
+    }
+
+    assert decode_openalex_abstract(index) == "alpha gamma beta gamma"
 
 
 @pytest.fixture
