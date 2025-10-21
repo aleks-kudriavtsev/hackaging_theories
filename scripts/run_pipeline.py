@@ -492,12 +492,9 @@ def maybe_skip(path: str, force: bool, label: str) -> bool:
     return False
 
 
-def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) -> int | None:
-    if args.ontology_processes is not None:
-        return args.ontology_processes
-
+def _load_theory_registry(path: str) -> Mapping[str, Any] | None:
     try:
-        with open(paths.theories, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None
@@ -507,6 +504,39 @@ def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) 
 
     registry = data.get("theory_registry")
     if not isinstance(registry, Mapping):
+        return None
+
+    return registry
+
+
+def _should_skip_theory_extraction(paths: PipelinePaths, force: bool) -> bool:
+    if force:
+        return False
+
+    if not os.path.exists(paths.theories):
+        return False
+
+    registry = _load_theory_registry(paths.theories)
+    if registry is None:
+        print(
+            "Existing aging_theories.json is outdated or corrupt (missing 'theory_registry'); "
+            "regenerating step 4 output."
+        )
+        return False
+
+    print(
+        f"Skipping step 4; {paths.theories} already exists and contains a theory registry. "
+        "Use --force to regenerate."
+    )
+    return True
+
+
+def _resolve_ontology_processes(paths: PipelinePaths, args: argparse.Namespace) -> int | None:
+    if args.ontology_processes is not None:
+        return args.ontology_processes
+
+    registry = _load_theory_registry(paths.theories)
+    if registry is None:
         return None
 
     total_unique = len(registry)
@@ -696,7 +726,7 @@ def main(argv: List[str] | None = None) -> int:
 
     # Step 4 – Extract theories via LLM
     ensure_env("OPENAI_API_KEY", "Step 4")
-    if not maybe_skip(paths.theories, args.force, "step 4"):
+    if not _should_skip_theory_extraction(paths, args.force):
         if not os.path.exists(paths.fulltext_reviews):
             raise SystemExit(
                 f"Step 4 requires the output from step 3 ({paths.fulltext_reviews}) to exist."

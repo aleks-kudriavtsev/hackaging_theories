@@ -70,6 +70,19 @@ def sample_source_payloads(tmp_path):
     return paths
 
 
+def test_theory_step_regenerates_when_registry_missing(tmp_path, capsys):
+    paths = run_pipeline.build_paths(str(tmp_path))
+    theories_path = Path(paths.theories)
+    theories_path.parent.mkdir(parents=True, exist_ok=True)
+    theories_path.write_text("{}", encoding="utf-8")
+
+    should_skip = run_pipeline._should_skip_theory_extraction(paths, force=False)
+
+    captured = capsys.readouterr()
+    assert not should_skip
+    assert "outdated or corrupt" in captured.out
+
+
 def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sample_source_payloads):
     paths = sample_source_payloads
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
