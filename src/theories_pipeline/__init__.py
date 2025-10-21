@@ -13,10 +13,17 @@ from .ontology_suggestions import (
     load_ontology_query_suggestions,
     merge_query_suggestions,
 )
-from .theories import TheoryClassifier, TheoryAssignment
+from .theories import (
+    AggregatedTheory,
+    TheoryAggregationResult,
+    TheoryAssignment,
+    TheoryClassifier,
+    aggregate_theory_assignments,
+)
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
     export_papers,
+    export_theory_papers,
     export_theories,
     export_question_answers,
 )
@@ -45,8 +52,11 @@ __all__ = [
     "PaperSection",
     "ProviderConfig",
     "RetrievalResult",
+    "AggregatedTheory",
+    "TheoryAggregationResult",
     "TheoryClassifier",
     "TheoryAssignment",
+    "aggregate_theory_assignments",
     "TheoryOntology",
     "OntologyManager",
     "OntologyUpdate",
@@ -59,6 +69,7 @@ __all__ = [
     "RelevanceFilter",
     "FilterDecision",
     "export_papers",
+    "export_theory_papers",
     "export_theories",
     "export_question_answers",
     "LLMClient",

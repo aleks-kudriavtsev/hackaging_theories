@@ -6,7 +6,16 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, TYPE_CHECKING
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 from .literature import PaperMetadata
 from .ontology import TheoryOntology
@@ -31,6 +40,115 @@ class TheoryAssignment:
     theory: str
     score: float
     depth: int = 0
+
+
+@dataclass(frozen=True)
+class AggregatedTheory:
+    """Summary of the papers collected for a single theory."""
+
+    theory_id: str
+    theory_name: str
+    paper_ids: Tuple[str, ...]
+    number_of_collected_papers: int
+
+
+@dataclass(frozen=True)
+class TheoryAggregationResult:
+    """Container for aggregated theory statistics."""
+
+    theories: Tuple[AggregatedTheory, ...]
+    theory_ids_by_name: Mapping[str, str]
+    theory_index: Mapping[str, AggregatedTheory]
+    paper_to_theory_ids: Mapping[str, Tuple[str, ...]]
+
+
+_SLUG_TOKEN = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify(value: str) -> str:
+    normalized = value.strip().lower()
+    slug = _SLUG_TOKEN.sub("-", normalized)
+    return slug.strip("-") or "theory"
+
+
+def aggregate_theory_assignments(
+    assignments: Iterable[TheoryAssignment],
+    ontology: TheoryOntology,
+) -> TheoryAggregationResult:
+    """Aggregate theory assignments and assign stable identifiers.
+
+    Parameters
+    ----------
+    assignments:
+        All raw theory assignments produced by the classifier.
+    ontology:
+        The ontology providing canonical theory names and metadata.
+
+    Returns
+    -------
+    TheoryAggregationResult
+        Aggregated counts, stable theory identifiers, and lookups that map
+        papers to the theories they support.
+    """
+
+    papers_by_theory: Dict[str, set[str]] = {name: set() for name in ontology.names()}
+    for assignment in assignments:
+        if assignment.score <= 0:
+            continue
+        papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+
+    seen_ids: set[str] = set()
+    ids_by_name: Dict[str, str] = {}
+    for name in ontology.names():
+        node = ontology.get(name)
+        metadata = getattr(node, "metadata", {}) or {}
+        preferred: str | None = None
+        for key in ("theory_id", "id", "slug", "identifier"):
+            candidate = metadata.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                preferred = candidate.strip()
+                break
+        base = _slugify(preferred if preferred is not None else name)
+        candidate_id = base
+        counter = 2
+        while candidate_id in seen_ids:
+            candidate_id = f"{base}-{counter}"
+            counter += 1
+        seen_ids.add(candidate_id)
+        ids_by_name[name] = candidate_id
+
+    aggregated: List[AggregatedTheory] = []
+    paper_to_ids: Dict[str, List[str]] = {}
+    for name in ontology.names():
+        papers = papers_by_theory.get(name)
+        if not papers:
+            continue
+        sorted_papers = tuple(sorted(papers))
+        theory_id = ids_by_name[name]
+        aggregated.append(
+            AggregatedTheory(
+                theory_id=theory_id,
+                theory_name=name,
+                paper_ids=sorted_papers,
+                number_of_collected_papers=len(sorted_papers),
+            )
+        )
+        for paper_id in sorted_papers:
+            paper_to_ids.setdefault(paper_id, []).append(theory_id)
+
+    aggregated.sort(key=lambda item: item.theory_name.lower())
+    for ids in paper_to_ids.values():
+        ids.sort()
+
+    theory_index = {entry.theory_id: entry for entry in aggregated}
+    paper_to_theory_ids = {paper_id: tuple(ids) for paper_id, ids in paper_to_ids.items()}
+
+    return TheoryAggregationResult(
+        theories=tuple(aggregated),
+        theory_ids_by_name=ids_by_name,
+        theory_index=theory_index,
+        paper_to_theory_ids=paper_to_theory_ids,
+    )
 
 
 class TheoryClassifier:

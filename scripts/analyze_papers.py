@@ -21,8 +21,11 @@ from theories_pipeline import (
     QuestionExtractor,
     TheoryClassifier,
     TheoryOntology,
+    aggregate_theory_assignments,
     classify_and_extract_parallel,
     export_question_answers,
+    export_theories,
+    export_theory_papers,
 )
 from theories_pipeline.config_utils import (
     MissingSecretError,
@@ -318,7 +321,18 @@ def main() -> None:
     question_answers = [answer for group in answer_groups for answer in group]
     theory_counts: Counter[str] = Counter(assignment.theory for assignment in assignments)
 
-    export_question_answers(question_answers, Path(config["outputs"]["questions"]))
+    outputs = config["outputs"]
+    aggregation = aggregate_theory_assignments(assignments, ontology)
+    export_theories(aggregation, Path(outputs["theories"]))
+    theory_papers_path = outputs.get("theory_papers")
+    if theory_papers_path:
+        export_theory_papers(aggregation, papers, Path(theory_papers_path))
+    export_question_answers(
+        question_answers,
+        papers,
+        aggregation,
+        Path(outputs["questions"]),
+    )
 
     cache_dir = _ensure_cache_dir(Path(config["outputs"].get("cache_dir", "data/cache")))
     coverage_counts = classifier.summarize(assignments)
@@ -341,7 +355,15 @@ def main() -> None:
     summary_path = cache_dir / "analysis_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    print(f"Wrote refreshed question answers to {config['outputs']['questions']}")
+    total_theory_rows = sum(theory.number_of_collected_papers for theory in aggregation.theories)
+    total_question_rows = sum(len(ids) for ids in aggregation.paper_to_theory_ids.values())
+
+    print(
+        f"Wrote {len(aggregation.theories)} theories (covering {total_theory_rows} papers) to {outputs['theories']}"
+    )
+    if theory_papers_path:
+        print(f"Wrote per-theory paper table to {theory_papers_path}")
+    print(f"Wrote {total_question_rows} question rows to {outputs['questions']}")
     print(f"Summary saved to {summary_path}")
     print()
     print(ontology.format_coverage_report(coverage_counts))

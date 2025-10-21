@@ -9,8 +9,10 @@ from theories_pipeline.outputs import (
     export_papers,
     export_question_answers,
     export_theories,
+    export_theory_papers,
 )
-from theories_pipeline.theories import TheoryAssignment
+from theories_pipeline.ontology import TheoryOntology
+from theories_pipeline.theories import TheoryAssignment, aggregate_theory_assignments
 
 
 def test_export_functions_create_csv(tmp_path: Path) -> None:
@@ -32,12 +34,20 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
     ]
     assignments = [TheoryAssignment("p1", "Activity Theory", 0.75)]
     answers = [QuestionAnswer("p1", "Q1", "Question", "Answer", 0.75, "Evidence")]
+    ontology = TheoryOntology.from_targets_config({"Activity Theory": {}})
+    aggregation = aggregate_theory_assignments(assignments, ontology)
 
     paper_path = export_papers(papers, tmp_path / "papers.csv")
-    theory_path = export_theories(assignments, tmp_path / "theories.csv")
-    questions_path = export_question_answers(answers, tmp_path / "questions.csv")
+    theory_path = export_theories(aggregation, tmp_path / "theories.csv")
+    theory_papers_path = export_theory_papers(aggregation, papers, tmp_path / "theory_papers.csv")
+    questions_path = export_question_answers(
+        answers,
+        papers,
+        aggregation,
+        tmp_path / "questions.csv",
+    )
 
-    for path in [paper_path, theory_path, questions_path]:
+    for path in [paper_path, theory_path, theory_papers_path, questions_path]:
         assert path.exists()
         with path.open("r", encoding="utf-8") as handle:
             reader = csv.reader(handle)
@@ -52,3 +62,37 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         assert first["citation_count"] == "42"
         assert first["is_review"] == "true"
         assert first["influential_citations"] == "W1; W2"
+
+    with theory_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        row = next(reader)
+        assert row["theory_id"].startswith("activity-theory")
+        assert row["number_of_collected_papers"] == "1"
+
+    with theory_papers_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        row = next(reader)
+        assert row["paper_url"] == "p1"
+        assert row["paper_name"] == "Sample"
+
+    with questions_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        row = next(reader)
+        assert set(
+            [
+                "theory_id",
+                "paper_url",
+                "paper_name",
+                "paper_year",
+                "Q1",
+                "Q2",
+                "Q3",
+                "Q4",
+                "Q5",
+                "Q6",
+                "Q7",
+                "Q8",
+                "Q9",
+            ]
+        ).issubset(reader.fieldnames or [])
+        assert row["Q1"] == "Answer"
