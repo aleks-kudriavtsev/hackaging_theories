@@ -890,12 +890,11 @@ def main(argv: List[str] | None = None) -> int:
 
     pending_indices = [idx for idx in range(total_records) if idx not in processed_indices]
 
-    manager: Optional[multiprocessing.Manager] = None
+    queue_ctx = multiprocessing.get_context()
     result_queue = None
     writer_thread: Optional[threading.Thread] = None
     if pending_indices:
-        manager = multiprocessing.Manager()
-        result_queue = manager.Queue()
+        result_queue = queue_ctx.Queue()
         writer_thread = threading.Thread(
             target=checkpoint_writer,
             args=(result_queue, checkpoint_path, checkpoint_annotations),
@@ -916,9 +915,22 @@ def main(argv: List[str] | None = None) -> int:
                 result_queue,
             )
         finally:
-            result_queue.put(None)
-            writer_thread.join()
-            manager.shutdown()
+            if result_queue is not None:
+                try:
+                    result_queue.put(None)
+                except Exception:
+                    pass
+            if writer_thread is not None:
+                writer_thread.join(timeout=30)
+                if writer_thread.is_alive():
+                    print(
+                        "Timed out waiting for checkpoint writer to finish; continuing without"
+                        " guaranteed checkpoint flush.",
+                        flush=True,
+                    )
+            if result_queue is not None:
+                result_queue.close()
+                result_queue.join_thread()
     else:
         print("All records already processed; skipping extraction phase.", flush=True)
 
