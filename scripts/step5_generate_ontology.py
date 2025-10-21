@@ -28,7 +28,7 @@ Usage
 python scripts/step5_generate_ontology.py \
     --input data/pipeline/aging_theories.json \
     --output data/pipeline/aging_ontology.json \
-    [--processes 4] [--chunk-size 120]
+    [--processes 4] [--chunk-size 120] [--examples-per-theory 3]
 ```
 """
 
@@ -132,10 +132,65 @@ def _chunk_summary(
         yield [dict(item) for item in summary[start : start + chunk_size]]
 
 
+def _build_article_map(
+    records: Sequence[Mapping[str, object]]
+) -> Dict[str, Dict[str, object]]:
+    article_map: Dict[str, Dict[str, object]] = {}
+    for idx, record in enumerate(records):
+        article_id: Optional[str] = None
+        for key in ("id", "uid", "doi", "openalex_id", "pmid"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                article_id = value.strip()
+                break
+            if isinstance(value, (int, float)) and value:
+                article_id = str(value)
+                break
+        if not article_id:
+            article_id = f"article-{idx + 1}"
+
+        payload: Dict[str, object] = {"id": article_id}
+
+        title = record.get("title")
+        if isinstance(title, str) and title.strip():
+            payload["title"] = title.strip()
+
+        for key in ("doi", "pmid", "openalex_id", "journal"):
+            value = record.get(key)
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned:
+                    payload[key] = cleaned
+
+        publication_year = record.get("publication_year")
+        if isinstance(publication_year, int):
+            payload["publication_year"] = publication_year
+        elif isinstance(publication_year, str):
+            cleaned_year = publication_year.strip()
+            if cleaned_year.isdigit():
+                payload["publication_year"] = int(cleaned_year)
+
+        authors = record.get("authors")
+        if isinstance(authors, Sequence) and not isinstance(authors, (str, bytes)):
+            cleaned_authors = [
+                author.strip()
+                for author in authors
+                if isinstance(author, str) and author.strip()
+            ]
+            if cleaned_authors:
+                payload["authors"] = cleaned_authors[:5]
+
+        article_map[article_id] = payload
+
+    return article_map
+
+
 def _summarise_registry(
     registry: Mapping[str, Mapping[str, object]],
     *,
     limit: int,
+    articles_map: Mapping[str, Mapping[str, object]] | None = None,
+    examples_per_theory: int = 0,
 ) -> List[Dict[str, object]]:
     summary: List[Dict[str, object]] = []
     for theory_id, payload in registry.items():
@@ -143,7 +198,7 @@ def _summarise_registry(
             continue
         label = payload.get("label") if isinstance(payload.get("label"), str) else None
         aliases = [alias for alias in payload.get("aliases", []) if isinstance(alias, str)]
-        articles = [
+        supporting_articles = [
             str(article_id)
             for article_id in payload.get("supporting_articles", [])
             if isinstance(article_id, str)
@@ -153,10 +208,21 @@ def _summarise_registry(
                 "theory_id": theory_id,
                 "label": label or theory_id,
                 "aliases": aliases,
-                "article_count": len(articles),
-                "supporting_articles": articles,
+                "article_count": len(supporting_articles),
+                "supporting_articles": supporting_articles,
             }
         )
+
+        if examples_per_theory > 0 and supporting_articles:
+            representatives: List[Dict[str, object]] = []
+            for article_id in supporting_articles[: examples_per_theory]:
+                metadata = articles_map.get(article_id) if isinstance(articles_map, Mapping) else None
+                if metadata:
+                    representatives.append(dict(metadata))
+                else:
+                    representatives.append({"id": article_id})
+            if representatives:
+                summary[-1]["representative_articles"] = representatives
 
     summary.sort(key=lambda item: (-item["article_count"], item["label"].lower()))
     if limit > 0:
@@ -183,7 +249,8 @@ def _build_prompt(summary: Sequence[Mapping[str, object]], total_unique: int) ->
         You are designing an ontology for theories of aging based on literature
         review evidence. There are {total_unique} canonical theories in total.
         The JSON list below summarises each theory with its identifier, label,
-        aliases and supporting article IDs.
+        aliases, supporting article IDs, and representative article metadata
+        when available.
 
         Instructions:
         - Group related theories under a higher-level "group" when they share a
@@ -630,6 +697,15 @@ def main(argv: List[str] | None = None) -> int:
             "Chunks are used when more than one process is requested or when the summary exceeds this threshold."
         ),
     )
+    parser.add_argument(
+        "--examples-per-theory",
+        type=int,
+        default=3,
+        help=(
+            "Number of representative articles to include for each theory in the ontology prompt. "
+            "Set to 0 to disable article examples."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -649,8 +725,21 @@ def main(argv: List[str] | None = None) -> int:
         print("Input JSON is missing the 'theory_registry' mapping", file=sys.stderr)
         return 1
 
+    article_map: Dict[str, Dict[str, object]] = {}
+    raw_articles = data.get("articles") if isinstance(data, Mapping) else None
+    if isinstance(raw_articles, Sequence) and not isinstance(raw_articles, (str, bytes)):
+        article_records = [record for record in raw_articles if isinstance(record, Mapping)]
+        if article_records:
+            article_map = _build_article_map(article_records)
+
     total_unique = len(registry)
-    summary = _summarise_registry(registry, limit=max(args.top_n, 0))
+    examples_per_theory = max(args.examples_per_theory, 0)
+    summary = _summarise_registry(
+        registry,
+        limit=max(args.top_n, 0),
+        articles_map=article_map,
+        examples_per_theory=examples_per_theory,
+    )
 
     if total_unique == 0:
         print("No canonical theories available in registry", file=sys.stderr)
@@ -737,6 +826,7 @@ def main(argv: List[str] | None = None) -> int:
         "model": args.model,
         "input_file": args.input,
         "total_unique_theories": total_unique,
+        "examples_per_theory": examples_per_theory,
         "worker_processes": processes,
         "auto_processes_suggestion": auto_processes,
         "requested_processes": requested_processes,

@@ -82,6 +82,8 @@ them into end-to-end commands that scale to very large corpora.
 5. **Ontology synthesis (`step5_generate_ontology.py`).** The extracted theories
    are clustered into balanced groups/subgroups and annotated with suggested
    search keywords, producing `aging_ontology.json` plus reconciliation reports.
+   Pass `--examples-per-theory <N>` to control how many representative article
+   titles accompany each theory in the LLM prompt (use `0` to disable them).
 6. **Ontology-driven collection (`collect_theories.py`).** Suggested queries are
    merged into the collector config, adaptive expansion discovers new keywords,
    and a global rejection registry prevents re-processing already rejected

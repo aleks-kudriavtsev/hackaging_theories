@@ -12,7 +12,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts import run_pipeline
 
 
-DEFAULT_QUERY = run_pipeline.parse_args([]).query
+DEFAULT_ARGS = run_pipeline.parse_args([])
+DEFAULT_QUERY = DEFAULT_ARGS.query
+DEFAULT_ONTOLOGY_EXAMPLES = DEFAULT_ARGS.ontology_examples
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -120,6 +122,10 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
     step5_command = commands[5]
     assert Path(step5_command[step5_command.index("--input") + 1]) == Path(paths.theories)
     assert Path(step5_command[step5_command.index("--output") + 1]) == Path(paths.ontology)
+    assert (
+        step5_command[step5_command.index("--examples-per-theory") + 1]
+        == str(DEFAULT_ONTOLOGY_EXAMPLES)
+    )
 
     start_reviews_path = Path(paths.start_reviews)
     with start_reviews_path.open("r", encoding="utf-8") as handle:
