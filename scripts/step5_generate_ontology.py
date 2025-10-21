@@ -49,6 +49,62 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
+def _load_json_payload(path: str) -> Mapping[str, object] | Sequence[object]:
+    """Load a JSON payload, tolerating concatenated JSON documents."""
+
+    with open(path, "r", encoding="utf-8") as fh:
+        try:
+            return json.load(fh)
+        except json.JSONDecodeError as err:
+            if "Extra data" not in err.msg:
+                raise
+
+            fh.seek(0)
+            content = fh.read()
+
+    decoder = json.JSONDecoder()
+    index = 0
+    documents: List[object] = []
+    length = len(content)
+    while index < length:
+        while index < length and content[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            payload, next_index = decoder.raw_decode(content, index)
+        except json.JSONDecodeError as fallback_err:
+            raise RuntimeError(
+                f"Failed to parse JSON payload from {path}: {fallback_err}"
+            ) from fallback_err
+        documents.append(payload)
+        index = next_index
+
+    if not documents:
+        raise RuntimeError(f"No JSON documents found in {path}")
+
+    if len(documents) == 1:
+        payload = documents[0]
+        if isinstance(payload, (Mapping, Sequence)):
+            return payload
+        raise RuntimeError(
+            f"JSON document in {path} is not a mapping or sequence: {type(payload)!r}"
+        )
+
+    for payload in documents:
+        if isinstance(payload, Mapping) and "theory_registry" in payload:
+            print(
+                "Warning: multiple JSON documents detected; using the first one "
+                "that contains a 'theory_registry' key.",
+                file=sys.stderr,
+            )
+            return payload
+
+    raise RuntimeError(
+        f"None of the concatenated JSON documents in {path} contain 'theory_registry'."
+    )
+
+
 def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
     """Ensure the OpenAI payload has a predictable ``groups`` list."""
 
@@ -717,8 +773,11 @@ def main(argv: List[str] | None = None) -> int:
         print(f"Input file {args.input} does not exist", file=sys.stderr)
         return 1
 
-    with open(args.input, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        data = _load_json_payload(args.input)
+    except (OSError, RuntimeError, json.JSONDecodeError) as err:
+        print(f"Failed to load JSON from {args.input}: {err}", file=sys.stderr)
+        return 1
 
     registry = data.get("theory_registry") if isinstance(data, Mapping) else None
     if not isinstance(registry, Mapping):
