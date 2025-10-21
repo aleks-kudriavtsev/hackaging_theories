@@ -1,7 +1,7 @@
 paper_id,question_id,question,answer
-paper-fr-001,Q1,"Does the paper report a biomarker of aging?","yes_quantitative - Mitochondrial ROS levels correlate with frailty progression."
-paper-fr-001,Q2,"Does the paper describe a molecular mechanism for longevity?","mechanistic_evidence - Excess ROS damages sarcomeric proteins and impairs muscle maintenance."
-paper-tel-001,Q1,"Does the paper report a biomarker of aging?","yes_unverified - Telomere length recovery is tracked after TERT delivery."
-paper-tel-001,Q3,"Does the study test or propose a longevity intervention?","validated_intervention - Telomerase activation reverses senescence markers in vitro."
-paper-ds-001,Q2,"Does the paper describe a molecular mechanism for longevity?","mechanistic_hypothesis - Energy devoted to reproduction diverts resources from repair."
-paper-ds-001,Q5,"Does the paper provide cross-species lifespan predictors?","yes_unverified - Comparative life-history traits predict seasonal killifish longevity."
+paper-fr-001,Q1,"Does the paper report a biomarker of aging?","Yes, quantitatively shown - Mitochondrial ROS levels correlate with frailty progression."
+paper-fr-001,Q2,"Does the paper describe a molecular mechanism for longevity?","Mechanism supported by experiments - Excess ROS damages sarcomeric proteins and impairs muscle maintenance."
+paper-tel-001,Q1,"Does the paper report a biomarker of aging?","Yes, mentioned without data - Telomere length recovery is tracked after TERT delivery."
+paper-tel-001,Q3,"Does the study test or propose a longevity intervention?","Validated longevity intervention - Telomerase activation reverses senescence markers in vitro."
+paper-ds-001,Q2,"Does the paper describe a molecular mechanism for longevity?","Mechanism hypothesized - Energy devoted to reproduction diverts resources from repair."
+paper-ds-001,Q5,"Does the paper provide cross-species lifespan predictors?","Yes, mentioned without data - Comparative life-history traits predict seasonal killifish longevity."

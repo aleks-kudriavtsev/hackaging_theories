@@ -49,15 +49,15 @@ def test_extractor_returns_categorical_answers() -> None:
     assert len(answers) == len(QUESTION_CHOICES)
     mapped = {answer.question_id: answer for answer in answers}
 
-    assert mapped["Q1"].answer == "yes_quantitative"
-    assert mapped["Q2"].answer == "mechanistic_evidence"
-    assert mapped["Q3"].answer == "validated_intervention"
-    assert mapped["Q4"].answer == "reversible"
-    assert mapped["Q5"].answer == "yes_quantitative"
-    assert mapped["Q6"].answer == "primary_focus"
-    assert mapped["Q7"].answer == "primary_focus"
-    assert mapped["Q8"].answer == "supported"
-    assert mapped["Q9"].answer == "experimental"
+    assert mapped["Q1"].answer == "Yes, quantitatively shown"
+    assert mapped["Q2"].answer == "Mechanism supported by experiments"
+    assert mapped["Q3"].answer == "Validated longevity intervention"
+    assert mapped["Q4"].answer == "Changes appear reversible"
+    assert mapped["Q5"].answer == "Yes, quantitatively shown"
+    assert mapped["Q6"].answer == "Primary focus of the paper"
+    assert mapped["Q7"].answer == "Primary focus of the paper"
+    assert mapped["Q8"].answer == "Link supported by data"
+    assert mapped["Q9"].answer == "Experimental evidence presented"
 
     for answer in answers:
         assert answer.confidence > 0
@@ -67,7 +67,7 @@ def test_extractor_returns_categorical_answers() -> None:
 def test_extractor_uses_llm_when_available() -> None:
     llm_payload = json.dumps(
         {
-            "answer": "yes_quantitative",
+            "answer": "Yes, quantitatively shown",
             "confidence": 0.92,
             "rationale": "Evidence sentences describe quantified biomarker levels.",
         }
@@ -86,14 +86,14 @@ def test_extractor_uses_llm_when_available() -> None:
     mapped = {answer.question_id: answer for answer in answers}
     q1 = mapped["Q1"]
 
-    assert q1.answer == "yes_quantitative"
+    assert q1.answer == "Yes, quantitatively shown"
     assert q1.confidence > 0.9
     assert q1.gpt_confidence is not None
     assert q1.gpt_confidence == pytest.approx(0.92, rel=1e-3)
 
     evidence = json.loads(q1.evidence or "{}")
     assert evidence["heuristic"]["confidence"] == pytest.approx(0.1)
-    assert evidence["heuristic"]["answer"] == "no"
+    assert evidence["heuristic"]["answer"] == "No evidence found"
     assert evidence["gpt"]["rationale"].startswith("Evidence sentences")
     assert llm_client.calls == len(QUESTION_CHOICES)
 
@@ -120,12 +120,12 @@ def test_extractor_llm_decline_falls_back_to_heuristics() -> None:
     mapped = {answer.question_id: answer for answer in answers}
     q1 = mapped["Q1"]
 
-    assert q1.answer == "yes_quantitative"
+    assert q1.answer == "Yes, quantitatively shown"
     assert q1.confidence >= 0.85
     assert q1.heuristic_confidence == pytest.approx(0.9)
     assert q1.gpt_confidence == pytest.approx(0.2)
 
     evidence = json.loads(q1.evidence or "{}")
     assert evidence["gpt"]["answer"] == "unknown"
-    assert evidence["heuristic"]["answer"] == "yes_quantitative"
+    assert evidence["heuristic"]["answer"] == "Yes, quantitatively shown"
     assert llm_client.calls == len(QUESTION_CHOICES)

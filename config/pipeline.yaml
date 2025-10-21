@@ -386,6 +386,7 @@ extraction:
     system_prompt: |
       You are assisting the Hackaging project by answering structured research questions.
       Select the best answer category using only the supplied evidence sentences.
+      Choose exactly one of the allowed answers verbatim.
       If the evidence is insufficient, respond with "unknown".
     request_template: |
       Question: {question}
@@ -393,6 +394,7 @@ extraction:
       Evidence sentences:
       {evidence}
       Respond with a JSON object containing keys "answer", "confidence", and "rationale".
+      The "answer" must exactly match one of the allowed answers.
   calibration:
     gpt_weight: 0.6
     override_threshold: 0.85
@@ -402,57 +404,57 @@ extraction:
     - id: Q1
       prompt: "Does the paper report a biomarker of aging?"
       allowed_answers:
-        - yes_quantitative
-        - yes_unverified
-        - no
+        - "Yes, quantitatively shown"
+        - "Yes, mentioned without data"
+        - "No evidence found"
     - id: Q2
       prompt: "Does the paper describe a molecular mechanism for longevity?"
       allowed_answers:
-        - mechanistic_evidence
-        - mechanistic_hypothesis
-        - no
+        - "Mechanism supported by experiments"
+        - "Mechanism hypothesized"
+        - "No mechanism discussed"
     - id: Q3
       prompt: "Does the study test or propose a longevity intervention?"
       allowed_answers:
-        - validated_intervention
-        - proposed_intervention
-        - no
+        - "Validated longevity intervention"
+        - "Proposed longevity intervention"
+        - "No intervention discussed"
     - id: Q4
       prompt: "Does the paper address irreversibility or reversibility of aging changes?"
       allowed_answers:
-        - irreversible
-        - reversible
-        - not_discussed
+        - "Changes appear irreversible"
+        - "Changes appear reversible"
+        - "Not discussed"
     - id: Q5
       prompt: "Does the paper provide cross-species lifespan predictors?"
       allowed_answers:
-        - yes_quantitative
-        - yes_unverified
-        - no
+        - "Yes, quantitatively shown"
+        - "Yes, mentioned without data"
+        - "No evidence found"
     - id: Q6
       prompt: "Does the paper focus on naked mole rat longevity?"
       allowed_answers:
-        - primary_focus
-        - mentioned
-        - no
+        - "Primary focus of the paper"
+        - "Mentioned in passing"
+        - "Not mentioned"
     - id: Q7
       prompt: "Does the paper focus on avian longevity?"
       allowed_answers:
-        - primary_focus
-        - mentioned
-        - no
+        - "Primary focus of the paper"
+        - "Mentioned in passing"
+        - "Not mentioned"
     - id: Q8
       prompt: "Does the paper link body size to longevity?"
       allowed_answers:
-        - supported
-        - speculative
-        - no
+        - "Link supported by data"
+        - "Link is speculative"
+        - "No link reported"
     - id: Q9
       prompt: "Does the paper examine calorie restriction and lifespan?"
       allowed_answers:
-        - experimental
-        - observational
-        - no
+        - "Experimental evidence presented"
+        - "Observational evidence presented"
+        - "No evidence presented"
 
 outputs:
   papers: data/examples/papers.csv
