@@ -459,6 +459,7 @@ extraction:
 outputs:
   papers: data/examples/papers.csv
   theories: data/examples/theories.csv
+  theory_papers: data/examples/theory_papers.csv
   questions: data/examples/questions.csv
   cache_dir: data/cache
 

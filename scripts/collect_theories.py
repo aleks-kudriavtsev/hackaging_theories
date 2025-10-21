@@ -33,8 +33,10 @@ from theories_pipeline import (
     RuntimeOntologyBootstrapper,
     RuntimeNodeSpec,
     TheoryClassifier,
+    aggregate_theory_assignments,
     classify_and_extract_parallel,
     export_papers,
+    export_theory_papers,
     export_question_answers,
     export_theories,
     RelevanceFilter,
@@ -2241,9 +2243,19 @@ def run_pipeline(
     }
 
     outputs = config["outputs"]
-    export_papers(papers, Path(outputs["papers"]))
-    export_theories(assignments, Path(outputs["theories"]))
-    export_question_answers(question_answers, Path(outputs["questions"]))
+    papers_path = Path(outputs["papers"])
+    export_papers(papers, papers_path)
+
+    aggregation = aggregate_theory_assignments(assignments, ontology)
+    theories_path = Path(outputs["theories"])
+    export_theories(aggregation, theories_path)
+
+    theory_papers_path = outputs.get("theory_papers")
+    if theory_papers_path:
+        export_theory_papers(aggregation, papers, Path(theory_papers_path))
+
+    questions_path = Path(outputs["questions"])
+    export_question_answers(question_answers, papers, aggregation, questions_path)
 
     summary_payload = {
         "retrieval": summary_report,
@@ -2252,9 +2264,16 @@ def run_pipeline(
     }
     retriever.state_store.write_summary(summary_payload)
 
-    print(f"Exported {len(papers)} papers to {outputs['papers']}")
-    print(f"Exported {len(assignments)} theory assignments to {outputs['theories']}")
-    print(f"Exported {len(question_answers)} question answers to {outputs['questions']}")
+    total_theory_rows = sum(theory.number_of_collected_papers for theory in aggregation.theories)
+    total_question_rows = sum(len(ids) for ids in aggregation.paper_to_theory_ids.values())
+
+    print(f"Exported {len(papers)} papers to {papers_path}")
+    print(
+        f"Exported {len(aggregation.theories)} theories (covering {total_theory_rows} papers) to {theories_path}"
+    )
+    if theory_papers_path:
+        print(f"Exported per-theory paper table to {theory_papers_path}")
+    print(f"Exported {total_question_rows} question rows to {questions_path}")
 
     for theory_name, summary in summary_report.items():
         print(format_summary(theory_name, summary))

@@ -1,0 +1,7 @@
+theory_id,paper_url,paper_name,paper_year,doi,pmid
+disposable-soma-theory,paper-ds-001,Energy Allocation Trade-offs Shape Longevity in Seasonal Killifish,2020,10.1000/example-ds1,
+energy-allocation-trade-offs,paper-ds-001,Energy Allocation Trade-offs Shape Longevity in Seasonal Killifish,2020,10.1000/example-ds1,
+free-radical-theory,paper-fr-001,Mitochondrial ROS Drive Muscle Aging in Murine Models,2022,10.1000/example-fr1,
+mitochondrial-free-radical-theory,paper-fr-001,Mitochondrial ROS Drive Muscle Aging in Murine Models,2022,10.1000/example-fr1,
+telomerase-activation-strategies,paper-tel-001,Telomerase Activation Restores Replicative Capacity in Senescent Fibroblasts,2021,10.1000/example-tel1,
+telomere-shortening-theory,paper-tel-001,Telomerase Activation Restores Replicative Capacity in Senescent Fibroblasts,2021,10.1000/example-tel1,
