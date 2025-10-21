@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import math
 import multiprocessing
 import os
 import sys
@@ -186,6 +187,25 @@ def _chunk_summary(
     chunk_size = max(1, chunk_size)
     for start in range(0, len(summary), chunk_size):
         yield [dict(item) for item in summary[start : start + chunk_size]]
+
+
+def _compute_chunk_size(
+    summary_count: int,
+    base_chunk_size: int,
+    processes: int,
+    *,
+    min_chunk_size: int,
+) -> int:
+    min_chunk_size = max(1, min(min_chunk_size, base_chunk_size))
+    if summary_count <= 0:
+        return max(1, min(base_chunk_size, min_chunk_size))
+
+    divisor = max(processes, 1)
+    per_worker = math.ceil(summary_count / divisor)
+    chunk = max(min_chunk_size, per_worker)
+    chunk = min(chunk, base_chunk_size)
+    chunk = min(chunk, summary_count)
+    return max(1, chunk)
 
 
 def _build_article_map(
@@ -738,10 +758,10 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of worker processes for ontology generation. If omitted, the "
-            "script auto-scales: it uses the available CPU count when the "
-            "summary size exceeds the chunk threshold, otherwise it stays with a "
-            "single process."
+            "Number of worker processes for ontology generation. When omitted the "
+            "script auto-scales using the available CPU cores and keeps roughly "
+            "25 canonical theories per worker to balance throughput and prompt "
+            "quality."
         ),
     )
     parser.add_argument(
@@ -804,24 +824,58 @@ def main(argv: List[str] | None = None) -> int:
         print("No canonical theories available in registry", file=sys.stderr)
         return 1
 
-    chunk_threshold = max(args.chunk_size, 1)
-
-    estimated_chunks = max(1, (len(summary) + chunk_threshold - 1) // chunk_threshold)
+    summary_count = len(summary)
+    base_chunk_size = max(args.chunk_size, 1)
 
     try:
         cpu_total = multiprocessing.cpu_count()
     except NotImplementedError:  # pragma: no cover - defensive guard
         cpu_total = 1
 
-    auto_processes = cpu_total if len(summary) > chunk_threshold else 1
-    auto_processes = max(1, min(auto_processes, estimated_chunks))
+    min_chunk = min(base_chunk_size, max(10, max(1, base_chunk_size // 4)))
+
+    if summary_count:
+        max_workers_by_records = max(1, math.ceil(summary_count / min_chunk))
+        auto_processes = min(cpu_total, max_workers_by_records, summary_count)
+        auto_processes = max(1, auto_processes)
+    else:
+        auto_processes = 1
+
+    auto_chunk_size = _compute_chunk_size(
+        summary_count,
+        base_chunk_size,
+        auto_processes,
+        min_chunk_size=min_chunk,
+    )
 
     if args.processes is None:
         processes = auto_processes
         requested_processes: Optional[int] = None
+        chunk_floor = min_chunk
+        chunk_size = auto_chunk_size
     else:
-        processes = args.processes
+        processes = max(1, args.processes)
+        if summary_count:
+            processes = min(processes, summary_count)
         requested_processes = args.processes
+        chunk_floor = 1
+        chunk_size = _compute_chunk_size(
+            summary_count,
+            base_chunk_size,
+            processes,
+            min_chunk_size=chunk_floor,
+        )
+
+    estimated_chunks = max(1, math.ceil(summary_count / chunk_size)) if summary_count else 1
+    if processes > estimated_chunks:
+        processes = estimated_chunks
+        chunk_size = _compute_chunk_size(
+            summary_count,
+            base_chunk_size,
+            processes,
+            min_chunk_size=chunk_floor,
+        )
+        estimated_chunks = max(1, math.ceil(summary_count / chunk_size)) if summary_count else 1
 
     process_source = (
         "auto" if requested_processes is None or processes == auto_processes else "manual"
@@ -831,22 +885,24 @@ def main(argv: List[str] | None = None) -> int:
         print("--processes must be at least 1", file=sys.stderr)
         return 1
 
-    should_chunk = processes > 1 or len(summary) > chunk_threshold
+    should_chunk = processes > 1 or summary_count > chunk_size
 
     print(
         f"Using {processes} worker process{'es' if processes != 1 else ''} "
-        f"({process_source}; auto suggestion: {auto_processes})."
+        f"({process_source}; auto suggestion: {auto_processes}) "
+        f"with chunk size {chunk_size} (auto suggestion: {auto_chunk_size})."
     )
 
     if should_chunk:
-        summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_threshold))
+        summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_size))
         worker_args = [
             (chunk, total_unique, args.model, api_key)
             for chunk in summary_chunks
         ]
 
         if processes > 1 and len(summary_chunks) > 1:
-            with multiprocessing.Pool(processes=processes) as pool:
+            worker_count = min(processes, len(summary_chunks))
+            with multiprocessing.Pool(processes=worker_count) as pool:
                 chunk_responses = pool.starmap(generate_grouping, worker_args)
         else:
             chunk_responses = [
@@ -877,6 +933,8 @@ def main(argv: List[str] | None = None) -> int:
             "auto_suggestion": auto_processes,
             "requested_processes": requested_processes,
             "configuration": process_source,
+            "chunk_size": chunk_size,
+            "auto_chunk_size_suggestion": auto_chunk_size,
         }
     )
 
@@ -889,6 +947,8 @@ def main(argv: List[str] | None = None) -> int:
         "worker_processes": processes,
         "auto_processes_suggestion": auto_processes,
         "requested_processes": requested_processes,
+        "chunk_size": chunk_size,
+        "auto_chunk_size_suggestion": auto_chunk_size,
         "prompt_summary": summary,
         "ontology": {
             "raw": response,
@@ -903,6 +963,8 @@ def main(argv: List[str] | None = None) -> int:
             "process_configuration": process_source,
             "auto_processes_suggestion": auto_processes,
             "requested_processes": requested_processes,
+            "chunk_size": chunk_size,
+            "auto_chunk_size_suggestion": auto_chunk_size,
             **reconciliation,
         },
     }

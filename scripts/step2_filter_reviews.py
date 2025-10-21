@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from multiprocessing import Process, Queue
@@ -483,8 +484,9 @@ def main(argv: List[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Number of OS processes used for filtering. Defaults to CPU count when "
-            "more than 100 records are provided; otherwise runs single-threaded."
+            "Number of OS processes used for filtering. When omitted the script "
+            "auto-scales based on the record volume, aiming for roughly 25 reviews "
+            "per worker while capping usage at the available CPU cores."
         ),
     )
     args = parser.parse_args(argv)
@@ -502,7 +504,12 @@ def main(argv: List[str] | None = None) -> int:
         print("--processes must be a positive integer", file=sys.stderr)
         return 2
 
-    auto_processes = (os.cpu_count() or 1) if total_records > 100 else 1
+    cpu_total = os.cpu_count() or 1
+    min_records_per_worker = 25
+    if total_records:
+        auto_processes = min(cpu_total, max(1, math.ceil(total_records / min_records_per_worker)))
+    else:
+        auto_processes = 1
     processes = args.processes or auto_processes
     if total_records > 0:
         processes = min(processes, total_records)
