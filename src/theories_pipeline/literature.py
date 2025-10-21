@@ -2184,8 +2184,8 @@ def decode_openalex_abstract(index: Dict[str, List[int]] | None) -> str:
 
     if not index:
         return ""
-    words = sorted(((position, word) for word, positions in index.items() for position in positions))
-    ordered_words = [word for _position, word in sorted(words, key=lambda item: item[0])]
+    words = sorted((position, word) for word, positions in index.items() for position in positions)
+    ordered_words = [word for _position, word in words]
     return " ".join(ordered_words)
 
 
