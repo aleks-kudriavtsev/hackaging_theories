@@ -8,7 +8,9 @@ and the combined set for downstream ontology building. Use ``--processes`` to
 control how many worker processes share the LLM queue (auto-detected for large
 inputs). The ``--chunk-chars`` and ``--chunk-overlap`` switches control how long
 each prompt window is and how much adjacent context overlaps, ensuring long
-reviews are streamed to the LLM in multiple passes.
+reviews are streamed to the LLM in multiple passes. The ``--request-timeout``
+option controls how long the script waits for each OpenAI API response before
+guiding you to retry or restart the step.
 
 Environment variables
 ---------------------
@@ -34,6 +36,7 @@ import math
 import multiprocessing
 import os
 import re
+import socket
 import sys
 import textwrap
 import time
@@ -44,6 +47,7 @@ import urllib.request
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_OPENAI_TIMEOUT = 60
 
 
 def _normalise_theory_list(payload: Dict) -> Dict:
@@ -66,7 +70,12 @@ def _normalise_theory_list(payload: Dict) -> Dict:
 
 
 def chat_completion_json(
-    system_prompt: str, user_prompt: str, api_key: str, model: str
+    system_prompt: str,
+    user_prompt: str,
+    api_key: str,
+    model: str,
+    *,
+    timeout: Optional[float] = None,
 ) -> Dict:
     payload = json.dumps(
         {
@@ -90,12 +99,19 @@ def chat_completion_json(
         method="POST",
     )
 
+    request_timeout = DEFAULT_OPENAI_TIMEOUT if timeout is None else timeout
+
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=request_timeout) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:  # pragma: no cover - network fallback
         error_body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"OpenAI API error {exc.code}: {error_body}") from exc
+    except (urllib.error.URLError, socket.timeout) as exc:
+        raise RuntimeError(
+            "OpenAI API request failed due to a network error or timeout. Retry this "
+            "step or restart the pipeline."
+        ) from exc
 
     data = json.loads(body)
     try:
@@ -113,13 +129,17 @@ def chat_completion_json(
     return parsed
 
 
-def call_openai(prompt: str, api_key: str, model: str) -> Dict:
+def call_openai(
+    prompt: str, api_key: str, model: str, *, timeout: Optional[float] = None
+) -> Dict:
     system_prompt = (
         "Extract distinct aging theories from the supplied review text. Return "
         "JSON with keys `theories` (list of strings) and `notes` (optional "
         "explanatory text)."
     )
-    parsed = chat_completion_json(system_prompt, prompt, api_key, model)
+    parsed = chat_completion_json(
+        system_prompt, prompt, api_key, model, timeout=timeout
+    )
     return _normalise_theory_list(parsed)
 
 
@@ -193,9 +213,27 @@ def build_prompt(
 
 
 def process_batch(
-    payload: Tuple[List[Tuple[int, Dict]], str, str, float, int, int, int]
+    payload: Tuple[
+        List[Tuple[int, Dict]],
+        str,
+        str,
+        float,
+        int,
+        int,
+        int,
+        Optional[float],
+    ]
 ) -> List[Tuple[int, Dict]]:
-    batch, api_key, model, delay, chunk_chars, chunk_overlap, total_records = payload
+    (
+        batch,
+        api_key,
+        model,
+        delay,
+        chunk_chars,
+        chunk_overlap,
+        total_records,
+        request_timeout,
+    ) = payload
     annotated: List[Tuple[int, Dict]] = []
     for global_idx, record in batch:
         text_source = record.get("full_text") or record.get("abstract") or ""
@@ -205,7 +243,9 @@ def process_batch(
         aggregated_notes: List[str] = []
         for chunk_idx, chunk_text in enumerate(chunks):
             prompt = build_prompt(record, chunk_text, chunk_idx, len(chunks))
-            response = call_openai(prompt, api_key, model)
+            response = call_openai(
+                prompt, api_key, model, timeout=request_timeout
+            )
             theories = response.get("theories") if isinstance(response, dict) else []
             if isinstance(theories, list):
                 for alias in theories:
@@ -258,6 +298,7 @@ def extract_theories(
     chunk_chars: int,
     chunk_overlap: int,
     processes: int,
+    request_timeout: Optional[float],
 ) -> List[Dict]:
     records_list = list(records)
     total_records = len(records_list)
@@ -274,6 +315,7 @@ def extract_theories(
             chunk_chars,
             chunk_overlap,
             total_records,
+            request_timeout,
         )
         annotated_pairs = process_batch(payload)
     else:
@@ -283,7 +325,16 @@ def extract_theories(
             for i in range(0, total_records, chunk_size)
         ]
         payloads = [
-            (batch, api_key, model, delay, chunk_chars, chunk_overlap, total_records)
+            (
+                batch,
+                api_key,
+                model,
+                delay,
+                chunk_chars,
+                chunk_overlap,
+                total_records,
+                request_timeout,
+            )
             for batch in batches
         ]
         with multiprocessing.Pool(processes=processes) as pool:
@@ -343,6 +394,7 @@ def disambiguate_with_llm(
     record: Dict,
     api_key: str,
     model: str,
+    request_timeout: Optional[float],
 ) -> Optional[str]:
     if not candidates:
         return None
@@ -375,7 +427,13 @@ def disambiguate_with_llm(
         """
     ).strip()
     try:
-        response = chat_completion_json(system_prompt, user_prompt, api_key, model)
+        response = chat_completion_json(
+            system_prompt,
+            user_prompt,
+            api_key,
+            model,
+            timeout=request_timeout,
+        )
     except RuntimeError:
         return None
     match_id = response.get("match_id")
@@ -389,7 +447,10 @@ def disambiguate_with_llm(
 
 
 def build_theory_registry(
-    annotated: Iterable[Dict], api_key: str, model: str
+    annotated: Iterable[Dict],
+    api_key: str,
+    model: str,
+    request_timeout: Optional[float],
 ) -> Dict[str, Dict]:
     registry: Dict[str, Dict] = {}
     signature_index: Dict[str, Tuple[str, Tuple[str, ...]]] = {}
@@ -447,7 +508,12 @@ def build_theory_registry(
                         >= 0.65
                     }
                     match = disambiguate_with_llm(
-                        cleaned, potential_candidates, record, api_key, model
+                        cleaned,
+                        potential_candidates,
+                        record,
+                        api_key,
+                        model,
+                        request_timeout,
                     )
                     if match:
                         theory_id = match
@@ -566,6 +632,15 @@ def main(argv: List[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_OPENAI_TIMEOUT,
+        help=(
+            "Timeout (in seconds) for each OpenAI API request before retry guidance "
+            "is raised."
+        ),
+    )
+    parser.add_argument(
         "--max-chars",
         dest="compat_max_chars",
         type=int,
@@ -618,8 +693,11 @@ def main(argv: List[str] | None = None) -> int:
         chunk_chars,
         args.chunk_overlap,
         processes,
+        args.request_timeout,
     )
-    theory_registry = build_theory_registry(annotated, api_key, args.model)
+    theory_registry = build_theory_registry(
+        annotated, api_key, args.model, args.request_timeout
+    )
     aggregated = sorted(theory_registry.keys())
 
     output_dir = os.path.dirname(args.output)
