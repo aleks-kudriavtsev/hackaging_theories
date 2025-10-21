@@ -65,6 +65,18 @@ def test_coerce_articles_accepts_standalone_records() -> None:
     assert [article["id"] for article in articles] == ["solo"]
 
 
-def test_load_registry_builder_recovers_helper_via_path() -> None:
+def test_load_registry_builder_handles_direct_execution(monkeypatch) -> None:
+    module_name = "scripts.step4_extract_theories"
+
+    def explode(name: str):
+        raise ImportError("forced failure")
+
+    monkeypatch.delitem(_MODULE.sys.modules, module_name, raising=False)
+    monkeypatch.setattr(_MODULE.importlib, "import_module", explode)
+
     builder = _load_registry_builder()
-    assert callable(builder)
+    try:
+        assert callable(builder)
+        assert builder.__module__ == module_name
+    finally:
+        _MODULE.sys.modules.pop(module_name, None)

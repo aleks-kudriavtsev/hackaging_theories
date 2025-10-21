@@ -35,6 +35,8 @@ python scripts/step5_generate_ontology.py \
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import datetime as _dt
 import importlib.util
 import json
@@ -141,6 +143,49 @@ def _coerce_articles_from_documents(
         return collected_articles
 
     return []
+
+
+def _load_registry_builder() -> Optional[
+    Callable[[Iterable[Dict[str, object]], str, str, Optional[float]], Dict[str, Dict[str, object]]]
+]:
+    """Return the ``build_theory_registry`` helper even when ``scripts`` isn't importable.
+
+    When ``step5_generate_ontology.py`` is executed directly (``python scripts/...``)
+    Python initialises ``sys.path`` with the *scripts* directory instead of the
+    project root.  Importing ``scripts.step4_extract_theories`` therefore fails
+    because the ``scripts`` package is not visible.  This loader first attempts
+    the conventional import and then falls back to loading the module from the
+    neighbouring ``step4_extract_theories.py`` file via ``importlib``.
+    """
+
+    module_name = "scripts.step4_extract_theories"
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        module = None
+
+    if module is None:
+        module_path = Path(__file__).resolve().with_name("step4_extract_theories.py")
+        if module_path.exists():
+            spec = importlib.util.spec_from_file_location(module_name, module_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                # Ensure future imports reuse the loaded module.
+                sys.modules[module_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:  # pragma: no cover - defensive guard
+                    # Remove the partially initialised module before falling back.
+                    sys.modules.pop(module_name, None)
+                    module = None
+
+    if module is None:
+        return None
+
+    builder = getattr(module, "build_theory_registry", None)
+    if callable(builder):
+        return builder
+    return None
 
 
 def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
@@ -885,7 +930,6 @@ def main(argv: List[str] | None = None) -> int:
     registry_reconstructed = False
     if registry is None and article_records:
         build_theory_registry = _load_registry_builder()
-
         if build_theory_registry is None:
             print(
                 "Input JSON is missing the 'theory_registry' mapping and the fallback "
