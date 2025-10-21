@@ -38,6 +38,7 @@ import argparse
 import importlib
 import importlib.util
 import datetime as _dt
+import importlib.util
 import json
 import math
 import multiprocessing
@@ -1155,3 +1156,42 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
+
+
+def _load_registry_builder() -> Optional[Callable[[Iterable[Dict], str, str, Optional[float]], Dict[str, Dict]]]:
+    """Best-effort loader for :func:`build_theory_registry`.
+
+    The ontology generator is often executed as a standalone script which means the
+    ``scripts`` directory is *not* a Python package on ``sys.path``.  Directly
+    importing ``scripts.step4_extract_theories`` therefore fails on most setups.
+    To keep the command-line UX predictable we try multiple strategies:
+
+    * first attempt a regular import (covers environments where ``scripts`` has
+      been added to ``PYTHONPATH`` or converted into a package);
+    * otherwise load ``step4_extract_theories.py`` via ``importlib`` using a
+      filesystem path relative to this module.
+
+    If the helper cannot be located ``None`` is returned and the caller can abort
+    with a clearer diagnostic.
+    """
+
+    try:
+        from scripts.step4_extract_theories import build_theory_registry  # type: ignore
+    except ImportError:
+        module_path = Path(__file__).resolve().parent / "step4_extract_theories.py"
+        if not module_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location(
+            "step4_extract_theories", module_path
+        )
+        if not spec or not spec.loader:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:  # pragma: no cover - defensive import guard
+            return None
+        build_theory_registry = getattr(module, "build_theory_registry", None)
+    if callable(build_theory_registry):
+        return build_theory_registry
+    return None
