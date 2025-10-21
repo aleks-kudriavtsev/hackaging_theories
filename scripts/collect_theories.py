@@ -2229,7 +2229,8 @@ def run_pipeline(
     assignments = [assignment for group in assignment_groups for assignment in group]
     question_answers = [answer for group in answer_groups for answer in group]
 
-    coverage_counts = classifier.summarize(assignments)
+    summary_ids = classifier.summarize(assignments, include_ids=True)
+    coverage_counts = {name: len(ids) for name, ids in summary_ids.items()}
     coverage_summary = ontology.coverage(coverage_counts)
     quota_status = {
         name: {
@@ -2246,7 +2247,11 @@ def run_pipeline(
     papers_path = Path(outputs["papers"])
     export_papers(papers, papers_path)
 
-    aggregation = aggregate_theory_assignments(assignments, ontology)
+    aggregation = aggregate_theory_assignments(
+        assignments,
+        ontology,
+        paper_ids_by_theory=summary_ids,
+    )
     theories_path = Path(outputs["theories"])
     export_theories(aggregation, theories_path)
 

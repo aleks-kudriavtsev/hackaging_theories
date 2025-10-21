@@ -16,7 +16,7 @@ if __package__ is None:  # pragma: no cover - convenience for direct execution
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from scripts import collect_theories, run_pipeline
+from scripts import collect_theories, run_pipeline, score_progress
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force regeneration of pipeline artefacts even when outputs already exist.",
     )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.6,
+        help="Alert threshold for average question confidence in the progress report.",
+    )
     return parser
 
 
@@ -282,6 +288,7 @@ def _prepare_collector_config(
     outputs_cfg.setdefault("theories", str(workdir / "theories.csv"))
     outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
     outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
+    outputs_cfg.setdefault("reports", str(workdir / "reports"))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -329,12 +336,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     collector_parser = collect_theories.build_parser()
     collector_namespace = collector_parser.parse_args(collector_args)
 
-    return collect_theories.run_pipeline(
+    result = collect_theories.run_pipeline(
         collector_namespace,
         parser=collector_parser,
         config=config,
         config_path=config_path,
     )
+
+    if result == 0:
+        outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
+        theories_path = Path(outputs_cfg.get("theories", workdir / "theories.csv"))
+        questions_path = Path(outputs_cfg.get("questions", workdir / "questions.csv"))
+        reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
+        try:
+            score_progress.generate_progress_report(
+                theories_path,
+                questions_path,
+                reports_dir,
+                confidence_threshold=float(args.confidence_threshold),
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to generate progress report")
+
+    return result
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

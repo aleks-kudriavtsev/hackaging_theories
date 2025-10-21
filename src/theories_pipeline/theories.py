@@ -50,6 +50,7 @@ class AggregatedTheory:
     theory_name: str
     paper_ids: Tuple[str, ...]
     number_of_collected_papers: int
+    target: int | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ def _slugify(value: str) -> str:
 def aggregate_theory_assignments(
     assignments: Iterable[TheoryAssignment],
     ontology: TheoryOntology,
+    *,
+    paper_ids_by_theory: Mapping[str, Iterable[str]] | None = None,
 ) -> TheoryAggregationResult:
     """Aggregate theory assignments and assign stable identifiers.
 
@@ -91,11 +94,16 @@ def aggregate_theory_assignments(
         papers to the theories they support.
     """
 
-    papers_by_theory: Dict[str, set[str]] = {name: set() for name in ontology.names()}
-    for assignment in assignments:
-        if assignment.score <= 0:
-            continue
-        papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+    if paper_ids_by_theory is None:
+        papers_by_theory: Dict[str, set[str]] = {name: set() for name in ontology.names()}
+        for assignment in assignments:
+            if assignment.score <= 0:
+                continue
+            papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+    else:
+        papers_by_theory = {name: {str(pid) for pid in ids} for name, ids in paper_ids_by_theory.items()}
+        for name in ontology.names():
+            papers_by_theory.setdefault(name, set())
 
     seen_ids: set[str] = set()
     ids_by_name: Dict[str, str] = {}
@@ -131,6 +139,7 @@ def aggregate_theory_assignments(
                 theory_name=name,
                 paper_ids=sorted_papers,
                 number_of_collected_papers=len(sorted_papers),
+                target=ontology.target(name),
             )
         )
         for paper_id in sorted_papers:
@@ -232,13 +241,20 @@ class TheoryClassifier:
 
         return assignments_batch
 
-    def summarize(self, assignments: Iterable[TheoryAssignment]) -> Dict[str, int]:
+    def summarize(
+        self,
+        assignments: Iterable[TheoryAssignment],
+        *,
+        include_ids: bool = False,
+    ) -> Dict[str, int] | Dict[str, Tuple[str, ...]]:
         counts: Dict[str, set[str]] = {name: set() for name in self.ontology.names()}
         for assignment in assignments:
             if assignment.score <= 0:
                 continue
             if assignment.theory in counts:
                 counts[assignment.theory].add(assignment.paper_id)
+        if include_ids:
+            return {name: tuple(sorted(ids)) for name, ids in counts.items()}
         return {name: len(ids) for name, ids in counts.items()}
 
     def update_ontology(

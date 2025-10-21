@@ -87,7 +87,7 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         def attach_manager(self, manager: Any) -> None:  # pragma: no cover - trivial
             self.manager = manager
 
-        def summarize(self, assignments: List[Any]) -> Dict[str, Any]:
+        def summarize(self, assignments: List[Any], *, include_ids: bool = False) -> Dict[str, Any]:
             return {}
 
         @classmethod

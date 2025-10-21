@@ -53,6 +53,18 @@ class DummyRetriever:
 
 
 class DummyOntology:
+    def __init__(self) -> None:
+        self._node = SimpleNamespace(metadata={}, parent=None, children=())
+
+    def names(self):
+        return ()
+
+    def get(self, _name):  # pragma: no cover - simple stub
+        return self._node
+
+    def target(self, _name):  # pragma: no cover - simple stub
+        return None
+
     def coverage(self, _counts):
         return {}
 
@@ -144,7 +156,9 @@ class DummyClassifier:
     def attach_manager(self, _manager):
         return None
 
-    def summarize(self, _assignments):
+    def summarize(self, _assignments, *, include_ids: bool = False):
+        if include_ids:
+            return {}
         return {}
 
 
