@@ -50,6 +50,15 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_OPENAI_TIMEOUT = 60
 
 
+PROMPT_LOCK = multiprocessing.Lock()
+_NETWORK_ERROR_KEYWORDS = ("network error", "timeout", "temporarily unavailable")
+
+
+def _is_network_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(keyword in lowered for keyword in _NETWORK_ERROR_KEYWORDS)
+
+
 def _normalise_theory_list(payload: Dict) -> Dict:
     theories = payload.get("theories")
     if theories is None:
@@ -243,9 +252,44 @@ def process_batch(
         aggregated_notes: List[str] = []
         for chunk_idx, chunk_text in enumerate(chunks):
             prompt = build_prompt(record, chunk_text, chunk_idx, len(chunks))
-            response = call_openai(
-                prompt, api_key, model, timeout=request_timeout
-            )
+            attempt = 0
+            backoff_delay = 1.0
+            while True:
+                try:
+                    response = call_openai(
+                        prompt, api_key, model, timeout=request_timeout
+                    )
+                    break
+                except RuntimeError as err:
+                    message = str(err)
+                    if not _is_network_error(message):
+                        raise
+                    attempt += 1
+                    acquired = PROMPT_LOCK.acquire(block=False)
+                    if acquired:
+                        try:
+                            print(
+                                (
+                                    "Network issue while contacting OpenAI (attempt "
+                                    f"{attempt}). Error: {message}\n"
+                                    "Verify your internet connection and press Enter to retry."
+                                ),
+                                flush=True,
+                            )
+                            try:
+                                input("Press Enter once connectivity is restored to retry... ")
+                            except EOFError:
+                                # In non-interactive environments we still want to pause briefly
+                                pass
+                        finally:
+                            PROMPT_LOCK.release()
+                    else:
+                        with PROMPT_LOCK:
+                            pass
+                    sleep_time = min(60.0, backoff_delay)
+                    time.sleep(sleep_time)
+                    backoff_delay = min(60.0, backoff_delay * 2)
+                    continue
             theories = response.get("theories") if isinstance(response, dict) else []
             if isinstance(theories, list):
                 for alias in theories:
