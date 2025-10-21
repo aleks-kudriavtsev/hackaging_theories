@@ -23,6 +23,43 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
+def _prepare_cached_stage_files(paths: run_pipeline.PipelinePaths) -> None:
+    pubmed_record = {
+        "pmid": "999999",
+        "title": "Cached Theory Review",
+        "doi": "10.1000/cached",
+        "publication_year": 2022,
+        "publication_types": ["Review"],
+        "authors": ["Casey Cache"],
+        "sources": ["PubMed"],
+    }
+    openalex_record = {
+        "openalex_id": "W00000",
+        "title": "Cached Theory Review",
+        "doi": "10.1000/cached",
+        "publication_year": 2022,
+        "publication_types": ["Review"],
+        "authors": ["Casey Cache"],
+        "provenance": "OpenAlex",
+    }
+    google_record = {
+        "title": "Cached Theory Review",
+        "publication_year": 2022,
+        "authors": ["Casey Cache"],
+        "sources": ["Google Scholar"],
+    }
+
+    _write_json(Path(paths.pubmed_reviews), [pubmed_record])
+    _write_json(Path(paths.openalex_reviews), [openalex_record])
+    _write_json(Path(paths.google_scholar_reviews), [google_record])
+    _write_json(Path(paths.filtered_reviews), [])
+    _write_json(Path(paths.fulltext_reviews), [])
+    _write_json(
+        Path(paths.ontology),
+        {"ontology": {"final": {"groups": []}}},
+    )
+
+
 @pytest.fixture
 def sample_source_payloads(tmp_path):
     paths = run_pipeline.build_paths(str(tmp_path))
@@ -185,3 +222,47 @@ def test_run_pipeline_surfaces_step_failures(tmp_path, monkeypatch, sample_sourc
     assert str(excinfo.value) == "Step 'Fetch PMC full texts' failed with exit code 1."
     assert any("scripts/step3_fetch_fulltext.py" in command for command in commands)
     assert Path(paths.start_reviews).exists()
+
+
+def test_step4_cache_without_registry_triggers_regeneration(tmp_path, monkeypatch):
+    paths = run_pipeline.build_paths(str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    _prepare_cached_stage_files(paths)
+    _write_json(Path(paths.theories), {"unexpected": "payload"})
+
+    commands = []
+
+    def fake_run(command, check=True):
+        commands.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(run_pipeline.subprocess, "run", fake_run)
+
+    result = run_pipeline.main(["--workdir", str(tmp_path)])
+    assert result == 0
+
+    executed_scripts = [cmd[1] for cmd in commands]
+    assert "scripts/step4_extract_theories.py" in executed_scripts
+
+
+def test_step4_cache_with_registry_is_skipped(tmp_path, monkeypatch):
+    paths = run_pipeline.build_paths(str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    _prepare_cached_stage_files(paths)
+    _write_json(Path(paths.theories), {"theory_registry": {}})
+
+    commands = []
+
+    def fake_run(command, check=True):
+        commands.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0)
+
+    monkeypatch.setattr(run_pipeline.subprocess, "run", fake_run)
+
+    result = run_pipeline.main(["--workdir", str(tmp_path)])
+    assert result == 0
+
+    executed_scripts = [cmd[1] for cmd in commands]
+    assert "scripts/step4_extract_theories.py" not in executed_scripts
