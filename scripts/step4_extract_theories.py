@@ -41,6 +41,7 @@ import sys
 import textwrap
 import time
 import unicodedata
+import threading
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 import urllib.error
 import urllib.request
@@ -231,6 +232,7 @@ def process_batch(
         int,
         int,
         Optional[float],
+        Optional[multiprocessing.queues.Queue],
     ]
 ) -> List[Tuple[int, Dict]]:
     (
@@ -242,6 +244,7 @@ def process_batch(
         chunk_overlap,
         total_records,
         request_timeout,
+        result_queue,
     ) = payload
     annotated: List[Tuple[int, Dict]] = []
     for global_idx, record in batch:
@@ -326,6 +329,8 @@ def process_batch(
         theory_payload["chunk_count"] = len(chunks)
         annotated_record["theory_extraction"] = theory_payload
         annotated.append((global_idx, annotated_record))
+        if result_queue is not None:
+            result_queue.put((global_idx, annotated_record))
         print(
             f"Annotated {global_idx + 1}/{total_records} reviews",
             flush=True,
@@ -344,12 +349,44 @@ def extract_theories(
     processes: int,
     request_timeout: Optional[float],
 ) -> List[Dict]:
+    return run_extraction(
+        records,
+        api_key,
+        model,
+        delay,
+        chunk_chars,
+        chunk_overlap,
+        processes,
+        request_timeout,
+        set(),
+        None,
+    )
+
+
+def run_extraction(
+    records: Iterable[Dict],
+    api_key: str,
+    model: str,
+    delay: float,
+    chunk_chars: int,
+    chunk_overlap: int,
+    processes: int,
+    request_timeout: Optional[float],
+    processed_indices: Set[int],
+    result_queue: Optional[multiprocessing.queues.Queue],
+) -> List[Tuple[int, Dict]]:
     records_list = list(records)
     total_records = len(records_list)
     if total_records == 0:
         return []
 
-    indexed_records: List[Tuple[int, Dict]] = list(enumerate(records_list))
+    indexed_records: List[Tuple[int, Dict]] = [
+        (idx, record)
+        for idx, record in enumerate(records_list)
+        if idx not in processed_indices
+    ]
+    if not indexed_records:
+        return []
     if processes <= 1:
         payload = (
             indexed_records,
@@ -360,13 +397,15 @@ def extract_theories(
             chunk_overlap,
             total_records,
             request_timeout,
+            result_queue,
         )
         annotated_pairs = process_batch(payload)
     else:
-        chunk_size = math.ceil(total_records / processes)
+        pending_count = len(indexed_records)
+        chunk_size = math.ceil(max(1, pending_count) / processes)
         batches: List[List[Tuple[int, Dict]]] = [
             indexed_records[i : i + chunk_size]
-            for i in range(0, total_records, chunk_size)
+            for i in range(0, pending_count, chunk_size)
         ]
         payloads = [
             (
@@ -378,6 +417,7 @@ def extract_theories(
                 chunk_overlap,
                 total_records,
                 request_timeout,
+                result_queue,
             )
             for batch in batches
         ]
@@ -388,6 +428,105 @@ def extract_theories(
 
     annotated = [record for _, record in annotated_pairs]
     return annotated
+
+
+def load_checkpoint_annotations(path: str) -> Dict[int, Dict]:
+    annotations: Dict[int, Dict] = {}
+    if not path or not os.path.exists(path):
+        return annotations
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+    except OSError:
+        return annotations
+
+    if not content.strip():
+        return annotations
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            idx = payload.get("index")
+            record = payload.get("record")
+            if isinstance(idx, int) and isinstance(record, dict):
+                annotations[idx] = record
+        return annotations
+
+    if isinstance(parsed, dict):
+        articles = parsed.get("articles") if isinstance(parsed, dict) else None
+        if isinstance(articles, list):
+            for idx, record in enumerate(articles):
+                if isinstance(record, dict):
+                    annotations[idx] = record
+        try:
+            with open(path, "w", encoding="utf-8") as out_fh:
+                for idx in sorted(annotations):
+                    out_fh.write(
+                        json.dumps(
+                            {"index": idx, "record": annotations[idx]},
+                            ensure_ascii=False,
+                        )
+                    )
+                    out_fh.write("\n")
+        except OSError:
+            pass
+        return annotations
+
+    if isinstance(parsed, list):
+        for idx, record in enumerate(parsed):
+            if isinstance(record, dict):
+                annotations[idx] = record
+        try:
+            with open(path, "w", encoding="utf-8") as out_fh:
+                for idx in sorted(annotations):
+                    out_fh.write(
+                        json.dumps(
+                            {"index": idx, "record": annotations[idx]},
+                            ensure_ascii=False,
+                        )
+                    )
+                    out_fh.write("\n")
+        except OSError:
+            pass
+        return annotations
+
+    return annotations
+
+
+def checkpoint_writer(
+    result_queue: "multiprocessing.queues.Queue",  # type: ignore[name-defined]
+    path: str,
+    annotations: Dict[int, Dict],
+) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(path, "a", encoding="utf-8") as fh:
+        while True:
+            item = result_queue.get()
+            if item is None:
+                break
+            index, record = item
+            if not isinstance(index, int) or not isinstance(record, dict):
+                continue
+            if index in annotations:
+                continue
+            annotations[index] = record
+            fh.write(
+                json.dumps({"index": index, "record": record}, ensure_ascii=False)
+            )
+            fh.write("\n")
+            fh.flush()
 
 
 def slugify(value: str) -> str:
@@ -700,6 +839,14 @@ def main(argv: List[str] | None = None) -> int:
             "for queues above 100 items."
         ),
     )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help=(
+            "Path to a checkpoint file used to persist per-article annotations. "
+            "Defaults to the --output path."
+        ),
+    )
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -729,16 +876,55 @@ def main(argv: List[str] | None = None) -> int:
     if args.compat_max_chars is not None:
         chunk_chars = args.compat_max_chars
 
-    annotated = extract_theories(
-        records,
-        api_key,
-        args.model,
-        args.delay,
-        chunk_chars,
-        args.chunk_overlap,
-        processes,
-        args.request_timeout,
-    )
+    checkpoint_path = args.checkpoint or args.output
+    checkpoint_annotations = load_checkpoint_annotations(checkpoint_path)
+    total_records = len(records)
+    processed_indices = {
+        idx for idx in checkpoint_annotations.keys() if 0 <= idx < total_records
+    }
+    if processed_indices:
+        print(
+            f"Loaded {len(processed_indices)} existing annotations from {checkpoint_path}",
+            flush=True,
+        )
+
+    pending_indices = [idx for idx in range(total_records) if idx not in processed_indices]
+
+    manager: Optional[multiprocessing.Manager] = None
+    result_queue = None
+    writer_thread: Optional[threading.Thread] = None
+    if pending_indices:
+        manager = multiprocessing.Manager()
+        result_queue = manager.Queue()
+        writer_thread = threading.Thread(
+            target=checkpoint_writer,
+            args=(result_queue, checkpoint_path, checkpoint_annotations),
+            daemon=True,
+        )
+        writer_thread.start()
+        try:
+            run_extraction(
+                records,
+                api_key,
+                args.model,
+                args.delay,
+                chunk_chars,
+                args.chunk_overlap,
+                processes,
+                args.request_timeout,
+                processed_indices,
+                result_queue,
+            )
+        finally:
+            result_queue.put(None)
+            writer_thread.join()
+            manager.shutdown()
+    else:
+        print("All records already processed; skipping extraction phase.", flush=True)
+
+    annotations_after_run = load_checkpoint_annotations(checkpoint_path)
+    annotated = [annotations_after_run[idx] for idx in sorted(annotations_after_run)]
+
     theory_registry = build_theory_registry(
         annotated, api_key, args.model, args.request_timeout
     )
