@@ -322,7 +322,12 @@ def main() -> None:
     theory_counts: Counter[str] = Counter(assignment.theory for assignment in assignments)
 
     outputs = config["outputs"]
-    aggregation = aggregate_theory_assignments(assignments, ontology)
+    summary_ids = classifier.summarize(assignments, include_ids=True)
+    aggregation = aggregate_theory_assignments(
+        assignments,
+        ontology,
+        paper_ids_by_theory=summary_ids,
+    )
     export_theories(aggregation, Path(outputs["theories"]))
     theory_papers_path = outputs.get("theory_papers")
     if theory_papers_path:
@@ -335,7 +340,7 @@ def main() -> None:
     )
 
     cache_dir = _ensure_cache_dir(Path(config["outputs"].get("cache_dir", "data/cache")))
-    coverage_counts = classifier.summarize(assignments)
+    coverage_counts = {name: len(ids) for name, ids in summary_ids.items()}
     coverage_summary = ontology.coverage(coverage_counts)
     summary = {
         "paper_count": len(papers),

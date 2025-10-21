@@ -68,6 +68,10 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         row = next(reader)
         assert row["theory_id"].startswith("activity-theory")
         assert row["number_of_collected_papers"] == "1"
+        assert "target" in reader.fieldnames
+        assert "deficit" in reader.fieldnames
+        assert row["target"] == ""
+        assert row["deficit"] == ""
 
     with theory_papers_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -78,21 +82,30 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
     with questions_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         row = next(reader)
-        assert set(
-            [
-                "theory_id",
-                "paper_url",
-                "paper_name",
-                "paper_year",
-                "Q1",
-                "Q2",
-                "Q3",
-                "Q4",
-                "Q5",
-                "Q6",
-                "Q7",
-                "Q8",
-                "Q9",
-            ]
-        ).issubset(reader.fieldnames or [])
+        expected_columns = {
+            "theory_id",
+            "paper_url",
+            "paper_name",
+            "paper_year",
+            "Q1",
+            "Q1_confidence",
+            "Q2",
+            "Q2_confidence",
+            "Q3",
+            "Q3_confidence",
+            "Q4",
+            "Q4_confidence",
+            "Q5",
+            "Q5_confidence",
+            "Q6",
+            "Q6_confidence",
+            "Q7",
+            "Q7_confidence",
+            "Q8",
+            "Q8_confidence",
+            "Q9",
+            "Q9_confidence",
+        }
+        assert expected_columns.issubset(set(reader.fieldnames or []))
         assert row["Q1"] == "Answer"
+        assert row["Q1_confidence"] == "0.750"

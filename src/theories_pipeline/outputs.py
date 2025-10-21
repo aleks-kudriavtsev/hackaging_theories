@@ -13,6 +13,7 @@ from .theories import AggregatedTheory, TheoryAggregationResult
 
 
 QUESTION_COLUMNS: Sequence[str] = tuple(f"Q{i}" for i in range(1, 10))
+QUESTION_CONFIDENCE_COLUMNS: Sequence[str] = tuple(f"{column}_confidence" for column in QUESTION_COLUMNS)
 
 
 def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
@@ -82,6 +83,8 @@ def export_theories(
                 "theory_id",
                 "theory_name",
                 "number_of_collected_papers",
+                "target",
+                "deficit",
             ],
         )
         writer.writeheader()
@@ -97,11 +100,19 @@ def export_theories(
         else:
             theories = aggregation.theories
         for theory in theories:
+            target = theory.target
+            if target is None:
+                deficit_value = ""
+            else:
+                deficit = max(0, target - theory.number_of_collected_papers)
+                deficit_value = str(deficit)
             writer.writerow(
                 {
                     "theory_id": theory.theory_id,
                     "theory_name": theory.theory_name,
                     "number_of_collected_papers": theory.number_of_collected_papers,
+                    "target": "" if target is None else str(target),
+                    "deficit": deficit_value,
                 }
             )
     return path
@@ -178,6 +189,7 @@ def export_question_answers(
                 "paper_name",
                 "paper_year",
                 *QUESTION_COLUMNS,
+                *QUESTION_CONFIDENCE_COLUMNS,
             ],
         )
         writer.writeheader()
@@ -193,8 +205,12 @@ def export_question_answers(
                     "paper_name": paper.title,
                     "paper_year": paper.year if paper.year is not None else "",
                 }
-                for question_id in QUESTION_COLUMNS:
+                for index, question_id in enumerate(QUESTION_COLUMNS):
                     answer_entry = paper_answers.get(question_id)
                     row[question_id] = answer_entry[1] if answer_entry else ""
+                    confidence_column = QUESTION_CONFIDENCE_COLUMNS[index]
+                    row[confidence_column] = (
+                        f"{answer_entry[0]:.3f}" if answer_entry and answer_entry[0] is not None else ""
+                    )
                 writer.writerow(row)
     return path
