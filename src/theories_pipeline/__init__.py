@@ -9,6 +9,7 @@ from .literature import (
 )
 from .ontology import TheoryOntology
 from .ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
+from .ontology_optimization import optimise_ontology_payload, optimise_file
 from .ontology_suggestions import (
     load_ontology_query_suggestions,
     merge_query_suggestions,
@@ -73,6 +74,8 @@ __all__ = [
     "OntologyManager",
     "OntologyUpdate",
     "RuntimeNodeSpec",
+    "optimise_ontology_payload",
+    "optimise_file",
     "load_ontology_query_suggestions",
     "merge_query_suggestions",
     "QuestionExtractor",

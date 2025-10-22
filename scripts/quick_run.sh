@@ -33,7 +33,11 @@ python scripts/step4_extract_theories.py --workdir "$WORKDIR" --processes "$THEO
 
 # Step 5: build ontology (local grouping, light LLM)
 echo "STEP 5: build ontology..."
-python scripts/step5_build_ontology.py --workdir "$WORKDIR" || { echo "step5 failed"; exit 1; }
+python scripts/step5_generate_ontology.py --workdir "$WORKDIR" || { echo "step5 failed"; exit 1; }
+
+# Step 5b: optimisation ontology
+echo "STEP 5b: optimisation ontology..."
+python scripts/step5_optimize_ontology.py --input "$WORKDIR/aging_ontology.json" --output "$WORKDIR/aging_ontology.json" || { echo "step5b failed"; exit 1; }
 
 # Step 6: collect and classify papers per theory + answer Q1..Q9 (bulk, use gpt-5-nano)
 echo "STEP 6: collect and classify; this is the longest step..."

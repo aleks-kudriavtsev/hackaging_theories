@@ -768,6 +768,23 @@ def main(argv: List[str] | None = None) -> int:
             "Generate ontology from theories",
         )
 
+    # Step 5b – Ontology optimisation
+    if not os.path.exists(paths.ontology):
+        raise SystemExit(
+            "Ontology file missing after step 5; cannot run optimisation stage."
+        )
+    run_step(
+        [
+            sys.executable,
+            "scripts/step5_optimize_ontology.py",
+            "--input",
+            paths.ontology,
+            "--output",
+            paths.ontology,
+        ],
+        "Optimise ontology assignments",
+    )
+
     # Step 6 – Ontology-driven literature collection and classification
     if not os.path.exists(paths.ontology):
         raise SystemExit(
