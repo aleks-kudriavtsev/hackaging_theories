@@ -18,6 +18,11 @@ and duplicate control.
 - Run `python scripts/run_full_cycle.py --workdir data/pipeline --force` to rebuild
   `data/cache/bootstrap_ontology.json`. Inspect the `queries` and `reviews` sections in
   the cache file to confirm the new seeds were executed and captured.
+- When running with verification enabled, capture the intermediate hierarchies by
+  instantiating `BootstrapVerificationRecorder` around the review extraction loop (see
+  `theories_pipeline.review_bootstrap`). Each call to `record(...)` writes a
+  `bootstrap_results.jsonl` trace for manual inspection while `finalise()` creates a
+  `node_report.json` summary containing per-review node counts.
 
 ## Step 3 – Filtering & classification pass
 - After bootstrap completes, allow the classifier to filter noise by checking
@@ -37,6 +42,10 @@ and duplicate control.
   return duplicates or off-topic hits by editing the node-level `expansion` blocks.
 - Document successful prompts and snippet parameters inside the cache folder so they
   can be reused or promoted to static queries.
+- Use `python -m theories_pipeline.review_bootstrap verify <path/to/bootstrap_results.jsonl>`
+  to regenerate the verification report if the raw lines were edited or filtered. The
+  CLI reuses the JSON lines trace and rewrites `node_report.json`, making it easier to
+  spot regressions in extracted theory counts between cycles.
 
 ## Cadence & governance
 - Target a full refresh every 4–6 weeks, with interim expansion-only runs when new

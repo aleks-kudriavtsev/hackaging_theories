@@ -11,13 +11,14 @@ proposed theories even when they are missing from ``corpus.targets``.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence
 
 from .literature import LiteratureRetriever, PaperMetadata
 from .llm import LLMClient, LLMClientError, LLMMessage
@@ -58,6 +59,149 @@ class BootstrapResult:
 
     review: ReviewDocument
     theories: List[Dict[str, Any]]
+
+
+def _count_nodes(nodes: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+    total = 0
+    leaves = 0
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        total += 1
+        children = node.get("subtheories")
+        if isinstance(children, Sequence) and not isinstance(children, (str, bytes)):
+            mapped_children = [child for child in children if isinstance(child, Mapping)]
+            if mapped_children:
+                child_total, child_leaves = _count_nodes(mapped_children)
+                total += child_total
+                leaves += child_leaves
+            else:
+                leaves += 1
+        else:
+            leaves += 1
+    return total, leaves
+
+
+def _record_payload(result: BootstrapResult) -> Dict[str, Any]:
+    total_nodes, leaf_nodes = _count_nodes(result.theories)
+    return {
+        "review": result.review.to_dict(),
+        "theories": result.theories,
+        "summary": {
+            "top_level": len(result.theories),
+            "total_nodes": total_nodes,
+            "leaf_nodes": leaf_nodes,
+        },
+    }
+
+
+def _ensure_json_lines(path: Path, *, overwrite: bool) -> None:
+    if overwrite:
+        path.write_text("", encoding="utf-8")
+    elif not path.exists():
+        path.write_text("", encoding="utf-8")
+
+
+def _read_json_lines(path: Path) -> Iterator[Dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("Skipping malformed verification record at %s", path)
+                continue
+            if isinstance(payload, Mapping):
+                yield dict(payload)
+
+
+def summarise_verification_records(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Aggregate verification records into a compact report."""
+
+    total_reviews = len(records)
+    total_nodes = 0
+    total_top_level = 0
+    total_leaf_nodes = 0
+    non_empty = 0
+    per_review: List[Dict[str, Any]] = []
+
+    for record in records:
+        review = record.get("review", {})
+        summary = record.get("summary", {})
+        total_nodes_for_review = int(summary.get("total_nodes", 0))
+        total_leaf_nodes += int(summary.get("leaf_nodes", 0))
+        total_nodes += total_nodes_for_review
+        top_level = int(summary.get("top_level", 0))
+        total_top_level += top_level
+        if total_nodes_for_review:
+            non_empty += 1
+        per_review.append(
+            {
+                "identifier": review.get("identifier"),
+                "query": review.get("query"),
+                "citations": review.get("citations"),
+                "top_level": top_level,
+                "total_nodes": total_nodes_for_review,
+                "leaf_nodes": int(summary.get("leaf_nodes", 0)),
+            }
+        )
+
+    average_nodes = float(total_nodes) / total_reviews if total_reviews else 0.0
+    max_nodes = max((item["total_nodes"] for item in per_review), default=0)
+    min_nodes = min((item["total_nodes"] for item in per_review), default=0) if per_review else 0
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "total_reviews": total_reviews,
+        "reviews_with_nodes": non_empty,
+        "total_top_level_nodes": total_top_level,
+        "total_nodes": total_nodes,
+        "total_leaf_nodes": total_leaf_nodes,
+        "average_nodes_per_review": average_nodes,
+        "max_nodes_per_review": max_nodes,
+        "min_nodes_per_review": min_nodes,
+        "per_review": per_review,
+    }
+
+
+class BootstrapVerificationRecorder:
+    """Persist bootstrap results for manual verification."""
+
+    def __init__(self, output_dir: Path, *, overwrite: bool = True) -> None:
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.results_path = self.output_dir / "bootstrap_results.jsonl"
+        self.report_path = self.output_dir / "node_report.json"
+        _ensure_json_lines(self.results_path, overwrite=overwrite)
+        self._records: List[Dict[str, Any]] = []
+
+    def __enter__(self) -> "BootstrapVerificationRecorder":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is None:
+            self.finalise()
+        return None
+
+    def record(self, result: BootstrapResult) -> Dict[str, Any]:
+        payload = _record_payload(result)
+        self._records.append(payload)
+        with self.results_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        return payload
+
+    def finalise(self) -> Dict[str, Any]:
+        summary = summarise_verification_records(self._records)
+        self.report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        return summary
+
+    def flush_existing(self) -> Dict[str, Any]:
+        records = list(_read_json_lines(self.results_path))
+        summary = summarise_verification_records(records)
+        self.report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        return summary
 
 
 @dataclass(frozen=True)
@@ -591,7 +735,7 @@ def write_bootstrap_cache(
     """Persist bootstrap artefacts for reproducibility and auditing."""
 
     payload = {
-        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "queries": seed_queries if not isinstance(seed_queries, Mapping) else {k: v for k, v in seed_queries.items()},
         "reviews": {name: normalise_review_metadata(items) for name, items in review_map.items()},
         "ontology": bootstrap_nodes,
@@ -600,13 +744,57 @@ def write_bootstrap_cache(
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Bootstrap verification utilities")
+    subparsers = parser.add_subparsers(dest="command")
+
+    verify = subparsers.add_parser("verify", help="Summarise stored bootstrap results")
+    verify.add_argument(
+        "results",
+        type=Path,
+        help="Path to the bootstrap_results.jsonl file produced by the recorder",
+    )
+    verify.add_argument(
+        "--output",
+        type=Path,
+        help="Optional destination for the aggregated node report (defaults to sibling node_report.json)",
+    )
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "verify":
+        results_path: Path = args.results
+        if not results_path.exists():
+            parser.error(f"Results file not found: {results_path}")
+        records = list(_read_json_lines(results_path))
+        summary = summarise_verification_records(records)
+        output_path: Path = args.output or results_path.with_name("node_report.json")
+        output_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+
+    parser.print_help()
+    return 0
+
+
 __all__ = [
     "ReviewDocument",
     "BootstrapResult",
+    "BootstrapVerificationRecorder",
     "pull_top_cited_reviews",
     "normalise_review_metadata",
     "extract_theories_from_review",
     "build_bootstrap_ontology",
     "merge_bootstrap_into_targets",
     "write_bootstrap_cache",
+    "summarise_verification_records",
+    "main",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry
+    raise SystemExit(main())
