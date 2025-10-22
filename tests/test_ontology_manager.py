@@ -14,6 +14,8 @@ from theories_pipeline.literature import PaperMetadata, RetrievalResult
 from theories_pipeline.ontology_manager import OntologyManager, RuntimeNodeSpec
 from theories_pipeline.theories import TheoryClassifier
 
+import scripts.collect_theories as collect_theories_module
+
 from scripts.collect_theories import collect_for_entry
 
 
@@ -385,3 +387,147 @@ def test_runtime_autofragment_overflow(tmp_path: Path) -> None:
     stored_reason = state_payload["enrichment"]["bootstrap_reasons"]["child"]
     assert stored_reason["strategy"] == "sibling_imbalance"
     assert "Engagement - Digital" in manager.ontology.names()
+
+
+def test_runtime_defaults_generate_child_and_sibling(monkeypatch, tmp_path: Path) -> None:
+    storage_path = tmp_path / "runtime.json"
+    manager = OntologyManager(
+        {
+            "Parent Theory": {
+                "target": 3,
+                "subtheories": {
+                    "Activity Theory": {"target": 2},
+                },
+            }
+        },
+        storage_path=storage_path,
+    )
+
+    class _BulkRetriever:
+        def __init__(self) -> None:
+            self.state_store = _DummyStateStore()
+            self.last_queries: List[str] = []
+
+        def collect_queries(
+            self,
+            queries: Iterable[str],
+            *,
+            target: int | None = None,
+            providers: Iterable[str] | None = None,
+            state_key: str | None,
+            resume: bool,
+            min_citation_count: int | None = None,
+            prefer_reviews: bool = False,
+            sort_by_citations: bool = False,
+        ) -> RetrievalResult:
+            del target, providers, resume, min_citation_count, prefer_reviews, sort_by_citations
+            self.last_queries = [str(entry) for entry in queries]
+            papers = [
+                PaperMetadata(
+                    identifier=f"bulk-{idx}",
+                    title=f"Activity Theory Paper {idx}",
+                    authors=("Author",),
+                    abstract="Explores activity theory in aging cohorts.",
+                    source="Test",
+                )
+                for idx in range(45)
+            ]
+            summary = {
+                "total_unique": len(papers),
+                "providers": {},
+                "queries": list(self.last_queries),
+            }
+            state_payload = {
+                "seen_identifiers": [paper.dedupe_key for paper in papers],
+                "papers": [paper.to_dict() for paper in papers],
+                "provider_totals": {},
+                "queries": {},
+            }
+            if state_key:
+                self.state_store.set(state_key, state_payload)
+            return RetrievalResult(papers=papers, newly_added=len(papers), summary=summary)
+
+    class _AcceptAllFilter:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.threshold = 0.0
+
+        def apply(self, papers, *, context, existing_decisions):
+            del context, existing_decisions
+            decisions = [
+                collect_theories_module.FilterDecision(
+                    identifier=paper.identifier,
+                    score=1.0,
+                    accepted=True,
+                    rationale="accepted",
+                    details=None,
+                )
+                for paper in papers
+            ]
+            return list(papers), decisions
+
+    class _RecordingBootstrapper:
+        def __init__(self) -> None:
+            self.requests: List[Any] = []
+
+        def propose_labels(self, request: Any) -> Any:
+            self.requests.append(request)
+            if request.mode == "child":
+                spec = RuntimeNodeSpec(
+                    name="Activity Theory - Digital",
+                    parent=None,
+                    config={"target": 2},
+                    keywords=("digital",),
+                    metadata={"summary": "default child"},
+                    provenance={"source": "test"},
+                )
+            else:
+                spec = RuntimeNodeSpec(
+                    name="Activity Theory Peer",
+                    parent=request.parent,
+                    config={"target": 2},
+                    keywords=("peer",),
+                    metadata={"summary": "default sibling"},
+                    provenance={"source": "test"},
+                )
+            return SimpleNamespace(proposals=[spec])
+
+    retriever = _BulkRetriever()
+    bootstrapper = _RecordingBootstrapper()
+
+    monkeypatch.setattr(collect_theories_module, "RelevanceFilter", _AcceptAllFilter)
+
+    summary, papers = collect_for_entry(
+        retriever,
+        name="Activity Theory",
+        config={
+            "queries": ["activity theory aging"],
+            "target": 10,
+        },
+        context={"base_query": "activity theory", "query": "activity theory", "target": 10},
+        providers=None,
+        resume=True,
+        state_prefix="theory::activity-theory",
+        ontology_manager=manager,
+        expander=None,
+        default_expansion=None,
+        retrieval_options={},
+        filter_llm_client=None,
+        label_bootstrapper=bootstrapper,
+    )
+
+    assert len(papers) == 45
+    assert len(bootstrapper.requests) == 2
+    modes = {request.mode for request in bootstrapper.requests}
+    assert {"child", "sibling"} <= modes
+
+    assert manager.has_node("Activity Theory - Digital")
+    assert manager.has_node("Activity Theory Peer")
+    assert manager.ontology.parent("Activity Theory - Digital") == "Activity Theory"
+    assert manager.ontology.parent("Activity Theory Peer") == "Parent Theory"
+
+    enrichment = summary.get("enrichment", {}).get("bootstrap_labels", {})
+    assert "child" in enrichment
+    assert "Activity Theory - Digital" in enrichment["child"]
+    assert "sibling" in enrichment
+    assert "Activity Theory Peer" in enrichment["sibling"]
