@@ -15,8 +15,12 @@ if __package__ is None:  # pragma: no cover - convenience for direct execution
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
+    src_path = repo_root / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
 
 from scripts import collect_theories, run_pipeline, score_progress
+from theories_pipeline import question_validation
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +275,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.6,
         help="Alert threshold for average question confidence in the progress report.",
     )
+    parser.add_argument(
+        "--questions-ground-truth",
+        type=Path,
+        help="Optional ground-truth CSV/JSON for validating question answers after collection.",
+    )
+    parser.add_argument(
+        "--questions-report",
+        type=Path,
+        help="Write the question validation report to this JSON file when provided.",
+    )
+    parser.add_argument(
+        "--fail-on-question-mismatch",
+        action="store_true",
+        help=(
+            "Return a non-zero exit code when question validation finds missing papers or "
+            "answer mismatches.",
+        ),
+    )
     return parser
 
 
@@ -362,6 +384,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to generate progress report")
+
+        if args.questions_ground_truth:
+            try:
+                report = question_validation.validate_from_paths(
+                    questions_path,
+                    Path(args.questions_ground_truth),
+                )
+                logger.info("\n%s", question_validation.format_report(report))
+                if args.questions_report:
+                    question_validation.write_report(report, Path(args.questions_report))
+                if report.has_failures and args.fail_on_question_mismatch:
+                    return 1
+            except Exception:
+                logger.exception("Question validation failed")
+                if args.fail_on_question_mismatch:
+                    return 1
 
     return result
 

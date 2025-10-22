@@ -1,0 +1,7 @@
+theory_id,paper_url,question_id,expected_answer
+disposable-soma-theory,paper-ds-001,Q5,"Yes, mentioned without data"
+energy-allocation-trade-offs,paper-ds-001,Q5,"Yes, mentioned without data"
+free-radical-theory,paper-fr-001,Q1,"Yes, quantitatively shown"
+free-radical-theory,paper-fr-001,Q2,"Mechanism supported by experiments"
+mitochondrial-free-radical-theory,paper-fr-001,Q1,"Yes, quantitatively shown"
+mitochondrial-free-radical-theory,paper-fr-001,Q2,"Mechanism supported by experiments"
