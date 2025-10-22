@@ -4,10 +4,12 @@ import argparse
 import copy
 import importlib.util
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
+import pytest
 from theories_pipeline.literature import PaperMetadata
 from theories_pipeline.ontology_manager import OntologyManager, OntologyUpdate, RuntimeNodeSpec
 from theories_pipeline.query_expansion import (
@@ -34,6 +36,44 @@ def _load_collect_theories_module():
 
 
 collect_theories = _load_collect_theories_module()
+
+
+def test_audit_runtime_ontology_nodes_detects_missing_children(caplog):
+    runtime_targets = {
+        "Root": {
+            "target": 2,
+            "subtheories": {
+                "Present": {"target": 1},
+            },
+        }
+    }
+    ontology_targets = {
+        "Root": {
+            "target": 2,
+            "subtheories": {
+                "Present": {"target": 1},
+                "Missing": {"target": 1},
+            },
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        collect_theories.audit_runtime_ontology_nodes(
+            runtime_targets,
+            ontology_targets,
+            strict=False,
+        )
+
+    audit_messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "Missing" in audit_messages
+    assert "runtime nodes" in audit_messages
+
+    with pytest.raises(SystemExit):
+        collect_theories.audit_runtime_ontology_nodes(
+            runtime_targets,
+            ontology_targets,
+            strict=True,
+        )
 
 
 class DummyStateStore:
@@ -70,6 +110,9 @@ class DummyOntology:
 
     def format_coverage_report(self, _counts):
         return "dummy coverage"
+
+    def depth_deficits(self, _counts):
+        return {}
 
 
 class DummyOntologyManager:

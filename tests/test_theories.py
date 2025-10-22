@@ -234,3 +234,36 @@ def test_format_ontology_prompt_includes_metadata() -> None:
         and "focuses on participation in aging research" in line.lower()
         for line in lines
     )
+
+
+def test_depth_deficits_groups_nodes_and_updates_report() -> None:
+    config = {
+        "Root": {
+            "target": 3,
+            "subtheories": {
+                "Child A": {
+                    "target": 2,
+                    "subtheories": {"Grandchild": {"target": 1}},
+                },
+                "Child B": {"target": 1},
+            },
+        }
+    }
+    ontology = TheoryOntology.from_targets_config(config)
+    counts = {
+        "Root": 2,
+        "Child A": 1,
+        "Child B": 1,
+        "Grandchild": 0,
+    }
+
+    depth_deficits = ontology.depth_deficits(counts)
+    assert sorted(depth_deficits.keys()) == [0, 1, 2]
+    assert [record.name for record in depth_deficits[0]] == ["Root"]
+    assert [record.name for record in depth_deficits[1]] == ["Child A"]
+    assert [record.name for record in depth_deficits[2]] == ["Grandchild"]
+
+    report = ontology.format_coverage_report(counts)
+    assert "Deficit summary by depth:" in report
+    assert "Depth 2: total deficit" in report
+    assert "Grandchild (-1)" in report
