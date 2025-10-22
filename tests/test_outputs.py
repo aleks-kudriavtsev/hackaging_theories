@@ -217,3 +217,49 @@ def test_aggregate_theory_assignments_selects_highest_confidence() -> None:
         paper_id for paper_id, ids in aggregation.paper_to_theory_ids.items() if len(ids) > 1
     ]
     assert papers_with_multiple == []
+
+
+def test_aggregate_theory_assignments_filters_pre_grouped_ids() -> None:
+    ontology = TheoryOntology.from_targets_config(
+        {
+            "Root Theory": {
+                "subtheories": {
+                    "Branch": {
+                        "subtheories": {
+                            "Deep Leaf": {},
+                        }
+                    },
+                    "Shallow Leaf": {},
+                }
+            }
+        }
+    )
+
+    assignments = [
+        TheoryAssignment("p1", "Shallow Leaf", 0.8, depth=1),
+        TheoryAssignment("p1", "Deep Leaf", 0.9, depth=2),
+        TheoryAssignment("p2", "Shallow Leaf", 0.7, depth=1),
+        TheoryAssignment("p2", "Deep Leaf", 0.6, depth=2),
+    ]
+
+    pre_grouped = {
+        "Deep Leaf": ["p1", "p2"],
+        "Shallow Leaf": ["p1", "p2"],
+    }
+
+    aggregation = aggregate_theory_assignments(
+        assignments,
+        ontology,
+        paper_ids_by_theory=pre_grouped,
+    )
+
+    deep_leaf_id = aggregation.theory_ids_by_name["Deep Leaf"]
+    shallow_leaf_id = aggregation.theory_ids_by_name["Shallow Leaf"]
+
+    assert aggregation.paper_to_theory_ids == {
+        "p1": (deep_leaf_id,),
+        "p2": (shallow_leaf_id,),
+    }
+
+    assert aggregation.theory_index[deep_leaf_id].paper_ids == ("p1",)
+    assert aggregation.theory_index[shallow_leaf_id].paper_ids == ("p2",)

@@ -98,6 +98,27 @@ def aggregate_theory_assignments(
         papers to the theories they support.
     """
 
+    def is_better(new: TheoryAssignment, current: TheoryAssignment) -> bool:
+        if new.score > current.score:
+            return True
+        if new.score < current.score:
+            return False
+        if new.depth > current.depth:
+            return True
+        if new.depth < current.depth:
+            return False
+        return new.theory < current.theory
+
+    best_assignments: Dict[str, TheoryAssignment] | None = None
+    if not allow_multiple_assignments:
+        best_assignments = {}
+        for assignment in assignments:
+            if assignment.score <= 0:
+                continue
+            existing = best_assignments.get(assignment.paper_id)
+            if existing is None or is_better(assignment, existing):
+                best_assignments[assignment.paper_id] = assignment
+
     if paper_ids_by_theory is None:
         papers_by_theory: Dict[str, set[str]] = {name: set() for name in ontology.names()}
         if allow_multiple_assignments:
@@ -106,31 +127,29 @@ def aggregate_theory_assignments(
                     continue
                 papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
         else:
-            best_assignments: Dict[str, TheoryAssignment] = {}
-
-            def is_better(new: TheoryAssignment, current: TheoryAssignment) -> bool:
-                if new.score > current.score:
-                    return True
-                if new.score < current.score:
-                    return False
-                if new.depth > current.depth:
-                    return True
-                if new.depth < current.depth:
-                    return False
-                return new.theory < current.theory
-
-            for assignment in assignments:
-                if assignment.score <= 0:
-                    continue
-                existing = best_assignments.get(assignment.paper_id)
-                if existing is None or is_better(assignment, existing):
-                    best_assignments[assignment.paper_id] = assignment
+            if best_assignments is None:
+                raise RuntimeError("best_assignments missing despite single-assignment mode")
             for assignment in best_assignments.values():
                 papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
     else:
         papers_by_theory = {name: {str(pid) for pid in ids} for name, ids in paper_ids_by_theory.items()}
         for name in ontology.names():
             papers_by_theory.setdefault(name, set())
+
+        if not allow_multiple_assignments:
+            if best_assignments is None:
+                raise RuntimeError("best_assignments missing despite single-assignment mode")
+            paper_to_best = {
+                assignment.paper_id: assignment.theory for assignment in best_assignments.values()
+            }
+            for assignment in best_assignments.values():
+                papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+            for theory_name, papers in papers_by_theory.items():
+                papers_by_theory[theory_name] = {
+                    paper_id
+                    for paper_id in papers
+                    if paper_to_best.get(paper_id) == theory_name
+                }
 
     seen_ids: set[str] = set()
     ids_by_name: Dict[str, str] = {}
