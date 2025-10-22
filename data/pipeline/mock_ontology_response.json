@@ -1,0 +1,25 @@
+{
+  "groups": [
+    {
+      "name": "Cellular Mechanisms of Aging",
+      "description": "Mechanistic explanations grounded in cellular damage and maintenance.",
+      "theories": [
+        {
+          "theory_id": "damage_accumulation",
+          "preferred_label": "Damage Accumulation",
+          "supporting_articles": ["A1"]
+        },
+        {
+          "theory_id": "telomere_attrition",
+          "preferred_label": "Telomere Attrition",
+          "supporting_articles": ["A2"]
+        },
+        {
+          "theory_id": "caloric_restriction",
+          "preferred_label": "Caloric Restriction",
+          "supporting_articles": ["A3"]
+        }
+      ]
+    }
+  ]
+}

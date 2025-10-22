@@ -1,0 +1,69 @@
+{
+  "generated_at": "2024-06-01T00:00:00Z",
+  "articles": [
+    {
+      "id": "A1",
+      "title": "Oxidative stress and damage accumulation in aging organisms",
+      "doi": "10.1000/aging.001",
+      "journal": "Journal of Geroscience",
+      "publication_year": 2018,
+      "authors": ["J. Smith", "L. Nguyen"]
+    },
+    {
+      "id": "A2",
+      "title": "Telomere attrition as a biomarker of biological aging",
+      "doi": "10.1000/aging.002",
+      "journal": "Ageing Research Reviews",
+      "publication_year": 2019,
+      "authors": ["C. Johnson", "M. Patel"]
+    },
+    {
+      "id": "A3",
+      "title": "Caloric restriction mimetics and longevity",
+      "doi": "10.1000/aging.003",
+      "journal": "Nutrition and Aging",
+      "publication_year": 2020,
+      "authors": ["A. Gómez", "R. Chen"]
+    }
+  ],
+  "theory_registry": {
+    "damage_accumulation": {
+      "label": "Damage Accumulation Theory",
+      "aliases": [
+        "Wear and Tear Theory",
+        "Oxidative Damage Hypothesis"
+      ],
+      "supporting_articles": ["A1"],
+      "openalex_ids": [],
+      "pmids": [],
+      "notes": [
+        "Links macromolecular damage to organismal aging"
+      ]
+    },
+    "telomere_attrition": {
+      "label": "Telomere Attrition Theory",
+      "aliases": [
+        "Telomere Shortening Hypothesis"
+      ],
+      "supporting_articles": ["A2"],
+      "openalex_ids": [],
+      "pmids": [],
+      "notes": [
+        "Focuses on replicative senescence"
+      ]
+    },
+    "caloric_restriction": {
+      "label": "Caloric Restriction Theory",
+      "aliases": [
+        "Dietary Restriction Longevity Theory",
+        "Metabolic Longevity Hypothesis"
+      ],
+      "supporting_articles": ["A3"],
+      "openalex_ids": [],
+      "pmids": [],
+      "notes": [
+        "Energy intake modulation extends lifespan"
+      ]
+    }
+  }
+}

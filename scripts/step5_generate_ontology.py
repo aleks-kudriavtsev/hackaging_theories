@@ -947,6 +947,121 @@ def _reconcile_groups(
     return processed_groups, reconciliation
 
 
+def _limit_group_theories(
+    groups: Sequence[Mapping[str, Any]],
+    max_theories: int,
+    *,
+    reconciliation: MutableMapping[str, List[Dict[str, object]]],
+) -> List[Dict[str, Any]]:
+    """Split groups whose direct theory lists exceed ``max_theories``.
+
+    The ontology reconciliation step occasionally yields top-level groups that
+    collect a very large number of theories. Downstream collectors perform
+    ontology-driven expansion per group, so oversized buckets can starve smaller
+    theories of search coverage. This helper enforces a soft cap by
+    redistributing overflow theories into auto-generated subgroups while keeping
+    the canonical metadata intact.
+    """
+
+    max_theories = max(0, max_theories)
+    if max_theories == 0:
+        return [dict(group) for group in groups if isinstance(group, Mapping)]
+
+    adjustments: List[Dict[str, object]] = []
+
+    def _process_group(
+        group: Mapping[str, Any],
+        lineage: Sequence[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(group, Mapping):
+            return None
+
+        group_name = group.get("name") if isinstance(group.get("name"), str) else ""
+        current_lineage = list(lineage)
+        if group_name:
+            current_lineage.append(group_name)
+
+        base: Dict[str, Any] = {}
+        for key, value in group.items():
+            if key in {"subgroups", "theories"}:
+                continue
+            base[key] = value
+
+        processed_subgroups: List[Dict[str, Any]] = []
+        raw_subgroups = group.get("subgroups")
+        if isinstance(raw_subgroups, Sequence) and not isinstance(raw_subgroups, (str, bytes)):
+            for child in raw_subgroups:
+                processed_child = _process_group(child, current_lineage)
+                if processed_child:
+                    processed_subgroups.append(processed_child)
+
+        theories: List[Dict[str, Any]] = []
+        raw_theories = group.get("theories")
+        if isinstance(raw_theories, Sequence) and not isinstance(raw_theories, (str, bytes)):
+            for theory in raw_theories:
+                if isinstance(theory, Mapping):
+                    theories.append(dict(theory))
+
+        if max_theories and len(theories) > max_theories:
+            chunks: List[List[Dict[str, Any]]] = [
+                theories[idx : idx + max_theories]
+                for idx in range(0, len(theories), max_theories)
+            ]
+
+            base["theories"] = chunks[0]
+
+            overflow_groups: List[Dict[str, Any]] = []
+            label_seed = group_name or "Group"
+            for chunk_index, chunk in enumerate(chunks[1:], start=2):
+                overflow_groups.append(
+                    {
+                        "name": f"{label_seed} (auto-split {chunk_index})",
+                        "description": "Automatically created to satisfy the max_theories_per_group limit.",
+                        "theories": chunk,
+                    }
+                )
+
+            if processed_subgroups or overflow_groups:
+                base["subgroups"] = processed_subgroups + overflow_groups
+            else:
+                base.pop("subgroups", None)
+
+            adjustments.append(
+                {
+                    "group_path": " > ".join(current_lineage) if current_lineage else label_seed,
+                    "original_theory_count": len(theories),
+                    "retained_theory_ids": [theory.get("theory_id") for theory in chunks[0]],
+                    "overflow_groups": [
+                        [theory.get("theory_id") for theory in chunk]
+                        for chunk in chunks[1:]
+                    ],
+                    "limit": max_theories,
+                }
+            )
+        else:
+            if theories:
+                base["theories"] = theories
+            else:
+                base.pop("theories", None)
+            if processed_subgroups:
+                base["subgroups"] = processed_subgroups
+            else:
+                base.pop("subgroups", None)
+
+        return base
+
+    processed_groups: List[Dict[str, Any]] = []
+    for group in groups:
+        processed = _process_group(group, [])
+        if processed:
+            processed_groups.append(processed)
+
+    if adjustments:
+        reconciliation.setdefault("group_splits", []).extend(adjustments)
+
+    return processed_groups
+
+
 def _normalise_term(term: str) -> str:
     return " ".join(term.split())
 
@@ -1084,6 +1199,23 @@ def main(argv: List[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--llm-response",
+        default=None,
+        help=(
+            "Path to a JSON file containing a precomputed ontology response. When provided "
+            "the OpenAI API is not called and the supplied payload is used instead."
+        ),
+    )
+    parser.add_argument(
+        "--max-theories-per-group",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of theories allowed per ontology group after reconciliation. "
+            "Values <= 0 disable automatic splitting."
+        ),
+    )
+    parser.add_argument(
         "--registry-model",
         default="gpt-5-nano",
         help=(
@@ -1103,7 +1235,8 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    using_precomputed_response = bool(args.llm_response)
+    if not api_key and not using_precomputed_response:
         print("OPENAI_API_KEY is required", file=sys.stderr)
         return 1
 
@@ -1283,7 +1416,29 @@ def main(argv: List[str] | None = None) -> int:
                 collected.append(entry)
         return collected
 
-    if should_chunk:
+    if using_precomputed_response:
+        try:
+            with open(args.llm_response, "r", encoding="utf-8") as fh:
+                precomputed = json.load(fh)
+        except (OSError, json.JSONDecodeError) as err:
+            print(
+                f"Failed to load precomputed LLM response from {args.llm_response}: {err}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if isinstance(precomputed, Mapping):
+            response = _normalise_groups(dict(precomputed))
+        else:
+            print(
+                f"Precomputed LLM response in {args.llm_response} must be a JSON object",
+                file=sys.stderr,
+            )
+            return 1
+
+        groups_for_reconciliation = response.get("groups", [])
+        prompt_adjustments = []
+    elif should_chunk:
         summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_size))
         worker_args = [
             (chunk, total_unique, args.model, api_key)
@@ -1315,6 +1470,14 @@ def main(argv: List[str] | None = None) -> int:
         registry,
         article_index=article_index,
     )
+
+    max_theories_per_group = max(0, args.max_theories_per_group)
+    if max_theories_per_group:
+        reconciled_groups = _limit_group_theories(
+            reconciled_groups,
+            max_theories_per_group,
+            reconciliation=reconciliation,
+        )
 
     _attach_suggested_queries(reconciled_groups)
 
