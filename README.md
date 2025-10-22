@@ -369,7 +369,11 @@ artefacts plus a lightweight competition drop:
 | `papers.csv` | Full paper metadata including abstracts, joined section JSON, and full text bodies. |
 | `theories.csv` | Per-theory summary with the `number_of_collected_papers` column used for progress tracking. |
 | `theory_papers.csv` | Mapping between theory IDs and paper identifiers/titles. |
-| `questions.csv` | Wide matrix of question answers with an accompanying `<question>_confidence` column for each prompt. |
+| `questions.csv` | Wide matrix of question answers (Q1–Q9) per theory/paper pair. |
+
+The wide `questions.csv` export intentionally omits the legacy `<question>_confidence`
+columns; confidence scores remain available in the long-form
+`competition/questions.csv` table for teams that need them.
 
 These internal tables retain every field produced by the collector and should
 stay inside the workspace (they contain full texts and provenance details).

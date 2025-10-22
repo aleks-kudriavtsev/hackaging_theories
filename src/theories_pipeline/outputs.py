@@ -204,7 +204,6 @@ def export_question_answers(
                 "paper_name",
                 "paper_year",
                 *QUESTION_COLUMNS,
-                *QUESTION_CONFIDENCE_COLUMNS,
             ],
         )
         writer.writeheader()
@@ -220,15 +219,13 @@ def export_question_answers(
                     "paper_name": paper.title,
                     "paper_year": paper.year if paper.year is not None else "",
                 }
-                for question_id, confidence_column in zip(QUESTION_COLUMNS, QUESTION_CONFIDENCE_COLUMNS):
+                for question_id in QUESTION_COLUMNS:
                     answer_entry = paper_answers.get(question_id)
                     if answer_entry:
-                        confidence, answer_text, _ = answer_entry
+                        _, answer_text, _ = answer_entry
                         row[question_id] = answer_text
-                        row[confidence_column] = _format_confidence(confidence)
                     else:
                         row[question_id] = ""
-                        row[confidence_column] = ""
                 writer.writerow(row)
     return path
 
