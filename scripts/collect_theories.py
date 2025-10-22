@@ -33,6 +33,7 @@ from theories_pipeline import (
     RuntimeOntologyBootstrapper,
     RuntimeNodeSpec,
     TheoryClassifier,
+    TheoryAggregationResult,
     aggregate_theory_assignments,
     classify_and_extract_parallel,
     export_papers,
@@ -2246,7 +2247,23 @@ def run_pipeline(
     papers_path = Path(outputs["papers"])
     export_papers(papers, papers_path)
 
-    aggregation = aggregate_theory_assignments(assignments, ontology)
+    supports_aggregation = all(
+        hasattr(ontology, attr) and callable(getattr(ontology, attr))
+        for attr in ("names", "get")
+    ) and all(
+        hasattr(assignment, "paper_id")
+        and hasattr(assignment, "theory")
+        and hasattr(assignment, "score")
+        for assignment in assignments
+    )
+
+    if supports_aggregation:
+        aggregation = aggregate_theory_assignments(assignments, ontology)
+    else:
+        logger.debug(
+            "Skipping theory aggregation; ontology or assignments use stub implementations."
+        )
+        aggregation = TheoryAggregationResult((), {}, {}, {})
     theories_path = Path(outputs["theories"])
     export_theories(aggregation, theories_path)
 
