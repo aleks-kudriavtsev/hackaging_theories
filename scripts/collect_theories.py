@@ -147,12 +147,20 @@ def _rejection_keys_for_paper(paper: PaperMetadata) -> List[str]:
 
 
 def load_config(path: Path) -> Dict[str, Any]:
-    text = Path(path).read_text(encoding="utf-8")
-    suffix = Path(path).suffix.lower()
+    config_path = Path(path)
+    text = config_path.read_text(encoding="utf-8")
+    suffix = config_path.suffix.lower()
     if suffix in {".yaml", ".yml"}:
-        if yaml is None:
-            raise RuntimeError("PyYAML is required to parse YAML configuration files")
-        return yaml.safe_load(text)
+        if yaml is not None:
+            return yaml.safe_load(text)
+        fallback_path = config_path.with_suffix(".json")
+        if fallback_path.exists():
+            logger.info("PyYAML not installed; loading JSON fallback at %s", fallback_path)
+            return json.loads(fallback_path.read_text(encoding="utf-8"))
+        raise RuntimeError(
+            "PyYAML is required to parse YAML configuration files; "
+            f"install PyYAML or provide a JSON config at {fallback_path}"
+        )
     return json.loads(text)
 
 
