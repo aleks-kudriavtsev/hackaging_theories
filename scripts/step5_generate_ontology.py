@@ -53,6 +53,24 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping,
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
+# The OpenAI ``gpt-5-mini`` model currently accepts up to ~272k tokens.  The
+# prompt builder below therefore keeps a safety margin and attempts to stay
+# within ~240k tokens (roughly 960k UTF-8 characters assuming 4 characters per
+# token on average).  When the registry summary exceeds this budget the script
+# progressively truncates long ``supporting_articles`` and
+# ``representative_articles`` lists before calling the API.
+PROMPT_TOKEN_BUDGET = 240_000
+AVERAGE_CHARS_PER_TOKEN = 4
+PROMPT_CHARACTER_BUDGET = PROMPT_TOKEN_BUDGET * AVERAGE_CHARS_PER_TOKEN
+
+# Caps applied when shrinking large summaries.  ``supporting_articles`` is
+# trimmed first, gradually reducing the number of article identifiers included
+# in the prompt.  If the payload still exceeds the budget the representative
+# article metadata is reduced as well, eventually falling back to an empty list
+# when absolutely necessary.
+SUPPORTING_ARTICLE_CAPS = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 0)
+REPRESENTATIVE_ARTICLE_CAPS = (40, 20, 10, 5, 2, 1, 0)
+
 
 def _load_json_payload(path: str) -> Mapping[str, object] | Sequence[object]:
     """Load a JSON payload, tolerating concatenated JSON documents."""
@@ -396,12 +414,57 @@ def generate_grouping(
 ) -> Dict[str, object]:
     """Generate ontology groups for a subset of the registry summary."""
 
-    prompt = _build_prompt(summary_chunk, total_unique)
-    return _call_openai(prompt, api_key, model)
+    chunk, prompt_metadata, prompt = _prepare_summary_chunk_for_prompt(
+        summary_chunk,
+        total_unique,
+        max_prompt_characters=PROMPT_CHARACTER_BUDGET,
+    )
+
+    if prompt_metadata.get("estimated_prompt_tokens", 0) > PROMPT_TOKEN_BUDGET:
+        raise RuntimeError(
+            "Ontology prompt remains above the token budget even after "
+            "truncation. Consider reducing --top-n, --examples-per-theory or "
+            "the number of worker processes."
+        )
+
+    response = _call_openai(prompt, api_key, model)
+    if isinstance(response, dict):
+        response.setdefault("_prompt_metadata", prompt_metadata)
+        response["_prompt_metadata"].setdefault(
+            "chunk_size",
+            len(chunk),
+        )
+    return response
 
 
-def _build_prompt(summary: Sequence[Mapping[str, object]], total_unique: int) -> str:
+def _build_prompt(
+    summary: Sequence[Mapping[str, object]],
+    total_unique: int,
+    *,
+    truncated_supporting: bool = False,
+    truncated_examples: bool = False,
+) -> str:
     theories_block = json.dumps(summary, ensure_ascii=False, indent=2)
+
+    extra_instruction_block = ""
+    if truncated_supporting or truncated_examples:
+        bullet_lines: List[str] = []
+        if truncated_supporting:
+            bullet_lines.append(
+                "- Some ``supporting_articles`` arrays are truncated for brevity; "
+                "treat the provided IDs as representative samples without "
+                "inventing new ones."
+            )
+        if truncated_examples:
+            bullet_lines.append(
+                "- ``representative_articles`` lists may also be truncated; rely on "
+                "the supplied examples as guidance without assuming they are "
+                "exhaustive."
+            )
+        extra_instruction_block = "\n" + "\n".join(
+            f"        {line}" for line in bullet_lines
+        )
+
     return textwrap.dedent(
         f"""
         You are designing an ontology for theories of aging based on literature
@@ -423,13 +486,169 @@ def _build_prompt(summary: Sequence[Mapping[str, object]], total_unique: int) ->
           subtheories, but those child theories must also reference valid
           ``theory_id`` values.
         - **Do not invent new theory IDs or article IDs.** Preserve the supplied
-          ``supporting_articles`` list for every theory you place.
+          ``supporting_articles`` list for every theory you place.{extra_instruction_block}
         - Respond with JSON containing a top-level key "groups".
 
         Summary of canonical theories:
         {theories_block}
         """
     ).strip()
+
+
+def _estimate_prompt_tokens(prompt: str) -> int:
+    return math.ceil(len(prompt) / max(1, AVERAGE_CHARS_PER_TOKEN))
+
+
+def _cap_sequence_field(
+    records: Sequence[MutableMapping[str, object]],
+    field: str,
+    cap: int,
+) -> bool:
+    if cap < 0:
+        return False
+    changed = False
+    for entry in records:
+        value = entry.get(field)
+        if isinstance(value, list) and len(value) > cap:
+            entry[field] = value[:cap]
+            changed = True
+    return changed
+
+
+def _prepare_summary_chunk_for_prompt(
+    summary_chunk: Sequence[Mapping[str, object]],
+    total_unique: int,
+    *,
+    max_prompt_characters: int,
+) -> Tuple[List[Dict[str, object]], Dict[str, Any], str]:
+    chunk: List[Dict[str, object]] = []
+    for item in summary_chunk:
+        if isinstance(item, Mapping):
+            chunk.append({key: value for key, value in item.items()})
+
+    truncated_supporting = False
+    truncated_examples = False
+
+    prompt = _build_prompt(
+        chunk,
+        total_unique,
+        truncated_supporting=truncated_supporting,
+        truncated_examples=truncated_examples,
+    )
+    prompt_length = len(prompt)
+    estimated_tokens = _estimate_prompt_tokens(prompt)
+
+    metadata: Dict[str, Any] = {
+        "max_prompt_characters": max_prompt_characters,
+        "initial_prompt_characters": prompt_length,
+        "initial_estimated_tokens": estimated_tokens,
+        "truncated_supporting_articles": False,
+        "truncated_representative_articles": False,
+        "prompt_trimmed": False,
+        "adjustments": [],
+    }
+
+    if prompt_length <= max_prompt_characters:
+        metadata.update(
+            {
+                "final_prompt_characters": prompt_length,
+                "estimated_prompt_tokens": estimated_tokens,
+                "within_character_budget": True,
+                "within_token_budget": estimated_tokens <= PROMPT_TOKEN_BUDGET,
+            }
+        )
+        metadata["chunk_size"] = len(chunk)
+        return chunk, metadata, prompt
+
+    metadata["within_character_budget"] = False
+
+    for cap in SUPPORTING_ARTICLE_CAPS:
+        changed = _cap_sequence_field(chunk, "supporting_articles", cap)
+        if not changed:
+            continue
+        truncated_supporting = True
+        metadata["prompt_trimmed"] = True
+        metadata["supporting_articles_cap"] = cap
+        metadata["adjustments"].append({"supporting_articles_cap": cap})
+        prompt = _build_prompt(
+            chunk,
+            total_unique,
+            truncated_supporting=truncated_supporting,
+            truncated_examples=truncated_examples,
+        )
+        prompt_length = len(prompt)
+        estimated_tokens = _estimate_prompt_tokens(prompt)
+        if prompt_length <= max_prompt_characters:
+            metadata.update(
+                {
+                    "final_prompt_characters": prompt_length,
+                    "estimated_prompt_tokens": estimated_tokens,
+                    "within_character_budget": True,
+                    "within_token_budget": estimated_tokens <= PROMPT_TOKEN_BUDGET,
+                    "truncated_supporting_articles": True,
+                    "truncated_representative_articles": truncated_examples,
+                }
+            )
+            metadata["chunk_size"] = len(chunk)
+            return chunk, metadata, prompt
+
+    for cap in REPRESENTATIVE_ARTICLE_CAPS:
+        changed = _cap_sequence_field(chunk, "representative_articles", cap)
+        if not changed:
+            continue
+        truncated_examples = True
+        metadata["prompt_trimmed"] = True
+        metadata["representative_articles_cap"] = cap
+        metadata["adjustments"].append({"representative_articles_cap": cap})
+        prompt = _build_prompt(
+            chunk,
+            total_unique,
+            truncated_supporting=truncated_supporting,
+            truncated_examples=truncated_examples,
+        )
+        prompt_length = len(prompt)
+        estimated_tokens = _estimate_prompt_tokens(prompt)
+        if prompt_length <= max_prompt_characters:
+            metadata.update(
+                {
+                    "final_prompt_characters": prompt_length,
+                    "estimated_prompt_tokens": estimated_tokens,
+                    "within_character_budget": True,
+                    "within_token_budget": estimated_tokens <= PROMPT_TOKEN_BUDGET,
+                    "truncated_supporting_articles": truncated_supporting,
+                    "truncated_representative_articles": True,
+                }
+            )
+            metadata["chunk_size"] = len(chunk)
+            return chunk, metadata, prompt
+
+    # Final fallback: drop supporting articles entirely if necessary.
+    if _cap_sequence_field(chunk, "supporting_articles", 0):
+        truncated_supporting = True
+        metadata["prompt_trimmed"] = True
+        metadata["supporting_articles_cap"] = 0
+        metadata["adjustments"].append({"supporting_articles_cap": 0})
+        prompt = _build_prompt(
+            chunk,
+            total_unique,
+            truncated_supporting=truncated_supporting,
+            truncated_examples=truncated_examples,
+        )
+        prompt_length = len(prompt)
+        estimated_tokens = _estimate_prompt_tokens(prompt)
+
+    metadata.update(
+        {
+            "final_prompt_characters": prompt_length,
+            "estimated_prompt_tokens": estimated_tokens,
+            "within_character_budget": prompt_length <= max_prompt_characters,
+            "within_token_budget": estimated_tokens <= PROMPT_TOKEN_BUDGET,
+            "truncated_supporting_articles": truncated_supporting,
+            "truncated_representative_articles": truncated_examples,
+        }
+    )
+    metadata["chunk_size"] = len(chunk)
+    return chunk, metadata, prompt
 
 
 def _canonical_article_index(
@@ -1050,6 +1269,20 @@ def main(argv: List[str] | None = None) -> int:
         f"with chunk size {chunk_size} (auto suggestion: {auto_chunk_size})."
     )
 
+    prompt_adjustments: List[Dict[str, Any]] = []
+
+    def _collect_prompt_metadata(responses: Sequence[Mapping[str, object]]) -> List[Dict[str, Any]]:
+        collected: List[Dict[str, Any]] = []
+        for idx, resp in enumerate(responses):
+            if not isinstance(resp, Mapping):
+                continue
+            metadata = resp.get("_prompt_metadata")
+            if isinstance(metadata, Mapping):
+                entry = dict(metadata)
+                entry.setdefault("chunk_index", idx)
+                collected.append(entry)
+        return collected
+
     if should_chunk:
         summary_chunks = list(_chunk_summary(summary, chunk_size=chunk_size))
         worker_args = [
@@ -1067,12 +1300,14 @@ def main(argv: List[str] | None = None) -> int:
                 for chunk in summary_chunks
             ]
 
+        prompt_adjustments = _collect_prompt_metadata(chunk_responses)
         merged_groups = _merge_groupings(chunk_responses)
         response = {"groups": merged_groups, "chunks": chunk_responses}
         groups_for_reconciliation = merged_groups
     else:
         response = generate_grouping(summary, total_unique, args.model, api_key)
         groups_for_reconciliation = response.get("groups", [])
+        prompt_adjustments = _collect_prompt_metadata([response])
 
     article_index = _canonical_article_index(registry)
     reconciled_groups, reconciliation = _reconcile_groups(
@@ -1094,6 +1329,22 @@ def main(argv: List[str] | None = None) -> int:
             "auto_chunk_size_suggestion": auto_chunk_size,
         }
     )
+
+    if prompt_adjustments:
+        trimmed_chunks = [
+            entry.get("chunk_index")
+            for entry in prompt_adjustments
+            if isinstance(entry, Mapping) and entry.get("prompt_trimmed")
+        ]
+        reconciliation.setdefault("notes", []).append(
+            {
+                "event": "prompt_truncation",
+                "total_chunks": len(prompt_adjustments),
+                "trimmed_chunks": [idx for idx in trimmed_chunks if idx is not None],
+                "token_budget": PROMPT_TOKEN_BUDGET,
+                "character_budget": PROMPT_CHARACTER_BUDGET,
+            }
+        )
 
     if registry_reconstructed:
         reconciliation.setdefault("notes", []).append(
@@ -1120,6 +1371,7 @@ def main(argv: List[str] | None = None) -> int:
         "chunk_size": chunk_size,
         "auto_chunk_size_suggestion": auto_chunk_size,
         "prompt_summary": summary,
+        "prompt_adjustments": prompt_adjustments,
         "ontology": {
             "raw": response,
             "final": {
