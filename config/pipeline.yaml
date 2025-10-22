@@ -152,6 +152,7 @@ performance:
   prefer_parallel_fetch: true
 
 collection:
+  # Default quota matches scripts/run_full_cycle.py --default-target (analytics baseline)
   target_per_theory: 10
 
 classification:
