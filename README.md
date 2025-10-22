@@ -164,7 +164,8 @@ python scripts/step2_filter_reviews.py \
   initial relevance filter against titles/abstracts.
 * `--fulltext-processes` and `--fulltext-concurrency` switch between process and
   thread workers for PMC/OpenAlex retrieval when you want to override the
-  auto-scaling defaults.
+  auto-scaling defaults. The same arguments are passed through to the
+  standalone fetcher described in [Step 3](#step-3--full-text-retrieval--pdf-normalisation-scriptsstep3_fetch_fulltextpy).
 * `--entrez-interval`, `--entrez-max-attempts`, `--entrez-retry-wait`, and
   `--entrez-batch-size` mirror the PubMed E-utilities knobs exposed in
   `step3_fetch_fulltext.py`; environment variables with the same names continue
@@ -177,13 +178,52 @@ python scripts/step2_filter_reviews.py \
 
 **Parallelism and staging tips**
 
-The integrated step streams each relevant review through three stages without
-round-tripping intermediate JSON: filtering, full-text harvesting (PMC first,
-then OpenAlex PDF parsing/OCR), and gpt-5-nano theory extraction. The output is
-the enriched `aging_theories.json` bundle containing the per-article full text,
-raw `raw_theory_mentions`, and the canonical `theory_registry` consumed by step
-5. Optional scripts `step3_fetch_fulltext.py` and `step4_extract_theories.py`
-remain available when you need to diagnose a single stage in isolation.
+  The integrated step streams each relevant review through three stages without
+  round-tripping intermediate JSON: filtering, full-text harvesting (PMC first,
+  then OpenAlex PDF parsing/OCR), and gpt-5-nano theory extraction. OpenAlex PDF
+  links are downloaded automatically during this phase and normalised using the
+  same pipeline exposed by `step3_fetch_fulltext.py`. The output is
+  the enriched `aging_theories.json` bundle containing the per-article full text,
+  raw `raw_theory_mentions`, and the canonical `theory_registry` consumed by step
+  5. Optional scripts `step3_fetch_fulltext.py` and `step4_extract_theories.py`
+  remain available when you need to diagnose a single stage in isolation.
+
+### Step 3 – Full-text retrieval & PDF normalisation (`scripts/step3_fetch_fulltext.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step3_fetch_fulltext.py \
+    --input data/pipeline/filtered_reviews.json \
+    --output data/pipeline/filtered_reviews_fulltext.json
+```
+
+**Key flags and inputs**
+
+* `--failures` writes unresolved downloads and OCR problems to a companion log
+  (defaults to `<output>.failures.json`).
+* `--processes` and `--concurrency` mirror the worker controls surfaced in
+  step 2, letting you favour OS processes or threads when fetching PMC XML and
+  OpenAlex PDFs at scale.
+* `--entrez-interval`, `--entrez-max-attempts`, `--entrez-retry-wait`, and
+  `--entrez-batch-size` carry over the PubMed rate-limit knobs; the same
+  environment variables (`PUBMED_*`) apply when you run the script standalone.
+
+**PDF processing behaviour and dependencies**
+
+The fetcher always prefers PMC body text, but when only OpenAlex supplies a PDF
+it downloads the file by default. Digital PDFs are parsed with
+[`pdfminer.six`](https://github.com/pdfminer/pdfminer.six); scanned PDFs fall back
+to OCR via [`pdf2image`](https://github.com/Belval/pdf2image) and
+[`pytesseract`](https://github.com/tesseract-ocr/tesseract) when those packages
+are installed. You will need system packages for Poppler (required by
+`pdf2image`) and Tesseract OCR to enable the conversion pipeline. When the
+dependencies are missing, the script records the failure reason in the
+`pdf_processing` metadata so you can retry later.
+
+> The combined [Step 2](#step-2--filter--full-text-enrichment-scriptsstep2_filter_reviewspy)
+> workflow automatically invokes this PDF download/OCR routine, so you only need
+> to run Step 3 directly when debugging or replaying a subset of records.
 
 ### Step 5 – Ontology synthesis (`scripts/step5_generate_ontology.py`)
 
