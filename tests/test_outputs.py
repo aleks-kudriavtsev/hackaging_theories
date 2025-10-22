@@ -174,3 +174,46 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             }
         ]
         assert fake_ground_truth[0]["expected_answer"] == "Answer"
+
+
+def test_aggregate_theory_assignments_selects_highest_confidence() -> None:
+    ontology = TheoryOntology.from_targets_config(
+        {
+            "Root Theory": {
+                "subtheories": {
+                    "Branch": {
+                        "subtheories": {
+                            "Deep Leaf": {},
+                        }
+                    },
+                    "Shallow Leaf": {},
+                }
+            }
+        }
+    )
+    assignments = [
+        TheoryAssignment("p1", "Shallow Leaf", 0.8, depth=1),
+        TheoryAssignment("p1", "Deep Leaf", 0.9, depth=2),
+        TheoryAssignment("p1", "Root Theory", 0.9, depth=0),
+        TheoryAssignment("p2", "Shallow Leaf", 0.5, depth=1),
+        TheoryAssignment("p2", "Deep Leaf", 0.5, depth=2),
+    ]
+
+    aggregation = aggregate_theory_assignments(assignments, ontology)
+
+    deep_leaf_id = aggregation.theory_ids_by_name["Deep Leaf"]
+    assert aggregation.paper_to_theory_ids["p1"] == (deep_leaf_id,)
+    assert aggregation.paper_to_theory_ids["p2"] == (deep_leaf_id,)
+
+    assigned_pairs = {
+        (theory_id, paper_id)
+        for theory_id, paper_ids in ((entry.theory_id, entry.paper_ids) for entry in aggregation.theories)
+        for paper_id in paper_ids
+    }
+    assert (deep_leaf_id, "p1") in assigned_pairs
+    assert (deep_leaf_id, "p2") in assigned_pairs
+    # Ensure that no paper appears in more than one theory.
+    papers_with_multiple = [
+        paper_id for paper_id, ids in aggregation.paper_to_theory_ids.items() if len(ids) > 1
+    ]
+    assert papers_with_multiple == []

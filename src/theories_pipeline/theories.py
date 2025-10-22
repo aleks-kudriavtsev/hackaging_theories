@@ -77,6 +77,7 @@ def aggregate_theory_assignments(
     ontology: TheoryOntology,
     *,
     paper_ids_by_theory: Mapping[str, Iterable[str]] | None = None,
+    allow_multiple_assignments: bool = False,
 ) -> TheoryAggregationResult:
     """Aggregate theory assignments and assign stable identifiers.
 
@@ -86,6 +87,9 @@ def aggregate_theory_assignments(
         All raw theory assignments produced by the classifier.
     ontology:
         The ontology providing canonical theory names and metadata.
+    allow_multiple_assignments:
+        When ``True``, preserve all theory assignments for each paper instead of
+        selecting the single best candidate. Defaults to ``False``.
 
     Returns
     -------
@@ -96,10 +100,33 @@ def aggregate_theory_assignments(
 
     if paper_ids_by_theory is None:
         papers_by_theory: Dict[str, set[str]] = {name: set() for name in ontology.names()}
-        for assignment in assignments:
-            if assignment.score <= 0:
-                continue
-            papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+        if allow_multiple_assignments:
+            for assignment in assignments:
+                if assignment.score <= 0:
+                    continue
+                papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
+        else:
+            best_assignments: Dict[str, TheoryAssignment] = {}
+
+            def is_better(new: TheoryAssignment, current: TheoryAssignment) -> bool:
+                if new.score > current.score:
+                    return True
+                if new.score < current.score:
+                    return False
+                if new.depth > current.depth:
+                    return True
+                if new.depth < current.depth:
+                    return False
+                return new.theory < current.theory
+
+            for assignment in assignments:
+                if assignment.score <= 0:
+                    continue
+                existing = best_assignments.get(assignment.paper_id)
+                if existing is None or is_better(assignment, existing):
+                    best_assignments[assignment.paper_id] = assignment
+            for assignment in best_assignments.values():
+                papers_by_theory.setdefault(assignment.theory, set()).add(assignment.paper_id)
     else:
         papers_by_theory = {name: {str(pid) for pid in ids} for name, ids in paper_ids_by_theory.items()}
         for name in ontology.names():
@@ -347,7 +374,7 @@ class TheoryClassifier:
             for theory, score in aggregated.items()
             if score > 0.0
         ]
-        assignments.sort(key=lambda item: (item.depth, -item.score, item.theory))
+        assignments.sort(key=lambda item: (-item.score, -item.depth, item.theory))
         return assignments
 
     def _build_llm_messages(self, paper: PaperMetadata) -> List[LLMMessage]:
