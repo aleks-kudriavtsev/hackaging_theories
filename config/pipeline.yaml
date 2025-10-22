@@ -139,7 +139,7 @@ providers:
 llm_defaults:
   filter_model: "gpt-5-nano"
   classification_model: "gpt-5-nano"
-  extraction_model: "gpt-4"
+  extraction_model: "gpt-5-mini"
   batch_size: 1
   request_timeout: 90
   max_retries: 4
