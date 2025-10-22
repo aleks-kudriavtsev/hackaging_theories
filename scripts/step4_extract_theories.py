@@ -85,13 +85,14 @@ def chat_completion_json(
     user_prompt: str,
     api_key: str,
     model: str,
+    temperature: float,
     *,
     timeout: Optional[float] = None,
 ) -> Dict:
     payload = json.dumps(
         {
             "model": model,
-            "temperature": 1,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -141,7 +142,12 @@ def chat_completion_json(
 
 
 def call_openai(
-    prompt: str, api_key: str, model: str, *, timeout: Optional[float] = None
+    prompt: str,
+    api_key: str,
+    model: str,
+    *,
+    temperature: float = 1.0,
+    timeout: Optional[float] = None,
 ) -> Dict:
     system_prompt = (
         "Extract distinct aging theories from the supplied review text. Return "
@@ -149,7 +155,7 @@ def call_openai(
         "explanatory text)."
     )
     parsed = chat_completion_json(
-        system_prompt, prompt, api_key, model, timeout=timeout
+        system_prompt, prompt, api_key, model, temperature, timeout=timeout
     )
     return _normalise_theory_list(parsed)
 
@@ -579,6 +585,7 @@ def disambiguate_with_llm(
     record: Dict,
     api_key: str,
     model: str,
+    temperature: float,
     request_timeout: Optional[float],
 ) -> Optional[str]:
     if not candidates:
@@ -617,6 +624,7 @@ def disambiguate_with_llm(
             user_prompt,
             api_key,
             model,
+            temperature,
             timeout=request_timeout,
         )
     except RuntimeError:
@@ -635,17 +643,53 @@ def build_theory_registry(
     annotated: Iterable[Dict],
     api_key: str,
     model: str,
+    temperature: float,
     request_timeout: Optional[float],
-) -> Dict[str, Dict]:
+) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
     registry: Dict[str, Dict] = {}
     signature_index: Dict[str, Tuple[str, Tuple[str, ...]]] = {}
     slug_index: Dict[str, str] = {}
+    synonym_lookup: Dict[str, str] = {}
+    synonym_records: Dict[str, Dict[str, Any]] = {}
 
     def add_alias(entry: Dict, alias: str) -> None:
         aliases: Set[str] = set(entry.setdefault("aliases", []))
         if alias not in aliases:
             aliases.add(alias)
             entry["aliases"] = sorted(aliases)
+
+    def record_synonym(
+        theory_id: str, alias: str, article_id: Optional[str]
+    ) -> None:
+        if not alias:
+            return
+        entry = registry[theory_id]
+        add_alias(entry, alias)
+        alias_slug = slugify(alias)
+        if alias_slug and alias_slug not in slug_index:
+            slug_index[alias_slug] = theory_id
+        key = alias.casefold()
+        if key:
+            synonym_lookup[key] = theory_id
+            canonical_label = str(entry.get("label", "")).casefold()
+            if key == canonical_label:
+                return
+            record = synonym_records.setdefault(
+                key,
+                {
+                    "alias": alias,
+                    "canonical_id": theory_id,
+                    "source_articles": [],
+                },
+            )
+            record["alias"] = alias
+            record["canonical_id"] = theory_id
+            if article_id:
+                articles = record.setdefault("source_articles", [])
+                if article_id not in articles:
+                    articles.append(article_id)
+            if alias_slug:
+                record["slug"] = alias_slug
 
     for idx, record in enumerate(annotated):
         extraction = record.get("theory_extraction") or {}
@@ -672,8 +716,11 @@ def build_theory_registry(
             signature = lexical_signature(cleaned)
             theory_id = None
 
+            lookup_key = cleaned.casefold()
+            if lookup_key and lookup_key in synonym_lookup:
+                theory_id = synonym_lookup[lookup_key]
             # direct slug match
-            if slug and slug in slug_index:
+            elif slug and slug in slug_index:
                 theory_id = slug_index[slug]
             else:
                 candidate_id = find_lexical_match(
@@ -692,16 +739,18 @@ def build_theory_registry(
                         ).ratio()
                         >= 0.65
                     }
-                    match = disambiguate_with_llm(
-                        cleaned,
-                        potential_candidates,
-                        record,
-                        api_key,
-                        model,
-                        request_timeout,
-                    )
-                    if match:
-                        theory_id = match
+                    if potential_candidates:
+                        match = disambiguate_with_llm(
+                            cleaned,
+                            potential_candidates,
+                            record,
+                            api_key,
+                            model,
+                            temperature,
+                            request_timeout,
+                        )
+                        if match:
+                            theory_id = match
 
             if theory_id is None:
                 provenance_bits: List[str] = []
@@ -736,7 +785,7 @@ def build_theory_registry(
                 signature_index.setdefault(theory_id, signature)
 
             entry = registry[theory_id]
-            add_alias(entry, cleaned)
+            record_synonym(theory_id, cleaned, article_id)
             entry.setdefault("supporting_articles", [])
             if article_id not in entry["supporting_articles"]:
                 entry["supporting_articles"].append(article_id)
@@ -782,7 +831,28 @@ def build_theory_registry(
         entry.setdefault("pmids", [])
         entry["pmids"] = sorted(entry["pmids"])
 
-    return registry
+    formatted_synonyms: Dict[str, Dict[str, Any]] = {}
+    for metadata in synonym_records.values():
+        alias = metadata.get("alias")
+        canonical_id = metadata.get("canonical_id")
+        if not isinstance(alias, str) or not isinstance(canonical_id, str):
+            continue
+        source_articles_raw = metadata.get("source_articles", [])
+        source_articles = (
+            sorted(dict.fromkeys(source_articles_raw))
+            if isinstance(source_articles_raw, list)
+            else []
+        )
+        entry = {
+            "canonical_id": canonical_id,
+            "source_articles": source_articles,
+        }
+        slug_value = metadata.get("slug")
+        if isinstance(slug_value, str) and slug_value:
+            entry["slug"] = slug_value
+        formatted_synonyms[alias] = entry
+
+    return registry, formatted_synonyms
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -793,9 +863,26 @@ def main(argv: List[str] | None = None) -> int:
         "--model",
         default="gpt-5-nano",
         help=(
-            "OpenAI chat completion model identifier. gpt-5-nano is the default "
-            "so consolidated review excerpts can be processed accurately "
-            "without exceeding the ~$10 per million articles budget."
+            "OpenAI chat completion model identifier for extracting theory "
+            "mentions from reviews."
+        ),
+    )
+    parser.add_argument(
+        "--disambiguation-model",
+        default="gpt-5-mini",
+        help=(
+            "OpenAI chat completion model identifier dedicated to canonical "
+            "theory disambiguation. Defaults to gpt-5-mini for higher quality "
+            "matching when reconciling aliases."
+        ),
+    )
+    parser.add_argument(
+        "--disambiguation-temperature",
+        type=float,
+        default=0.2,
+        help=(
+            "Sampling temperature applied when reconciling theory aliases via "
+            "the disambiguation LLM."
         ),
     )
     parser.add_argument("--delay", type=float, default=0.5)
@@ -962,8 +1049,15 @@ def main(argv: List[str] | None = None) -> int:
     annotations_after_run = load_checkpoint_annotations(checkpoint_path)
     annotated = [annotations_after_run[idx] for idx in sorted(annotations_after_run)]
 
-    theory_registry = build_theory_registry(
-        annotated, api_key, args.model, args.request_timeout
+    (
+        theory_registry,
+        synonym_registry,
+    ) = build_theory_registry(
+        annotated,
+        api_key,
+        args.disambiguation_model,
+        args.disambiguation_temperature,
+        args.request_timeout,
     )
     aggregated = sorted(theory_registry.keys())
 
@@ -976,6 +1070,7 @@ def main(argv: List[str] | None = None) -> int:
                 "articles": annotated,
                 "aggregated_theories": aggregated,
                 "theory_registry": theory_registry,
+                "synonym_registry": synonym_registry,
             },
             fh,
             ensure_ascii=False,
@@ -983,7 +1078,9 @@ def main(argv: List[str] | None = None) -> int:
         )
 
     print(
-        f"Saved theory catalogue with {len(theory_registry)} canonical theories to {args.output}"
+        "Saved theory catalogue with "
+        f"{len(theory_registry)} canonical theories and "
+        f"{len(synonym_registry)} tracked synonyms to {args.output}"
     )
     return 0
 
