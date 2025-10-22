@@ -142,54 +142,54 @@ classification:
     retry_backoff: 2.0
     request_timeout: 60
   keywords:
-    Free Radical Theory:
+    Cellular Senescence:
       keywords:
-        - "free radical theory"
-        - "oxidative stress"
-        - "reactive oxygen species"
+        - "cellular senescence"
+        - "senescent cells"
+        - "senescence-associated secretory phenotype"
       subtheories:
-        Mitochondrial Free Radical Theory:
+        Senescence-Associated Secretory Phenotype:
           keywords:
-            - "mitochondrial free radical"
-            - "mtdna damage"
-            - "mitochondrial ros"
-        Antioxidant Defense Decline:
+            - "senescence-associated secretory phenotype"
+            - "sasp factors"
+            - "inflammatory senescence"
+        Senolytic Strategies:
           keywords:
-            - "antioxidant defense"
-            - "glutathione depletion"
-            - "superoxide dismutase"
-    Telomere Shortening Theory:
+            - "senolytic therapy"
+            - "senescent cell clearance"
+            - "senolytic interventions"
+    Mitochondrial Dysfunction:
       keywords:
-        - "telomere shortening"
-        - "telomerase"
-        - "chromosome end protection"
+        - "mitochondrial dysfunction aging"
+        - "mitochondrial quality control"
+        - "mitophagy decline"
       subtheories:
-        Telomerase Activation Strategies:
+        Mitophagy Decline:
           keywords:
-            - "telomerase activation"
-            - "tert upregulation"
-            - "telomere elongation"
-        Shelterin Complex Dysfunction:
+            - "mitophagy aging"
+            - "mitophagy impairment"
+            - "autophagy mitochondria"
+        Respiratory Chain Stress:
           keywords:
-            - "shelterin complex"
-            - "trf2 loss"
-            - "t-loop destabilization"
-    Disposable Soma Theory:
+            - "electron transport chain stress"
+            - "respiratory chain dysfunction"
+            - "mitochondrial ros production"
+    Epigenetic Remodeling:
       keywords:
-        - "disposable soma"
-        - "energy allocation"
-        - "maintenance trade-off"
+        - "epigenetic aging"
+        - "chromatin remodeling"
+        - "epigenetic drift"
       subtheories:
-        Energy Allocation Trade-offs:
+        DNA Methylation Drift:
           keywords:
-            - "energy allocation trade-off"
-            - "reproductive investment"
-            - "somatic maintenance"
-        Damage Repair Prioritization:
+            - "dna methylation aging"
+            - "epigenetic clock drift"
+            - "methylome remodeling"
+        Histone Modification Imbalance:
           keywords:
-            - "damage repair prioritization"
-            - "maintenance cost"
-            - "resource allocation repair"
+            - "histone modification aging"
+            - "chromatin accessibility aging"
+            - "histone acetylation decline"
 
 corpus:
   ontology_suggestions_path: data/pipeline/aging_ontology.json
@@ -257,117 +257,54 @@ corpus:
       Avoid duplicates of the existing queries and keep each query under 12 words.
       Prioritise mechanistic or pathway-oriented phrases tied to aging theories.
   targets:
-    Free Radical Theory:
-      target: 480
+    Cellular Senescence:
+      target: 7
       queries:
-        - "{base_query} free radical theory of aging"
-        - "oxidative stress lifespan decline"
-      expansion:
-        enabled: true
-        max_new_queries: 4
-        max_snippets: 12
-        max_gpt_queries: 3
-        gpt_prompt: |
-          Suggest concise oxidative stress literature search strings as a JSON array.
-          Focus on ROS mechanisms, antioxidant interventions, and mitochondrial damage in aging.
+        - "{base_query} cellular senescence"
+        - "senescent cell burden aging"
       subtheories:
-        Mitochondrial Free Radical Theory:
-          target: 220
+        Senescence-Associated Secretory Phenotype:
+          target: 6
           queries:
-            - "{base_query} mitochondrial free radical theory"
-            - "mitochondrial ros aging damage"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            embedding_neighbors: 5
-            gpt_prompt: |
-              Provide up to three mitochondrial ROS aging search phrases as JSON.
-              Highlight mitophagy, mtDNA damage, or respiratory chain dysfunction.
-        Antioxidant Defense Decline:
-          target: 160
+            - "{base_query} senescence-associated secretory phenotype"
+            - "sasp inflammatory aging"
+        Senolytic Strategies:
+          target: 6
           queries:
-            - "{base_query} antioxidant defense aging"
-            - "superoxide dismutase aging"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            max_gpt_queries: 2
-            gpt_prompt: |
-              Return a JSON array of antioxidant defense aging search queries.
-              Emphasise glutathione, catalase, and enzymatic protection pathways.
-    Telomere Shortening Theory:
-      target: 420
+            - "{base_query} senolytic therapy"
+            - "senescent cell clearance drugs"
+    Mitochondrial Dysfunction:
+      target: 7
       queries:
-        - "{base_query} telomere shortening aging"
-        - "telomerase lifespan extension"
-      expansion:
-        enabled: true
-        max_new_queries: 4
-        max_snippets: 10
-        gpt_prompt: |
-          Generate telomere and telomerase-focused aging search strings as JSON.
-          Keep terms actionable for literature retrieval (e.g. telomere instability, telomerase therapy).
+        - "{base_query} mitochondrial dysfunction"
+        - "mitochondrial quality control aging"
       subtheories:
-        Telomerase Activation Strategies:
-          target: 180
+        Mitophagy Decline:
+          target: 6
           queries:
-            - "{base_query} telomerase activation therapy"
-            - "tert activation aging"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            max_snippets: 8
-            gpt_prompt: |
-              Produce a JSON array of telomerase activation aging queries.
-              Include gene therapy, small molecules, or telomerase regulation.
-        Shelterin Complex Dysfunction:
-          target: 150
+            - "{base_query} mitophagy aging"
+            - "mitophagy decline senescence"
+        Respiratory Chain Stress:
+          target: 6
           queries:
-            - "{base_query} shelterin complex aging"
-            - "trf2 protection telomeres"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            embedding_neighbors: 5
-            gpt_prompt: |
-              Suggest shelterin complex failure search strings as JSON.
-              Highlight TRF1/TRF2 loss, POT1 mutations, or telomere uncapping in aging.
-    Disposable Soma Theory:
-      target: 360
+            - "{base_query} respiratory chain stress"
+            - "electron transport chain aging"
+    Epigenetic Remodeling:
+      target: 7
       queries:
-        - "{base_query} disposable soma theory"
-        - "resource allocation longevity"
-      expansion:
-        enabled: true
-        max_new_queries: 4
-        max_snippets: 10
-        gpt_prompt: |
-          Provide JSON-formatted search strings on somatic maintenance trade-offs in aging.
-          Blend terms spanning energetics, reproduction, and repair prioritisation.
+        - "{base_query} epigenetic aging"
+        - "chromatin remodeling longevity"
       subtheories:
-        Energy Allocation Trade-offs:
-          target: 160
+        DNA Methylation Drift:
+          target: 6
           queries:
-            - "{base_query} energy allocation aging"
-            - "reproduction longevity trade-off"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            gpt_prompt: |
-              List up to three search strings on energy allocation and aging as JSON.
-              Include caloric restriction, reproductive cost, or life-history trade-offs.
-        Maintenance Investment Strategies:
-          target: 140
+            - "{base_query} dna methylation drift"
+            - "epigenetic clock instability"
+        Histone Modification Imbalance:
+          target: 6
           queries:
-            - "{base_query} somatic maintenance aging"
-            - "repair investment lifespan"
-          expansion:
-            enabled: true
-            max_new_queries: 3
-            max_snippets: 8
-            gpt_prompt: |
-              Return JSON search strings on maintenance investment and organismal longevity.
-              Consider proteostasis, autophagy, and repair pathway prioritisation.
+            - "{base_query} histone modification aging"
+            - "chromatin state longevity"
 extraction:
   llm:
     enabled: true

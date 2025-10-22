@@ -249,7 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--default-target",
         type=int,
-        help="Optional per-node retrieval quota applied to ontology-derived targets.",
+        default=6,
+        help=(
+            "Optional per-node retrieval quota applied to ontology-derived targets "
+            "(default: 6)."
+        ),
     )
     parser.add_argument(
         "--no-resume",

@@ -1,0 +1,1 @@
+{"ontology": {"final": {"groups": [{"name": "Cellular Mechanisms", "suggested_queries": ["cellular aging"], "theories": [{"preferred_label": "Senescence Cascade"}, {"preferred_label": "Telomere Attrition"}]}, {"name": "Metabolic Control", "suggested_queries": ["metabolic longevity"], "theories": [{"preferred_label": "Caloric Restriction"}]}]}}}
