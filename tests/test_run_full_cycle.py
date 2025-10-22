@@ -1,3 +1,4 @@
+import csv
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import run_full_cycle
+from theories_pipeline.outputs import (
+    COMPETITION_PAPER_COLUMNS,
+    COMPETITION_QUESTION_COLUMNS,
+    COMPETITION_THEORY_COLUMNS,
+    COMPETITION_THEORY_PAPER_COLUMNS,
+    QUESTION_COLUMNS,
+    QUESTION_CONFIDENCE_COLUMNS,
+)
 
 
 @pytest.fixture
@@ -101,9 +110,6 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         "classify_and_extract_parallel",
         lambda papers, classifier, extractor, workers=1: ([], []),
     )
-    monkeypatch.setattr(run_full_cycle.collect_theories, "export_papers", lambda *a, **k: None)
-    monkeypatch.setattr(run_full_cycle.collect_theories, "export_theories", lambda *a, **k: None)
-    monkeypatch.setattr(run_full_cycle.collect_theories, "export_question_answers", lambda *a, **k: None)
 
     args = [
         "--workdir",
@@ -126,3 +132,59 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
 
     state_dir = workdir / "collector_state"
     assert state_dir.exists(), "Collector state directory should default under the workdir"
+
+    papers_path = workdir / "papers.csv"
+    theories_path = workdir / "theories.csv"
+    theory_papers_path = workdir / "theory_papers.csv"
+    questions_path = workdir / "questions.csv"
+    for path in [papers_path, theories_path, theory_papers_path, questions_path]:
+        assert path.exists()
+
+    with questions_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == [
+            "theory_id",
+            "paper_url",
+            "paper_name",
+            "paper_year",
+            *QUESTION_COLUMNS,
+            *QUESTION_CONFIDENCE_COLUMNS,
+        ]
+
+    competition_dir = workdir / "competition"
+    assert competition_dir.exists()
+    competition_paths = {
+        "papers": competition_dir / "papers.csv",
+        "theories": competition_dir / "theories.csv",
+        "theory_papers": competition_dir / "theory_papers.csv",
+        "questions": competition_dir / "questions.csv",
+    }
+    for path in competition_paths.values():
+        assert path.exists()
+
+    with competition_paths["papers"].open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == list(COMPETITION_PAPER_COLUMNS)
+
+    with competition_paths["theories"].open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == list(COMPETITION_THEORY_COLUMNS)
+
+    with competition_paths["theory_papers"].open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == list(COMPETITION_THEORY_PAPER_COLUMNS)
+
+    with competition_paths["questions"].open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == list(COMPETITION_QUESTION_COLUMNS)
+
+    accuracy_ground_truth = [
+        {
+            "theory_id": "placeholder",
+            "paper_id": "placeholder",
+            "question_id": question,
+            "expected_answer": "",
+        }
+        for question in QUESTION_COLUMNS
+    ]
+    assert len(accuracy_ground_truth) == len(QUESTION_COLUMNS)

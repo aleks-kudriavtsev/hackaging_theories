@@ -22,10 +22,20 @@ from .theories import (
 )
 from .extraction import QuestionExtractor, QuestionAnswer
 from .outputs import (
+    COMPETITION_PAPER_COLUMNS,
+    COMPETITION_QUESTION_COLUMNS,
+    COMPETITION_THEORY_COLUMNS,
+    COMPETITION_THEORY_PAPER_COLUMNS,
+    QUESTION_COLUMNS,
+    QUESTION_CONFIDENCE_COLUMNS,
+    export_competition_papers,
+    export_competition_question_answers,
+    export_competition_theories,
+    export_competition_theory_papers,
     export_papers,
-    export_theory_papers,
-    export_theories,
     export_question_answers,
+    export_theories,
+    export_theory_papers,
 )
 from .pipeline_utils import classify_and_extract_parallel
 from .filtering import RelevanceFilter, FilterDecision
@@ -68,10 +78,20 @@ __all__ = [
     "classify_and_extract_parallel",
     "RelevanceFilter",
     "FilterDecision",
+    "QUESTION_COLUMNS",
+    "QUESTION_CONFIDENCE_COLUMNS",
+    "COMPETITION_PAPER_COLUMNS",
+    "COMPETITION_THEORY_COLUMNS",
+    "COMPETITION_THEORY_PAPER_COLUMNS",
+    "COMPETITION_QUESTION_COLUMNS",
     "export_papers",
     "export_theory_papers",
     "export_theories",
     "export_question_answers",
+    "export_competition_papers",
+    "export_competition_theories",
+    "export_competition_theory_papers",
+    "export_competition_question_answers",
     "LLMClient",
     "LLMClientConfig",
     "LLMClientError",

@@ -120,18 +120,34 @@ providers in `config/pipeline.yaml` to diversify the corpus.
 
 ## Outputs
 
-After the pipeline completes, the working directory contains:
+After the pipeline completes, the working directory contains the rich internal
+artefacts plus a lightweight competition drop:
+
+### Internal CSV exports
 
 | File | Description |
 | --- | --- |
-| `start_reviews*.json` | Raw review metadata from each provider. |
-| `filtered_reviews.json` | LLM-filtered review subset with explanations. |
-| `filtered_reviews_fulltext.json` | Reviews augmented with PMC full texts. |
-| `aging_theories.json` | Theory annotations and the consolidated registry. |
-| `aging_ontology.json` | Balanced ontology with suggested queries and metrics. |
-| `collector/` | Papers, theory assignments, Q&A CSVs, cache, and rejection registry. |
+| `papers.csv` | Full paper metadata including abstracts, joined section JSON, and full text bodies. |
+| `theories.csv` | Per-theory summary with the `number_of_collected_papers` column used for progress tracking. |
+| `theory_papers.csv` | Mapping between theory IDs and paper identifiers/titles. |
+| `questions.csv` | Wide matrix of question answers with an accompanying `<question>_confidence` column for each prompt. |
 
-Sample artefacts for the Hackaging challenge live under `data/examples/`.
+These internal tables retain every field produced by the collector and should
+stay inside the workspace (they contain full texts and provenance details).
+
+### Competition-ready tables
+
+| File | Description |
+| --- | --- |
+| `competition/papers.csv` | Sanitised subset of the paper export (identifier, title, authors, abstract, source, year, DOI). |
+| `competition/theories.csv` | Theory roster with a `paper_count` column matching the challenge schema. |
+| `competition/theory_papers.csv` | Lightweight theory-to-paper links with paper years. |
+| `competition/questions.csv` | Long-form question answers per theory/paper/question with `confidence` and optional `evidence`. |
+
+The competition folder deliberately omits full texts and collapses questions to
+a long format so that the files can be shared publicly or scored by the accuracy
+module without leaking sensitive content. Sample artefacts for the Hackaging
+challenge live under `data/examples/`.
 
 ## Troubleshooting
 
