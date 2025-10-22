@@ -196,6 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help="Limit retrieval to the specified providers (by name)",
     )
+    parser.add_argument(
+        "--strict-ontology-audit",
+        action="store_true",
+        help=(
+            "Abort the run when runtime targets and the final ontology diverge "
+            "after bootstrap merging"
+        ),
+    )
     precedence_note = "Overrides the {name} API key (CLI > config file > environment > defaults)"
     parser.add_argument(
         "--openalex-api-key",
@@ -701,6 +709,60 @@ def _collect_coverage_counts(
         else:
             counts[node_name] = _existing_total(retriever, prefix)
     return counts
+
+
+def _format_name_preview(names: Sequence[str], *, limit: int = 10) -> str:
+    preview = list(names[:limit])
+    remaining = len(names) - len(preview)
+    if remaining > 0:
+        preview.append("…")
+    return ", ".join(preview)
+
+
+def audit_runtime_ontology_nodes(
+    runtime_targets: Mapping[str, Mapping[str, Any]],
+    ontology_targets: Mapping[str, Mapping[str, Any]],
+    *,
+    strict: bool = False,
+) -> None:
+    """Compare runtime targets with the final ontology configuration."""
+
+    runtime_ontology = TheoryOntology.from_targets_config(runtime_targets)
+    final_ontology = TheoryOntology.from_targets_config(ontology_targets)
+    runtime_names = set(runtime_ontology.names())
+    final_names = set(final_ontology.names())
+    runtime_count = len(runtime_names)
+    final_count = len(final_names)
+
+    if runtime_names == final_names:
+        logger.info(
+            "Runtime ontology audit: %d nodes across %d roots", final_count, len(final_ontology.roots())
+        )
+        return
+
+    logger.warning(
+        "Runtime ontology audit mismatch: runtime nodes=%d, final nodes=%d", runtime_count, final_count
+    )
+
+    missing = sorted(final_names - runtime_names)
+    extra = sorted(runtime_names - final_names)
+    if missing:
+        logger.warning(
+            "Runtime targets missing %d nodes present in final ontology: %s",
+            len(missing),
+            _format_name_preview(missing),
+        )
+    if extra:
+        logger.warning(
+            "Runtime targets include %d nodes absent from final ontology: %s",
+            len(extra),
+            _format_name_preview(extra),
+        )
+
+    if strict:
+        raise SystemExit(
+            "Runtime ontology audit failed: node mismatch between runtime targets and final ontology"
+        )
 
 
 def _select_autofragment_hint(
@@ -2173,6 +2235,12 @@ def run_pipeline(
         runtime_targets = base_targets
         ontology_targets = base_targets
 
+    strict_audit_config = False
+    if isinstance(corpus_cfg, Mapping) and "strict_ontology_audit" in corpus_cfg:
+        strict_audit_config = _coerce_bool(corpus_cfg.get("strict_ontology_audit"))
+    strict_audit_enabled = bool(getattr(args, "strict_ontology_audit", False) or strict_audit_config)
+    audit_runtime_ontology_nodes(runtime_targets, ontology_targets, strict=strict_audit_enabled)
+
     ontology_suggestions_summary: Dict[str, Any] = {}
     suggestions_path_raw = corpus_cfg.get("ontology_suggestions_path")
     if suggestions_path_raw:
@@ -2317,6 +2385,19 @@ def run_pipeline(
         }
         for name, record in coverage_summary.items()
     }
+    depth_deficit_groups = ontology.depth_deficits(coverage_counts)
+    depth_deficit_summary = {
+        depth: [
+            {
+                "name": record.name,
+                "count": record.count,
+                "target": record.target,
+                "deficit": record.deficit,
+            }
+            for record in records
+        ]
+        for depth, records in depth_deficit_groups.items()
+    }
 
     outputs = config["outputs"]
     papers_path = Path(outputs["papers"])
@@ -2366,6 +2447,7 @@ def run_pipeline(
         "retrieval": summary_report,
         "quota_status": quota_status,
         "ontology_suggestions": ontology_suggestions_summary,
+        "deficits_by_depth": depth_deficit_summary,
     }
     retriever.state_store.write_summary(summary_payload)
 

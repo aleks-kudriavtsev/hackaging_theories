@@ -248,6 +248,21 @@ class TheoryOntology:
             )
         return records
 
+    def depth_deficits(self, counts: Mapping[str, int]) -> Dict[int, List[CoverageRecord]]:
+        """Group deficit-bearing nodes by their depth in the ontology."""
+
+        grouped: Dict[int, List[CoverageRecord]] = {}
+        for record in self.coverage(counts).values():
+            deficit = record.deficit
+            if deficit is None or deficit <= 0:
+                continue
+            grouped.setdefault(record.depth, []).append(record)
+
+        for entries in grouped.values():
+            entries.sort(key=lambda item: item.name)
+
+        return dict(sorted(grouped.items()))
+
     def format_coverage_report(self, counts: Mapping[str, int]) -> str:
         """Return a human-readable quota coverage report."""
 
@@ -267,6 +282,19 @@ class TheoryOntology:
                 else:
                     status = f"deficit {deficit}"
                 lines.append(f"{indent}    - {name}: {record.count} / {target_text} ({status})")
+
+        depth_summary = self.depth_deficits(counts)
+        if depth_summary:
+            lines.append("")
+            lines.append("Deficit summary by depth:")
+            for depth, records in depth_summary.items():
+                total_deficit = sum(record.deficit or 0 for record in records)
+                label = ", ".join(
+                    f"{record.name} (-{record.deficit})" for record in records if record.deficit
+                )
+                lines.append(
+                    f"  Depth {depth}: total deficit {total_deficit} across {len(records)} nodes ({label})"
+                )
         return "\n".join(lines)
 
 
