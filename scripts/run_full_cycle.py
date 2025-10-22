@@ -316,6 +316,16 @@ def _prepare_collector_config(
     outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
     outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
     outputs_cfg.setdefault("reports", str(workdir / "reports"))
+    competition_cfg = outputs_cfg.setdefault("competition", {})
+    competition_dir = competition_cfg.get("base_dir")
+    if competition_dir:
+        base_dir = Path(competition_dir)
+    else:
+        base_dir = workdir / "competition"
+    competition_cfg.setdefault("papers", str(base_dir / "papers.csv"))
+    competition_cfg.setdefault("theories", str(base_dir / "theories.csv"))
+    competition_cfg.setdefault("theory_papers", str(base_dir / "theory_papers.csv"))
+    competition_cfg.setdefault("questions", str(base_dir / "questions.csv"))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

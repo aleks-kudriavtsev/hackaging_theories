@@ -35,6 +35,10 @@ from theories_pipeline import (
     TheoryClassifier,
     aggregate_theory_assignments,
     classify_and_extract_parallel,
+    export_competition_papers,
+    export_competition_question_answers,
+    export_competition_theories,
+    export_competition_theory_papers,
     export_papers,
     export_theory_papers,
     export_question_answers,
@@ -2262,6 +2266,30 @@ def run_pipeline(
 
     questions_path = Path(outputs["questions"])
     export_question_answers(question_answers, papers, aggregation, questions_path)
+
+    competition_cfg = outputs.get("competition") if isinstance(outputs, Mapping) else None
+    if isinstance(competition_cfg, Mapping):
+        competition_papers = competition_cfg.get("papers")
+        if competition_papers:
+            export_competition_papers(papers, Path(competition_papers))
+        competition_theories = competition_cfg.get("theories")
+        if competition_theories:
+            export_competition_theories(aggregation, Path(competition_theories))
+        competition_theory_papers = competition_cfg.get("theory_papers")
+        if competition_theory_papers:
+            export_competition_theory_papers(
+                aggregation,
+                papers,
+                Path(competition_theory_papers),
+            )
+        competition_questions = competition_cfg.get("questions")
+        if competition_questions:
+            export_competition_question_answers(
+                question_answers,
+                papers,
+                aggregation,
+                Path(competition_questions),
+            )
 
     summary_payload = {
         "retrieval": summary_report,
