@@ -184,6 +184,8 @@ def export_question_answers(
     papers: Mapping[str, PaperMetadata] | Iterable[PaperMetadata],
     aggregation: TheoryAggregationResult,
     path: Path,
+    *,
+    include_confidence: bool = True,
 ) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,17 +197,18 @@ def export_question_answers(
         if current is None or answer.confidence > current[0]:
             evidence = answer.evidence or ""
             paper_answers[answer.question_id] = (answer.confidence, answer.answer, evidence)
+    fieldnames = [
+        "theory_id",
+        "paper_url",
+        "paper_name",
+        "paper_year",
+        *QUESTION_COLUMNS,
+    ]
+    if include_confidence:
+        fieldnames.extend(QUESTION_CONFIDENCE_COLUMNS)
+
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "theory_id",
-                "paper_url",
-                "paper_name",
-                "paper_year",
-                *QUESTION_COLUMNS,
-            ],
-        )
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for paper_id, theory_ids in aggregation.paper_to_theory_ids.items():
             paper = lookup.get(paper_id)
@@ -222,10 +225,14 @@ def export_question_answers(
                 for question_id in QUESTION_COLUMNS:
                     answer_entry = paper_answers.get(question_id)
                     if answer_entry:
-                        _, answer_text, _ = answer_entry
+                        confidence, answer_text, _ = answer_entry
                         row[question_id] = answer_text
+                        if include_confidence:
+                            row[f"{question_id}_confidence"] = _format_confidence(confidence)
                     else:
                         row[question_id] = ""
+                        if include_confidence:
+                            row[f"{question_id}_confidence"] = ""
                 writer.writerow(row)
     return path
 
