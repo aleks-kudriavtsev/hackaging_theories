@@ -158,6 +158,8 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         ]
         row = next(reader)
         assert row["Q1"] == "Answer"
+        for column in QUESTION_CONFIDENCE_COLUMNS:
+            assert column not in row
 
     with competition_papers_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
