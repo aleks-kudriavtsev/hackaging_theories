@@ -1,22 +1,29 @@
-"""Filter aging-theory reviews using an OpenAI relevance check.
+"""Filter and enrich aging-theory reviews in a single pass.
 
-The script loads the JSON file produced by the metadata collection steps and
-asks an OpenAI chat model to decide whether each article is relevant to aging
-theory based on its title and abstract. Records marked as irrelevant are
-discarded. Large batches are automatically processed in parallel worker
-processes so long runs saturate the available CPU cores.
+The script ingests the metadata collected during step 1, calls an OpenAI chat
+model to flag reviews that genuinely discuss aging theory, and immediately
+retrieves accessible full texts for the retained entries (PMC XML when
+available, otherwise OpenAlex PDFs). The resulting documents are chunked and
+sent through the gpt-5-nano extraction routines so raw theory mentions, their
+supporting article IDs and a canonical registry are produced in the same run.
+Large batches are automatically processed in parallel worker processes so long
+runs saturate the available CPU cores.
 
 Environment variables
 ---------------------
 - ``OPENAI_API_KEY`` — required for calling the chat completion endpoint.
+- ``PUBMED_RATE_INTERVAL`` / ``PUBMED_MAX_ATTEMPTS`` / ``PUBMED_RETRY_WAIT`` /
+  ``PUBMED_BATCH_SIZE`` — optional overrides for the Entrez/PubMed rate
+  limiting parameters reused from :mod:`step3_fetch_fulltext`.
 
 Usage
 -----
 ```bash
 python scripts/step2_filter_reviews.py \
     --input data/pipeline/start_reviews.json \
-    --output data/pipeline/filtered_reviews.json \
-    --processes 4
+    --filtered-output data/pipeline/filtered_reviews.json \
+    --output data/pipeline/aging_theories.json \
+    --processes 4 --fulltext-processes 4 --extraction-processes 4
 ```
 """
 
@@ -30,9 +37,16 @@ import os
 import sys
 from multiprocessing import Process, Queue
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
 from openai import AsyncOpenAI
+
+from scripts.step3_fetch_fulltext import enrich_records
+from scripts.step4_extract_theories import (
+    DEFAULT_OPENAI_TIMEOUT,
+    build_theory_registry,
+    extract_theories,
+)
 
 
 OPENAI_SYSTEM_PROMPT = (
@@ -617,6 +631,66 @@ def _split_records(records: List[Dict], parts: int) -> List[List[Dict]]:
     return chunks
 
 
+def _resolve_article_id(record: Mapping[str, object], index: int) -> str:
+    explicit = record.get("article_id")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    preferred_keys = ("id", "uid", "doi")
+    fallback_keys = ("openalex_id", "pmid")
+
+    for key in (*preferred_keys, *fallback_keys):
+        value = record.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        elif value is not None:
+            stringified = str(value).strip()
+            if stringified:
+                return stringified
+
+    return f"article-{index + 1}"
+
+
+def _collect_theory_mentions(records: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    mentions: List[Dict[str, Any]] = []
+
+    for idx, record in enumerate(records):
+        article_id = _resolve_article_id(record, idx)
+        if isinstance(record, dict) and "article_id" not in record:
+            record["article_id"] = article_id
+
+        extraction = record.get("theory_extraction")
+        theories = extraction.get("theories") if isinstance(extraction, Mapping) else None
+        if not isinstance(theories, Sequence) or isinstance(theories, (str, bytes)):
+            continue
+
+        for alias in theories:
+            if not isinstance(alias, str):
+                continue
+            cleaned = alias.strip()
+            if not cleaned:
+                continue
+            mention: Dict[str, Any] = {
+                "article_id": article_id,
+                "alias": cleaned,
+                "record_index": idx,
+            }
+            title = record.get("title")
+            if isinstance(title, str) and title.strip():
+                mention["title"] = title.strip()
+            openalex_id = record.get("openalex_id")
+            if isinstance(openalex_id, str) and openalex_id.strip():
+                mention["openalex_id"] = openalex_id.strip()
+            pmid = record.get("pmid")
+            if isinstance(pmid, str) and pmid.strip():
+                mention["pmid"] = pmid.strip()
+            mentions.append(mention)
+
+    return mentions
+
+
 def _worker_filter(
     index: int,
     records: List[Dict],
@@ -649,24 +723,52 @@ def _worker_filter(
 
 
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Filter aging-theory reviews with OpenAI")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Filter aging-theory reviews, retrieve full texts, and extract theory "
+            "mentions in a single pass."
+        )
+    )
     parser.add_argument("--input", default="data/pipeline/start_reviews.json")
-    parser.add_argument("--output", default="data/pipeline/filtered_reviews.json")
+    parser.add_argument(
+        "--output",
+        default="data/pipeline/aging_theories.json",
+        help=(
+            "Path to the consolidated JSON payload containing enriched review "
+            "records, raw theory snippets, and the canonical theory registry."
+        ),
+    )
+    parser.add_argument(
+        "--filtered-output",
+        default="data/pipeline/filtered_reviews.json",
+        help=(
+            "Optional path storing the raw list of relevant reviews prior to "
+            "full-text enrichment. Provide an empty string to skip writing this file."
+        ),
+    )
+    parser.add_argument(
+        "--failures",
+        default=None,
+        help=(
+            "Optional path for logging failed PDF/full-text retrieval attempts. "
+            "Defaults to <output>.failures.json when omitted."
+        ),
+    )
     parser.add_argument(
         "--model",
         default="gpt-5-nano",
         help=(
-            "OpenAI chat completion model identifier. The default gpt-5-nano tier "
-            "keeps this filtering stage inside the ~$10 per million articles "
-            "budget while preserving dependable relevance calls on batched "
-            "abstracts."
+            "OpenAI chat completion model identifier for the relevance filter. "
+            "The default gpt-5-nano tier keeps this stage inside the ~$10 per "
+            "million articles budget while preserving dependable batched "
+            "decisions."
         ),
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=0.5,
-        help="Seconds to wait between OpenAI calls to avoid rate limits.",
+        help="Seconds to wait between OpenAI calls during filtering.",
     )
     parser.add_argument(
         "--batch-size",
@@ -682,7 +784,7 @@ def main(argv: List[str] | None = None) -> int:
         "--concurrency",
         type=int,
         default=5,
-        help="Maximum number of concurrent OpenAI requests.",
+        help="Maximum number of concurrent OpenAI requests during filtering.",
     )
     parser.add_argument(
         "--cache",
@@ -699,6 +801,98 @@ def main(argv: List[str] | None = None) -> int:
             "Number of OS processes used for filtering. When omitted the script "
             "auto-scales based on the record volume, aiming for roughly 25 reviews "
             "per worker while capping usage at the available CPU cores."
+        ),
+    )
+    parser.add_argument(
+        "--fulltext-processes",
+        type=int,
+        default=None,
+        help=(
+            "Worker count for the full-text enrichment stage. Defaults to a "
+            "single process for ≤100 records and os.cpu_count() otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--fulltext-concurrency",
+        choices=("process", "thread"),
+        default="process",
+        help="Concurrency model for full-text retrieval workers (process/thread).",
+    )
+    parser.add_argument(
+        "--entrez-interval",
+        type=float,
+        default=None,
+        help=(
+            "Minimum delay in seconds between Entrez requests. Defaults to "
+            "PUBMED_RATE_INTERVAL or 0.34 when unset."
+        ),
+    )
+    parser.add_argument(
+        "--entrez-max-attempts",
+        type=int,
+        default=None,
+        help=(
+            "Maximum retry attempts for Entrez HTTP 429/5xx responses. Defaults "
+            "to PUBMED_MAX_ATTEMPTS or 5 when unset."
+        ),
+    )
+    parser.add_argument(
+        "--entrez-retry-wait",
+        type=float,
+        default=None,
+        help=(
+            "Initial wait time for Entrez retry backoff. Defaults to the "
+            "effective Entrez interval or PUBMED_RETRY_WAIT when provided."
+        ),
+    )
+    parser.add_argument(
+        "--entrez-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Number of PMCIDs to request per Entrez efetch call. Defaults to "
+            "PUBMED_BATCH_SIZE or 200 when unset."
+        ),
+    )
+    parser.add_argument(
+        "--extraction-model",
+        default="gpt-5-nano",
+        help=(
+            "OpenAI model used for theory extraction and registry normalisation. "
+            "Defaults to gpt-5-nano so long-form prompts remain affordable."
+        ),
+    )
+    parser.add_argument(
+        "--extraction-delay",
+        type=float,
+        default=0.5,
+        help="Seconds to wait between theory extraction OpenAI calls.",
+    )
+    parser.add_argument(
+        "--chunk-chars",
+        type=int,
+        default=12000,
+        help="Maximum number of characters per review chunk sent to the extractor.",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=1000,
+        help="Characters of overlap between successive chunks during extraction.",
+    )
+    parser.add_argument(
+        "--extraction-timeout",
+        type=float,
+        default=DEFAULT_OPENAI_TIMEOUT,
+        help="Timeout (in seconds) for each theory extraction API request.",
+    )
+    parser.add_argument(
+        "--extraction-processes",
+        type=int,
+        default=None,
+        help=(
+            "Number of worker processes for theory extraction. When omitted the "
+            "script auto-scales based on the relevant record volume."
         ),
     )
     args = parser.parse_args(argv)
@@ -723,6 +917,38 @@ def main(argv: List[str] | None = None) -> int:
     if args.processes is not None and args.processes <= 0:
         print("--processes must be a positive integer", file=sys.stderr)
         return 2
+    if args.fulltext_processes is not None and args.fulltext_processes <= 0:
+        print("--fulltext-processes must be a positive integer", file=sys.stderr)
+        return 3
+    if args.extraction_processes is not None and args.extraction_processes <= 0:
+        print("--extraction-processes must be a positive integer", file=sys.stderr)
+        return 4
+
+    def _env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            print(
+                f"Warning: invalid value for {name}={raw!r}; using {default:.2f}",
+                file=sys.stderr,
+            )
+            return default
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            print(
+                f"Warning: invalid value for {name}={raw!r}; using {default}",
+                file=sys.stderr,
+            )
+            return default
 
     cpu_total = os.cpu_count() or 1
     min_records_per_worker = 25
@@ -799,17 +1025,153 @@ def main(argv: List[str] | None = None) -> int:
                         f"worker-{index + 1} failed with error: {error}",
                         file=sys.stderr,
                     )
-                return 3
+                return 5
 
             kept = [record for _, chunk in sorted(results, key=lambda item: item[0]) for record in chunk]
+
+    filtered_output_path = (args.filtered_output or "").strip() or None
+    if filtered_output_path:
+        filtered_dir = os.path.dirname(filtered_output_path)
+        if filtered_dir:
+            os.makedirs(filtered_dir, exist_ok=True)
+        with open(filtered_output_path, "w", encoding="utf-8") as fh:
+            json.dump(kept, fh, ensure_ascii=False, indent=2)
+        print(f"Saved {len(kept)} relevant reviews to {filtered_output_path}")
+    else:
+        print(f"Identified {len(kept)} relevant reviews")
+
+    enriched_records: List[Dict]
+    failures: List[Dict]
+    if not kept:
+        enriched_records = []
+        failures = []
+    else:
+        total_relevant = len(kept)
+        if args.fulltext_processes is None:
+            cpu_count = os.cpu_count() or 1
+            fulltext_processes = cpu_count if total_relevant > 100 else 1
+        else:
+            fulltext_processes = args.fulltext_processes
+        fulltext_processes = max(1, min(fulltext_processes, total_relevant))
+
+        entrez_interval = (
+            args.entrez_interval
+            if args.entrez_interval is not None
+            else _env_float("PUBMED_RATE_INTERVAL", 0.34)
+        )
+        entrez_max_attempts = (
+            args.entrez_max_attempts
+            if args.entrez_max_attempts is not None
+            else _env_int("PUBMED_MAX_ATTEMPTS", 5)
+        )
+        raw_retry_wait = (
+            args.entrez_retry_wait
+            if args.entrez_retry_wait is not None
+            else os.environ.get("PUBMED_RETRY_WAIT")
+        )
+        retry_wait_value = None
+        if raw_retry_wait is not None:
+            try:
+                retry_wait_value = float(raw_retry_wait)
+            except (TypeError, ValueError):
+                print(
+                    "Warning: invalid PUBMED_RETRY_WAIT value; using entrez interval",
+                    file=sys.stderr,
+                )
+                retry_wait_value = None
+        entrez_batch_size = (
+            args.entrez_batch_size
+            if args.entrez_batch_size is not None
+            else _env_int("PUBMED_BATCH_SIZE", 200)
+        )
+
+        enriched_records, failures = enrich_records(
+            kept,
+            processes=fulltext_processes,
+            concurrency=args.fulltext_concurrency,
+            rate_limiter=None,
+            entrez_interval=entrez_interval,
+            entrez_max_attempts=entrez_max_attempts,
+            entrez_retry_wait=retry_wait_value,
+            entrez_batch_size=max(1, entrez_batch_size),
+        )
+
+    if enriched_records:
+        relevant_count = len(enriched_records)
+        if args.extraction_processes is None:
+            auto_extract = min(
+                cpu_total,
+                max(1, math.ceil(relevant_count / min_records_per_worker)),
+            )
+        else:
+            auto_extract = args.extraction_processes
+        extraction_processes = max(1, min(auto_extract, relevant_count))
+
+        annotated_records = extract_theories(
+            enriched_records,
+            api_key,
+            args.extraction_model,
+            args.extraction_delay,
+            args.chunk_chars,
+            args.chunk_overlap,
+            extraction_processes,
+            args.extraction_timeout,
+        )
+    else:
+        annotated_records = []
+
+    if annotated_records:
+        theory_registry = build_theory_registry(
+            annotated_records, api_key, args.extraction_model, args.extraction_timeout
+        )
+    else:
+        theory_registry = {}
+
+    aggregated_theories = sorted(theory_registry.keys()) if theory_registry else []
+    raw_mentions = _collect_theory_mentions(annotated_records)
+    fulltext_with_text = sum(
+        1
+        for record in annotated_records
+        if isinstance(record.get("full_text"), str)
+        and record.get("full_text", "").strip()
+    )
+    metadata = {
+        "total_records": total_records,
+        "relevant_records": len(annotated_records),
+        "fulltext_with_content": fulltext_with_text,
+        "theory_mentions": len(raw_mentions),
+        "filter_model": args.model,
+        "extraction_model": args.extraction_model,
+    }
+
+    combined_payload = {
+        "articles": annotated_records,
+        "raw_theory_mentions": raw_mentions,
+        "aggregated_theories": aggregated_theories,
+        "theory_registry": theory_registry,
+        "metadata": metadata,
+    }
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as fh:
-        json.dump(kept, fh, ensure_ascii=False, indent=2)
+        json.dump(combined_payload, fh, ensure_ascii=False, indent=2)
 
-    print(f"Saved {len(kept)} relevant reviews to {args.output}")
+    failure_path = args.failures or f"{args.output}.failures.json"
+    if failures:
+        failure_dir = os.path.dirname(failure_path)
+        if failure_dir:
+            os.makedirs(failure_dir, exist_ok=True)
+        with open(failure_path, "w", encoding="utf-8") as fh:
+            json.dump(failures, fh, ensure_ascii=False, indent=2)
+        print(f"Logged {len(failures)} full-text failures to {failure_path}")
+    elif args.failures and os.path.exists(failure_path):
+        os.remove(failure_path)
+
+    print(
+        f"Saved {len(annotated_records)} enriched reviews and {len(raw_mentions)} theory snippets to {args.output}"
+    )
     return 0
 
 

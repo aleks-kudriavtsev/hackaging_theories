@@ -53,7 +53,6 @@ def _prepare_cached_stage_files(paths: run_pipeline.PipelinePaths) -> None:
     _write_json(Path(paths.openalex_reviews), [openalex_record])
     _write_json(Path(paths.google_scholar_reviews), [google_record])
     _write_json(Path(paths.filtered_reviews), [])
-    _write_json(Path(paths.fulltext_reviews), [])
     _write_json(
         Path(paths.ontology),
         {"ontology": {"final": {"groups": []}}},
@@ -130,8 +129,6 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
         "scripts/step1_pubmed_search.py",
         "scripts/step1b_openalex_search.py",
         "scripts/step2_filter_reviews.py",
-        "scripts/step3_fetch_fulltext.py",
-        "scripts/step4_extract_theories.py",
         "scripts/step5_generate_ontology.py",
         "scripts/step5_optimize_ontology.py",
     ]
@@ -147,21 +144,15 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
 
     step2_command = commands[2]
     assert Path(step2_command[step2_command.index("--input") + 1]) == Path(paths.start_reviews)
-    assert Path(step2_command[step2_command.index("--output") + 1]) == Path(paths.filtered_reviews)
+    assert Path(step2_command[step2_command.index("--filtered-output") + 1]) == Path(paths.filtered_reviews)
+    assert Path(step2_command[step2_command.index("--output") + 1]) == Path(paths.theories)
+    assert Path(step2_command[step2_command.index("--failures") + 1]) == Path(f"{paths.theories}.failures.json")
 
-    step3_command = commands[3]
-    assert Path(step3_command[step3_command.index("--input") + 1]) == Path(paths.filtered_reviews)
-    assert Path(step3_command[step3_command.index("--output") + 1]) == Path(paths.fulltext_reviews)
-
-    step4_command = commands[4]
-    assert Path(step4_command[step4_command.index("--input") + 1]) == Path(paths.fulltext_reviews)
-    assert Path(step4_command[step4_command.index("--output") + 1]) == Path(paths.theories)
-
-    step5_command = commands[5]
+    step5_command = commands[3]
     assert Path(step5_command[step5_command.index("--input") + 1]) == Path(paths.theories)
     assert Path(step5_command[step5_command.index("--output") + 1]) == Path(paths.ontology)
 
-    step5b_command = commands[6]
+    step5b_command = commands[4]
     assert Path(step5b_command[step5b_command.index("--input") + 1]) == Path(paths.ontology)
     assert Path(step5b_command[step5b_command.index("--output") + 1]) == Path(paths.ontology)
     assert (
@@ -219,7 +210,7 @@ def test_run_pipeline_surfaces_step_failures(tmp_path, monkeypatch, sample_sourc
             output_path = Path(command[command.index("--output") + 1])
             if not output_path.exists():
                 _write_json(output_path, [])
-        if "scripts/step3_fetch_fulltext.py" in command:
+        if "scripts/step2_filter_reviews.py" in command:
             raise subprocess.CalledProcessError(returncode=1, cmd=command)
         return subprocess.CompletedProcess(args=command, returncode=0)
 
@@ -228,12 +219,12 @@ def test_run_pipeline_surfaces_step_failures(tmp_path, monkeypatch, sample_sourc
     with pytest.raises(SystemExit) as excinfo:
         run_pipeline.main(["--workdir", str(tmp_path), "--force"])
 
-    assert str(excinfo.value) == "Step 'Fetch PMC full texts' failed with exit code 1."
-    assert any("scripts/step3_fetch_fulltext.py" in command for command in commands)
+    assert str(excinfo.value) == "Step 'Filter reviews and extract theories' failed with exit code 1."
+    assert any("scripts/step2_filter_reviews.py" in command for command in commands)
     assert Path(paths.start_reviews).exists()
 
 
-def test_step4_cache_without_registry_triggers_regeneration(tmp_path, monkeypatch):
+def test_step2_cache_without_registry_triggers_regeneration(tmp_path, monkeypatch):
     paths = run_pipeline.build_paths(str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
@@ -252,10 +243,10 @@ def test_step4_cache_without_registry_triggers_regeneration(tmp_path, monkeypatc
     assert result == 0
 
     executed_scripts = [cmd[1] for cmd in commands]
-    assert "scripts/step4_extract_theories.py" in executed_scripts
+    assert "scripts/step2_filter_reviews.py" in executed_scripts
 
 
-def test_step4_cache_with_registry_is_skipped(tmp_path, monkeypatch):
+def test_step2_cache_with_registry_is_skipped(tmp_path, monkeypatch):
     paths = run_pipeline.build_paths(str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
@@ -274,4 +265,4 @@ def test_step4_cache_with_registry_is_skipped(tmp_path, monkeypatch):
     assert result == 0
 
     executed_scripts = [cmd[1] for cmd in commands]
-    assert "scripts/step4_extract_theories.py" not in executed_scripts
+    assert "scripts/step2_filter_reviews.py" not in executed_scripts

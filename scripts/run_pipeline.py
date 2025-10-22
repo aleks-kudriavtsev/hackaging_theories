@@ -277,7 +277,6 @@ class PipelinePaths:
     google_scholar_reviews: str
     start_reviews: str
     filtered_reviews: str
-    fulltext_reviews: str
     theories: str
     ontology: str
 
@@ -290,7 +289,6 @@ def build_paths(workdir: str) -> PipelinePaths:
         google_scholar_reviews=os.path.join(workdir, "start_reviews_google_scholar.json"),
         start_reviews=os.path.join(workdir, "start_reviews.json"),
         filtered_reviews=os.path.join(workdir, "filtered_reviews.json"),
-        fulltext_reviews=os.path.join(workdir, "filtered_reviews_fulltext.json"),
         theories=os.path.join(workdir, "aging_theories.json"),
         ontology=os.path.join(workdir, "aging_ontology.json"),
     )
@@ -387,10 +385,11 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         dest="theory_model",
         default="gpt-5-nano",
         help=(
-            "OpenAI model used for theory extraction (step 4). Defaults to gpt-5-"
-            "nano, which offers enough context for consolidated review prompts "
-            "while keeping token costs in line with the $10 per million articles "
-            "budget. (--extract-model is accepted for backwards compatibility.)"
+            "OpenAI model used for the theory extraction phase embedded in step 2. "
+            "Defaults to gpt-5-nano, which offers enough context for consolidated "
+            "review prompts while keeping token costs in line with the $10 per "
+            "million articles budget. (--extract-model is accepted for backwards "
+            "compatibility.)"
         ),
     )
     parser.add_argument(
@@ -410,8 +409,8 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=float,
         default=0.5,
         help=(
-            "Delay between OpenAI calls during theory extraction (seconds). "
-            "(--extract-delay is accepted for backwards compatibility.)"
+            "Delay between OpenAI calls during the step 2 theory extraction phase "
+            "(seconds). (--extract-delay is accepted for backwards compatibility.)"
         ),
     )
     parser.add_argument(
@@ -420,8 +419,9 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         dest="theory_processes",
         type=int,
         help=(
-            "Number of worker processes to use during step 4 theory extraction. "
-            "(--extract-processes is accepted for backwards compatibility.)"
+            "Number of worker processes to use during the integrated step 2 theory "
+            "extraction stage. (--extract-processes is accepted for backwards "
+            "compatibility.)"
         ),
     )
     parser.add_argument(
@@ -431,8 +431,9 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=int,
         default=12000,
         help=(
-            "Maximum characters from each review chunk sent to the LLM during "
-            "step 4. (--extract-chunk-chars is accepted for backwards compatibility.)"
+            "Maximum characters from each review chunk sent to the step 2 theory "
+            "extractor. (--extract-chunk-chars is accepted for backwards "
+            "compatibility.)"
         ),
     )
     parser.add_argument(
@@ -443,8 +444,8 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         default=1000,
         help=(
             "Number of characters to overlap between successive review chunks "
-            "in step 4. (--extract-chunk-overlap is accepted for backwards "
-            "compatibility.)"
+            "during the step 2 extraction stage. (--extract-chunk-overlap is accepted "
+            "for backwards compatibility.)"
         ),
     )
     parser.add_argument(
@@ -658,98 +659,49 @@ def main(argv: List[str] | None = None) -> int:
         json.dump(merged_records, handle, ensure_ascii=False, indent=2)
     print(f"Merged {len(merged_records)} unique records into {paths.start_reviews}")
 
-    # Step 2 – LLM-based filtering
+    # Step 2 – Filter, fetch full text and extract theories
     ensure_env("OPENAI_API_KEY", "Step 2")
-    if not maybe_skip(paths.filtered_reviews, args.force, "step 2"):
+    registry_snapshot = _load_theory_registry(paths.theories)
+    step2_outputs_ready = os.path.exists(paths.filtered_reviews) and registry_snapshot is not None
+    if args.force or not step2_outputs_ready:
         if not os.path.exists(paths.start_reviews):
             raise SystemExit(
                 f"Step 2 requires the output from step 1 ({paths.start_reviews}) to exist."
             )
-        run_step(
-            [
-                sys.executable,
-                "scripts/step2_filter_reviews.py",
-                "--input",
-                paths.start_reviews,
-                "--output",
-                paths.filtered_reviews,
-                "--model",
-                args.filter_model,
-                "--delay",
-                str(args.filter_delay),
-                "--cache",
-                str(filter_cache_path),
-                *(
-                    ["--processes", str(args.filter_processes)]
-                    if args.filter_processes is not None
-                    else []
-                ),
-            ],
-            "Filter reviews with OpenAI",
-        )
-
-    # Step 3 – Retrieve PMC full texts
-    if not maybe_skip(paths.fulltext_reviews, args.force, "step 3"):
-        if not os.path.exists(paths.filtered_reviews):
-            raise SystemExit(
-                f"Step 3 requires the output from step 2 ({paths.filtered_reviews}) to exist."
-            )
-        run_step(
-            [
-                sys.executable,
-                "scripts/step3_fetch_fulltext.py",
-                "--input",
-                paths.filtered_reviews,
-                "--output",
-                paths.fulltext_reviews,
-            ],
-            "Fetch PMC full texts",
-        )
-
-    # Step 4 – Extract theories via LLM
-    ensure_env("OPENAI_API_KEY", "Step 4")
-    skip_step4 = False
-    if not args.force:
-        registry = _load_theory_registry(paths.theories)
-        if registry is not None:
-            print(
-                f"Skipping step 4; {paths.theories} already exists. Use --force to regenerate."
-            )
-            skip_step4 = True
-        else:
-            status = "missing" if not os.path.exists(paths.theories) else "outdated or corrupt"
-            print(
-                f"Cached step 4 output at {paths.theories} is {status}; regenerating."
-            )
-
-    if not skip_step4:
-        if not os.path.exists(paths.fulltext_reviews):
-            raise SystemExit(
-                f"Step 4 requires the output from step 3 ({paths.fulltext_reviews}) to exist."
-            )
-        run_step(
-            [
-                sys.executable,
-                "scripts/step4_extract_theories.py",
-                "--input",
-                paths.fulltext_reviews,
-                "--output",
-                paths.theories,
-                "--model",
-                args.theory_model,
-                "--delay",
-                str(args.theory_delay),
-                "--chunk-chars",
-                str(args.chunk_chars),
-                "--chunk-overlap",
-                str(args.chunk_overlap),
-                *(
-                    ["--processes", str(args.theory_processes)]
-                    if args.theory_processes is not None
-                    else []
-                ),
-            ],
-            "Extract theories from reviews",
+        step2_cmd: List[str] = [
+            sys.executable,
+            "scripts/step2_filter_reviews.py",
+            "--input",
+            paths.start_reviews,
+            "--filtered-output",
+            paths.filtered_reviews,
+            "--output",
+            paths.theories,
+            "--model",
+            args.filter_model,
+            "--delay",
+            str(args.filter_delay),
+            "--cache",
+            str(filter_cache_path),
+            "--extraction-model",
+            args.theory_model,
+            "--extraction-delay",
+            str(args.theory_delay),
+            "--chunk-chars",
+            str(args.chunk_chars),
+            "--chunk-overlap",
+            str(args.chunk_overlap),
+            "--failures",
+            f"{paths.theories}.failures.json",
+        ]
+        if args.filter_processes is not None:
+            step2_cmd.extend(["--processes", str(args.filter_processes)])
+        if args.theory_processes is not None:
+            step2_cmd.extend(["--extraction-processes", str(args.theory_processes)])
+        run_step(step2_cmd, "Filter reviews and extract theories")
+    else:
+        print(
+            f"Skipping step 2; {paths.theories} already exists. Use --force to regenerate.",
         )
 
     # Step 5 – Ontology generation
@@ -757,7 +709,7 @@ def main(argv: List[str] | None = None) -> int:
     if not maybe_skip(paths.ontology, args.force, "step 5"):
         if not os.path.exists(paths.theories):
             raise SystemExit(
-                f"Step 5 requires the output from step 4 ({paths.theories}) to exist."
+                f"Step 5 requires the output from step 2 ({paths.theories}) to exist."
             )
         run_step(
             [
@@ -863,8 +815,7 @@ def main(argv: List[str] | None = None) -> int:
     print("\nPipeline completed. Results available at:")
     print(f"  Step 1 metadata: {paths.start_reviews}")
     print(f"  Step 2 filtered: {paths.filtered_reviews}")
-    print(f"  Step 3 full texts: {paths.fulltext_reviews}")
-    print(f"  Step 4 theories: {paths.theories}")
+    print(f"  Step 2 annotations: {paths.theories}")
     print(f"  Step 5 ontology: {paths.ontology}")
     outputs = collector_config.get("outputs") if 'collector_config' in locals() else None
     if isinstance(outputs, Mapping):
