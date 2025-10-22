@@ -355,6 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         pipeline_args.extend(["--limit", str(args.limit)])
     if args.force:
         pipeline_args.append("--force")
+    filter_cache_path = workdir / "filter_cache.json"
+    pipeline_args.extend(["--filter-cache", str(filter_cache_path)])
 
     logger.info("Running review pipeline with args: %s", pipeline_args)
     pipeline_result = run_pipeline.main(pipeline_args)

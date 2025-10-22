@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import importlib.util
+import json
 import pytest
 
 
@@ -127,6 +128,88 @@ def test_filter_records_retries_failed_items(monkeypatch: pytest.MonkeyPatch) ->
     assert responses == []
     assert records[0]["llm_filter"]["explanation"] == "Retry success"
     assert records[1]["llm_filter"]["relevant"] is False
+
+
+def test_async_filter_records_uses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    records = [_record("cached", "Aging focus", "Focuses on aging theory")]
+
+    cache_path = tmp_path / "cache.json"
+    cache_payload = {
+        "id:cached": {"relevant": True, "explanation": "Cached decision"},
+    }
+    cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
+    cache_store = step2.load_decision_cache(cache_path)
+
+    called = False
+
+    async def fake_call_openai(*args, **kwargs):  # pragma: no cover - should not run
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(step2, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "AsyncOpenAI", _DummyAsyncOpenAI)
+
+    kept = asyncio.run(
+        step2.async_filter_records(
+            records,
+            "key",
+            "model",
+            delay=0,
+            batch_size=1,
+            concurrency=1,
+            cache=cache_store,
+            cache_path=str(cache_path),
+        )
+    )
+
+    assert not called
+    assert len(kept) == 1
+    assert kept[0]["id"] == "cached"
+    assert kept[0]["llm_filter"]["explanation"] == "Cached decision"
+
+
+def test_async_filter_records_persists_new_decisions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    records = [_record("new", "Fresh aging review", "Discusses aging theory extensively")]
+
+    responses = [
+        [
+            {"relevant": True, "explanation": "Looks good"},
+        ]
+    ]
+
+    async def fake_call_openai(*args, **kwargs):
+        return responses.pop(0)
+
+    cache_path = tmp_path / "cache.json"
+    cache_store = step2.load_decision_cache(cache_path)
+
+    monkeypatch.setattr(step2, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(step2, "AsyncOpenAI", _DummyAsyncOpenAI)
+
+    kept = asyncio.run(
+        step2.async_filter_records(
+            records,
+            "key",
+            "model",
+            delay=0,
+            batch_size=1,
+            concurrency=1,
+            cache=cache_store,
+            cache_path=str(cache_path),
+        )
+    )
+
+    assert kept and kept[0]["llm_filter"]["relevant"] is True
+    assert responses == []
+    saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    expected_keys = step2._record_cache_keys(records[0])
+    assert expected_keys
+    for key in expected_keys:
+        assert key in saved
+        assert saved[key]["relevant"] is True
 
 
 def test_single_item_retry_accepts_legacy_schema(

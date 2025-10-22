@@ -29,7 +29,8 @@ import math
 import os
 import sys
 from multiprocessing import Process, Queue
-from typing import Dict, Iterable, List, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
 from openai import AsyncOpenAI
 
@@ -224,6 +225,99 @@ def _parse_batch_response(
     return processed, sorted(set(fallback))
 
 
+def _normalise_doi(doi: str | None) -> str | None:
+    if not doi:
+        return None
+    cleaned = doi.strip().lower()
+    if not cleaned:
+        return None
+    prefixes = (
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "doi:",
+    )
+    for prefix in prefixes:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    return cleaned.strip() or None
+
+
+def _record_cache_keys(record: Mapping[str, object]) -> List[str]:
+    keys: List[str] = []
+
+    doi_value = record.get("doi")
+    if isinstance(doi_value, str):
+        normalised = _normalise_doi(doi_value)
+        if normalised:
+            keys.append(f"doi:{normalised}")
+
+    pmid = record.get("pmid")
+    if isinstance(pmid, str):
+        cleaned = pmid.strip()
+        if cleaned:
+            keys.append(f"pmid:{cleaned}")
+
+    openalex = record.get("openalex_id")
+    if isinstance(openalex, str):
+        cleaned = openalex.strip()
+        if cleaned:
+            keys.append(f"openalex:{cleaned}")
+
+    generic_id = record.get("id")
+    if isinstance(generic_id, str):
+        cleaned = generic_id.strip()
+        if cleaned:
+            keys.append(f"id:{cleaned.lower()}")
+
+    title = record.get("title")
+    if isinstance(title, str):
+        cleaned = " ".join(title.split()).lower()
+        if cleaned:
+            year = record.get("publication_year")
+            if isinstance(year, int):
+                keys.append(f"title:{cleaned}|year:{year}")
+            elif isinstance(year, str) and year.strip():
+                keys.append(f"title:{cleaned}|year:{year.strip()}")
+            keys.append(f"title:{cleaned}")
+
+    if not keys:
+        abstract = record.get("abstract")
+        if isinstance(abstract, str):
+            cleaned = " ".join(abstract.split()).lower()
+            if cleaned:
+                keys.append(f"abstract:{cleaned[:200]}")
+
+    return keys
+
+
+def load_decision_cache(path: str | os.PathLike[str] | None) -> Dict[str, Dict]:
+    if not path:
+        return {}
+
+    cache_path = Path(path)
+    if not cache_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        print(f"Warning: could not decode cache at {cache_path}: {err}", file=sys.stderr)
+        return {}
+
+    cache: Dict[str, Dict] = {}
+    if isinstance(payload, Mapping):
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                continue
+            normalized = _normalize_item(value)
+            if normalized is not None:
+                cache[key] = normalized
+
+    return cache
+
+
 async def async_filter_records(
     records: Iterable[Dict],
     api_key: str,
@@ -233,6 +327,8 @@ async def async_filter_records(
     batch_size: int = 5,
     concurrency: int = 5,
     progress_prefix: str | None = None,
+    cache: MutableMapping[str, Dict] | None = None,
+    cache_path: str | os.PathLike[str] | None = None,
 ) -> List[Dict]:
     records_list = list(records)
 
@@ -241,8 +337,42 @@ async def async_filter_records(
     if concurrency <= 0:
         raise ValueError("concurrency must be positive")
 
+    cache_map: MutableMapping[str, Dict]
+    if cache is None:
+        cache_map = {}
+    else:
+        cache_map = cache
+
+    cache_path_str = str(cache_path) if cache_path is not None else None
+
+    record_keys_list = [_record_cache_keys(record) for record in records_list]
+    pending_records: List[Dict] = []
+    pending_keys: List[List[str]] = []
+    pending_original_indices: List[int] = []
+    cached_hits: List[int] = []
+    cached_updates: List[Tuple[List[str], Dict]] = []
+
+    for idx, record in enumerate(records_list):
+        keys = record_keys_list[idx]
+        decision: Dict | None = None
+        for key in keys:
+            if key and key in cache_map:
+                decision = dict(cache_map[key])
+                break
+        if decision is not None:
+            record["llm_filter"] = dict(decision)
+            cached_hits.append(idx)
+            missing = [key for key in keys if key and key not in cache_map]
+            if missing:
+                cached_updates.append((missing, dict(decision)))
+        else:
+            pending_records.append(record)
+            pending_keys.append(keys)
+            pending_original_indices.append(idx)
+
     semaphore = asyncio.Semaphore(concurrency)
     progress_lock = asyncio.Lock()
+    cache_write_lock = asyncio.Lock()
     processed_total = 0
     kept_total = 0
 
@@ -260,9 +390,60 @@ async def async_filter_records(
                     flush=True,
                 )
 
+        async def persist_entries(entries: Sequence[Tuple[Sequence[str], Mapping[str, object]]]) -> None:
+            if not entries:
+                return
+            async with cache_write_lock:
+                changed = False
+                for keys, decision in entries:
+                    normalized = _normalize_item(dict(decision))
+                    if normalized is None:
+                        continue
+                    stored = dict(normalized)
+                    for key in keys:
+                        if not key:
+                            continue
+                        existing = cache_map.get(key)
+                        if existing == stored:
+                            continue
+                        cache_map[key] = stored
+                        changed = True
+                if changed and cache_path_str:
+                    cache_dir = os.path.dirname(cache_path_str)
+                    if cache_dir:
+                        os.makedirs(cache_dir, exist_ok=True)
+                    tmp_path = cache_path_str + ".tmp"
+                    with open(tmp_path, "w", encoding="utf-8") as handle:
+                        json.dump(cache_map, handle, ensure_ascii=False, indent=2)
+                    os.replace(tmp_path, cache_path_str)
+
+        if cached_updates:
+            await persist_entries(cached_updates)
+
+        if cached_hits:
+            print(
+                f"{prefix}Reused cached decisions for {len(cached_hits)} records",
+                flush=True,
+            )
+            for idx in cached_hits:
+                decision = records_list[idx].get("llm_filter", {})
+                relevant = False
+                if isinstance(decision, Mapping):
+                    relevant = decision.get("relevant") is True
+                await log_progress(relevant)
+
+        if not pending_records:
+            return [
+                record
+                for record in records_list
+                if record.get("llm_filter", {}).get("relevant") is True
+            ]
+
         async def process_batch(start: int) -> None:
-            batch = records_list[start : start + batch_size]
-            prompt = build_prompt(batch)
+            batch_records = pending_records[start : start + batch_size]
+            batch_keys = pending_keys[start : start + batch_size]
+            batch_indices = pending_original_indices[start : start + batch_size]
+            prompt = build_prompt(batch_records)
             processed_items: Dict[int, Dict] = {}
             fallback_indices: List[int] = []
             try:
@@ -274,22 +455,33 @@ async def async_filter_records(
                     delay,
                 )
             except RuntimeError as err:
+                if batch_indices:
+                    first = batch_indices[0] + 1
+                    last = batch_indices[-1] + 1
+                    range_desc = f"{first}-{last}" if first != last else str(first)
+                else:
+                    range_desc = str(start + 1)
                 print(
-                    f"{prefix}Batch {start + 1}-{start + len(batch)} failed with error: {err}. "
-                    "Retrying items individually.",
+                    f"{prefix}Batch {range_desc} failed with error: {err}. Retrying items individually.",
                     file=sys.stderr,
                 )
-                fallback_indices = list(range(len(batch)))
+                fallback_indices = list(range(len(batch_records)))
             else:
-                processed_items, fallback_indices = _parse_batch_response(batch, response)
+                processed_items, fallback_indices = _parse_batch_response(batch_records, response)
+
+            batch_updates: List[Tuple[List[str], Dict]] = []
 
             for offset, decision in processed_items.items():
-                record = batch[offset]
+                record = batch_records[offset]
                 record["llm_filter"] = decision
-                await log_progress(decision.get("relevant") is True)
+                relevant = decision.get("relevant") is True
+                await log_progress(relevant)
+                keys = [key for key in batch_keys[offset] if key]
+                if keys:
+                    batch_updates.append((keys, decision))
 
             for offset in fallback_indices:
-                record = batch[offset]
+                record = batch_records[offset]
                 single_prompt = build_prompt([record])
                 try:
                     single_response = await _call_openai(
@@ -300,8 +492,9 @@ async def async_filter_records(
                         delay,
                     )
                 except RuntimeError as err:
+                    record_number = batch_indices[offset] + 1 if offset < len(batch_indices) else start + offset + 1
                     print(
-                        f"{prefix}Record {start + offset + 1} failed after retry: {err}",
+                        f"{prefix}Record {record_number} failed after retry: {err}",
                         file=sys.stderr,
                     )
                     await log_progress(False)
@@ -313,21 +506,29 @@ async def async_filter_records(
                 if decision is not None:
                     record["llm_filter"] = decision
                     relevant = decision.get("relevant") is True
+                    keys = [key for key in batch_keys[offset] if key]
+                    if keys:
+                        batch_updates.append((keys, decision))
                 else:
+                    record_number = batch_indices[offset] + 1 if offset < len(batch_indices) else start + offset + 1
                     print(
-                        f"{prefix}Record {start + offset + 1} returned invalid JSON even after retry.",
+                        f"{prefix}Record {record_number} returned invalid JSON even after retry.",
                         file=sys.stderr,
                     )
                 if pending:
+                    record_number = batch_indices[offset] + 1 if offset < len(batch_indices) else start + offset + 1
                     print(
-                        f"{prefix}Record {start + offset + 1} still pending after retry; giving up.",
+                        f"{prefix}Record {record_number} still pending after retry; giving up.",
                         file=sys.stderr,
                     )
                 await log_progress(relevant)
 
+            if batch_updates:
+                await persist_entries(batch_updates)
+
         tasks = [
             asyncio.create_task(process_batch(start))
-            for start in range(0, len(records_list), batch_size)
+            for start in range(0, len(pending_records), batch_size)
         ]
         if tasks:
             await asyncio.gather(*tasks)
@@ -348,6 +549,8 @@ def filter_records(
     delay: float = 0.5,
     batch_size: int = 5,
     concurrency: int = 5,
+    cache: MutableMapping[str, Dict] | None = None,
+    cache_path: str | os.PathLike[str] | None = None,
 ) -> List[Dict]:
     """Synchronous helper mirroring :func:`async_filter_records`.
 
@@ -384,6 +587,8 @@ def filter_records(
                 delay=delay,
                 batch_size=batch_size,
                 concurrency=concurrency,
+                cache=cache,
+                cache_path=cache_path,
             )
         )
     finally:
@@ -480,6 +685,13 @@ def main(argv: List[str] | None = None) -> int:
         help="Maximum number of concurrent OpenAI requests.",
     )
     parser.add_argument(
+        "--cache",
+        help=(
+            "Optional JSON cache storing previous LLM relevance decisions. When provided, "
+            "the script skips cached records and appends new decisions after each batch."
+        ),
+    )
+    parser.add_argument(
         "--processes",
         type=int,
         default=None,
@@ -499,6 +711,14 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
+    cache_path = args.cache
+    cache_store = load_decision_cache(cache_path)
+    if cache_path:
+        print(
+            f"Loaded {len(cache_store)} cached decisions from {cache_path}",
+            flush=True,
+        )
+
     total_records = len(records)
     if args.processes is not None and args.processes <= 0:
         print("--processes must be a positive integer", file=sys.stderr)
@@ -516,6 +736,13 @@ def main(argv: List[str] | None = None) -> int:
     else:
         processes = 1
 
+    if cache_path and processes > 1:
+        print(
+            "Cache persistence requires single-process execution; forcing --processes=1.",
+            file=sys.stderr,
+        )
+        processes = 1
+
     if total_records == 0:
         kept: List[Dict] = []
     elif processes <= 1 or total_records <= 1:
@@ -527,6 +754,8 @@ def main(argv: List[str] | None = None) -> int:
                 delay=args.delay,
                 batch_size=args.batch_size,
                 concurrency=args.concurrency,
+                cache=cache_store,
+                cache_path=cache_path,
             )
         )
     else:
