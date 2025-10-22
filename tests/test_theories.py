@@ -263,6 +263,13 @@ def test_depth_deficits_groups_nodes_and_updates_report() -> None:
     assert [record.name for record in depth_deficits[1]] == ["Child A"]
     assert [record.name for record in depth_deficits[2]] == ["Grandchild"]
 
+    depth_summary = ontology.deficit_summary_by_depth(counts)
+    assert depth_summary[0]["total_deficit"] == 1
+    assert depth_summary[1]["total_deficit"] == 1
+    assert depth_summary[2]["total_deficit"] == 1
+    assert depth_summary[0]["nodes"][0]["name"] == "Root"
+    assert depth_summary[2]["nodes"][0]["deficit"] == 1
+
     report = ontology.format_coverage_report(counts)
     assert "Deficit summary by depth:" in report
     assert "Depth 2: total deficit" in report

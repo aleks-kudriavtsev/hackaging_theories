@@ -76,6 +76,43 @@ def test_audit_runtime_ontology_nodes_detects_missing_children(caplog):
         )
 
 
+def test_audit_runtime_node_counts_detects_discrepancies(caplog):
+    runtime_targets = {
+        "Root": {
+            "target": 1,
+            "subtheories": {
+                "OnlyRuntime": {"target": 1},
+            },
+        }
+    }
+    ontology_targets = {
+        "Root": {
+            "target": 1,
+            "subtheories": {
+                "OnlyRuntime": {"target": 1},
+                "MissingInRuntime": {"target": 1},
+            },
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        collect_theories.audit_runtime_node_counts(
+            runtime_targets,
+            ontology_targets,
+            strict=False,
+        )
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "node-count mismatch" in messages
+
+    with pytest.raises(SystemExit):
+        collect_theories.audit_runtime_node_counts(
+            runtime_targets,
+            ontology_targets,
+            strict=True,
+        )
+
+
 class DummyStateStore:
     def __init__(self):
         self.written = None
@@ -112,6 +149,9 @@ class DummyOntology:
         return "dummy coverage"
 
     def depth_deficits(self, _counts):
+        return {}
+
+    def deficit_summary_by_depth(self, _counts):
         return {}
 
 

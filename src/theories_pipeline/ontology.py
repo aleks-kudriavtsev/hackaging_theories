@@ -263,6 +263,27 @@ class TheoryOntology:
 
         return dict(sorted(grouped.items()))
 
+    def deficit_summary_by_depth(
+        self, counts: Mapping[str, int]
+    ) -> Dict[int, Dict[str, object]]:
+        """Summarise deficit information grouped by ontology depth."""
+
+        summary: Dict[int, Dict[str, object]] = {}
+        for depth, records in self.depth_deficits(counts).items():
+            summary[depth] = {
+                "total_deficit": sum(record.deficit or 0 for record in records),
+                "nodes": [
+                    {
+                        "name": record.name,
+                        "count": record.count,
+                        "target": record.target,
+                        "deficit": record.deficit,
+                    }
+                    for record in records
+                ],
+            }
+        return summary
+
     def format_coverage_report(self, counts: Mapping[str, int]) -> str:
         """Return a human-readable quota coverage report."""
 
@@ -283,17 +304,20 @@ class TheoryOntology:
                     status = f"deficit {deficit}"
                 lines.append(f"{indent}    - {name}: {record.count} / {target_text} ({status})")
 
-        depth_summary = self.depth_deficits(counts)
+        depth_summary = self.deficit_summary_by_depth(counts)
         if depth_summary:
             lines.append("")
             lines.append("Deficit summary by depth:")
-            for depth, records in depth_summary.items():
-                total_deficit = sum(record.deficit or 0 for record in records)
+            for depth, payload in depth_summary.items():
+                total_deficit = int(payload.get("total_deficit", 0))
+                nodes = payload.get("nodes", [])
                 label = ", ".join(
-                    f"{record.name} (-{record.deficit})" for record in records if record.deficit
+                    f"{entry['name']} (-{entry['deficit']})"
+                    for entry in nodes
+                    if entry.get("deficit")
                 )
                 lines.append(
-                    f"  Depth {depth}: total deficit {total_deficit} across {len(records)} nodes ({label})"
+                    f"  Depth {depth}: total deficit {total_deficit} across {len(nodes)} nodes ({label})"
                 )
         return "\n".join(lines)
 
