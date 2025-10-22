@@ -18,11 +18,12 @@ and duplicate control.
 - Run `python scripts/run_full_cycle.py --workdir data/pipeline --force` to rebuild
   `data/cache/bootstrap_ontology.json`. Inspect the `queries` and `reviews` sections in
   the cache file to confirm the new seeds were executed and captured.
-- When running with verification enabled, capture the intermediate hierarchies by
-  instantiating `BootstrapVerificationRecorder` around the review extraction loop (see
-  `theories_pipeline.review_bootstrap`). Each call to `record(...)` writes a
-  `bootstrap_results.jsonl` trace for manual inspection while `finalise()` creates a
-  `node_report.json` summary containing per-review node counts.
+- Enable verification either by passing `--verify-bootstrap` (and optionally
+  `--bootstrap-verify-dir <path>`) to `scripts/collect_theories.py` or by setting
+  `corpus.bootstrap.verification.enabled: true` in the config. The pipeline will persist
+  every extracted hierarchy to `bootstrap_results.jsonl` and emit a consolidated
+  `node_report.json` with `total_reviews`, `total_nodes`, and `total_leaf_nodes` so you
+  can track extraction coverage over time.
 
 ## Step 3 – Filtering & classification pass
 - After bootstrap completes, allow the classifier to filter noise by checking
@@ -45,7 +46,9 @@ and duplicate control.
 - Use `python -m theories_pipeline.review_bootstrap verify <path/to/bootstrap_results.jsonl>`
   to regenerate the verification report if the raw lines were edited or filtered. The
   CLI reuses the JSON lines trace and rewrites `node_report.json`, making it easier to
-  spot regressions in extracted theory counts between cycles.
+  spot regressions in extracted theory counts between cycles. The `summary` block also
+  mirrors the values stored in the pipeline run when verification is enabled, so report
+  diffs highlight node-growth regressions immediately.
 
 ## Cadence & governance
 - Target a full refresh every 4–6 weeks, with interim expansion-only runs when new

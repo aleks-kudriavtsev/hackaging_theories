@@ -61,6 +61,8 @@ from theories_pipeline.query_expansion import (
     queries_to_keywords,
 )
 from theories_pipeline.review_bootstrap import (
+    BootstrapResult,
+    BootstrapVerificationRecorder,
     ReviewDocument,
     build_bootstrap_ontology,
     extract_theories_from_review,
@@ -202,6 +204,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Abort the run when runtime targets and the final ontology diverge "
             "after bootstrap merging"
+        ),
+    )
+    parser.add_argument(
+        "--verify-bootstrap",
+        action="store_true",
+        help=(
+            "Persist intermediate bootstrap theory hierarchies and node counts to "
+            "disk for manual inspection"
+        ),
+    )
+    parser.add_argument(
+        "--bootstrap-verify-dir",
+        type=Path,
+        help=(
+            "Destination directory for bootstrap verification artefacts. "
+            "Defaults to data/cache/bootstrap_verification when verification is enabled"
         ),
     )
     precedence_note = "Overrides the {name} API key (CLI > config file > environment > defaults)"
@@ -537,6 +555,7 @@ def _run_bootstrap_phase(
     corpus_cfg: Mapping[str, Any],
     *,
     context: Mapping[str, Any],
+    verification_override: Mapping[str, Any] | None = None,
 ) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Sequence[ReviewDocument]]]:
     bootstrap_cfg_raw = corpus_cfg.get("bootstrap")
     if not isinstance(bootstrap_cfg_raw, Mapping):
@@ -565,6 +584,56 @@ def _run_bootstrap_phase(
     if isinstance(providers, Sequence) and not isinstance(providers, (str, bytes)):
         provider_filter = tuple(str(provider) for provider in providers)
 
+    verification_cfg_raw = bootstrap_cfg_raw.get("verification")
+    verification_cfg: Dict[str, Any] | None = None
+    if isinstance(verification_cfg_raw, Mapping):
+        verification_cfg = dict(verification_cfg_raw)
+    if verification_override:
+        override_dict = dict(verification_override)
+        if "enabled" not in override_dict:
+            override_dict["enabled"] = True
+        verification_cfg = (verification_cfg or {}) | override_dict
+
+    verification_info: Dict[str, Any] | None = None
+    recorder: BootstrapVerificationRecorder | None = None
+    verification_summary: Dict[str, Any] | None = None
+    if verification_cfg:
+        enabled_value = verification_cfg.get("enabled")
+        enabled = _coerce_bool(enabled_value) if enabled_value is not None else True
+        if enabled:
+            output_dir_value = verification_cfg.get("output_dir")
+            output_dir = Path(output_dir_value) if output_dir_value else Path(
+                "data/cache/bootstrap_verification"
+            )
+            overwrite_value = verification_cfg.get("overwrite")
+            overwrite = _coerce_bool(overwrite_value) if overwrite_value is not None else True
+            recorder = BootstrapVerificationRecorder(output_dir, overwrite=overwrite)
+            verification_info = {
+                "enabled": True,
+                "output_dir": str(output_dir),
+                "results_path": str(recorder.results_path),
+                "report_path": str(recorder.report_path),
+                "overwrite": overwrite,
+            }
+
+    def _finalise_verification() -> None:
+        nonlocal verification_summary, verification_info
+        if recorder is None:
+            return
+        if verification_summary is not None:
+            return
+        verification_summary = recorder.finalise()
+        if verification_info is not None:
+            verification_info["summary"] = verification_summary
+        if verification_summary is not None:
+            logger.info(
+                "Bootstrap verification summary: %d reviews, %d nodes (%d leaves) saved to %s",
+                int(verification_summary.get("total_reviews", 0)),
+                int(verification_summary.get("total_nodes", 0)),
+                int(verification_summary.get("total_leaf_nodes", 0)),
+                recorder.report_path,
+            )
+
     review_map = pull_top_cited_reviews(
         retriever,
         seed_queries,
@@ -580,14 +649,25 @@ def _run_bootstrap_phase(
 
     review_docs = [doc for documents in review_map.values() for doc in documents]
     if not review_docs:
-        return dict(bootstrap_cfg_raw), {}, review_map
+        _finalise_verification()
+        enriched_empty = dict(bootstrap_cfg_raw)
+        if verification_info is not None:
+            enriched_empty["verification"] = verification_info
+        return enriched_empty, {}, review_map
 
     max_theories = bootstrap_cfg_raw.get("max_theories")
     theory_cap = int(max_theories) if isinstance(max_theories, int) else None
-    extraction_results = [
-        extract_theories_from_review(review, llm_client=llm_client, max_theories=theory_cap)
-        for review in review_docs
-    ]
+    extraction_results: List[BootstrapResult] = []
+    try:
+        for review in review_docs:
+            result = extract_theories_from_review(
+                review, llm_client=llm_client, max_theories=theory_cap
+            )
+            extraction_results.append(result)
+            if recorder is not None:
+                recorder.record(result)
+    finally:
+        _finalise_verification()
     balance_cfg = bootstrap_cfg_raw.get("balance")
     max_children: int | None = None
     if isinstance(balance_cfg, Mapping):
@@ -605,6 +685,8 @@ def _run_bootstrap_phase(
 
     enriched_config = dict(bootstrap_cfg_raw)
     enriched_config["bootstrap_nodes"] = bootstrap_nodes
+    if verification_info is not None:
+        enriched_config["verification"] = verification_info
     return enriched_config, bootstrap_nodes, review_map
 
 
@@ -2179,11 +2261,17 @@ def run_pipeline(
         )
         base_targets = _quickstart_config(quickstart_node)
     context: Dict[str, Any] = {"base_query": args.query, "query": args.query}
+    verification_override: Dict[str, Any] | None = None
+    if getattr(args, "verify_bootstrap", False) or getattr(args, "bootstrap_verify_dir", None):
+        verification_override = {"enabled": True}
+        if getattr(args, "bootstrap_verify_dir", None):
+            verification_override["output_dir"] = args.bootstrap_verify_dir
     bootstrap_config, bootstrap_nodes, bootstrap_reviews = _run_bootstrap_phase(
         retriever,
         llm_client,
         corpus_cfg,
         context=context,
+        verification_override=verification_override,
     )
 
     if quickstart_active and quickstart_node and bootstrap_nodes:

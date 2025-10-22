@@ -260,6 +260,10 @@ corpus:
     max_theories: 10
     balance:
       max_children: 6
+    verification:
+      enabled: false
+      output_dir: data/cache/bootstrap_verification
+      overwrite: true
     cache_path: data/cache/bootstrap_ontology.json
     update_targets: true
   cache_dir: data/cache/literature
