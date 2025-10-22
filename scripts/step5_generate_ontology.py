@@ -227,7 +227,7 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
     payload = json.dumps(
         {
             "model": model,
-            "temperature": 0,
+            "temperature": 1,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
