@@ -152,7 +152,7 @@ performance:
   prefer_parallel_fetch: true
 
 collection:
-  target_per_theory: 8
+  target_per_theory: 10
 
 classification:
   llm:

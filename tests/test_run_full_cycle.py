@@ -186,3 +186,22 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         for question in QUESTION_COLUMNS
     ]
     assert len(accuracy_ground_truth) == len(QUESTION_COLUMNS)
+
+
+def test_cli_defaults_apply_updated_target_quota(tmp_path: Path) -> None:
+    parser = run_full_cycle.build_parser()
+    args = parser.parse_args([])
+
+    assert args.default_target == 10
+
+    workdir = tmp_path / "defaults"
+    _write_ontology(workdir)
+
+    ontology_path = workdir / "aging_ontology.json"
+    targets = run_full_cycle._targets_from_ontology(ontology_path, default_target=args.default_target)
+
+    assert targets["Cellular Mechanisms"]["target"] == 10
+
+    subtargets = targets["Cellular Mechanisms"].get("subtheories", {})
+    assert subtargets["Senescence Cascade"]["target"] == 10
+    assert subtargets["Telomere Attrition"]["target"] == 10
