@@ -19,7 +19,7 @@ if __package__ is None:  # pragma: no cover - convenience for direct execution
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
 
-from scripts import collect_theories, run_pipeline, score_progress
+from scripts import analyze_ground_truth, collect_theories, run_pipeline, score_progress
 from theories_pipeline import question_validation
 
 logger = logging.getLogger(__name__)
@@ -286,6 +286,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the question validation report to this JSON file when provided.",
     )
     parser.add_argument(
+        "--paper-answers-csv",
+        type=Path,
+        help=(
+            "Write a CSV with per-question validation results when provided together "
+            "with --questions-ground-truth."
+        ),
+    )
+    parser.add_argument(
         "--fail-on-question-mismatch",
         action="store_true",
         help=(
@@ -334,6 +342,9 @@ def _prepare_collector_config(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.paper_answers_csv and not args.questions_ground_truth:
+        parser.error("--paper-answers-csv requires --questions-ground-truth")
 
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -400,13 +411,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.questions_ground_truth:
             try:
-                report = question_validation.validate_from_paths(
-                    questions_path,
-                    Path(args.questions_ground_truth),
-                )
+                analysis_rows = None
+                if args.paper_answers_csv:
+                    report, analysis_rows = analyze_ground_truth.run_analysis(
+                        questions_path,
+                        Path(args.questions_ground_truth),
+                    )
+                else:
+                    report = question_validation.validate_from_paths(
+                        questions_path,
+                        Path(args.questions_ground_truth),
+                    )
                 logger.info("\n%s", question_validation.format_report(report))
                 if args.questions_report:
                     question_validation.write_report(report, Path(args.questions_report))
+                if args.paper_answers_csv and analysis_rows is not None:
+                    analyze_ground_truth.write_answer_rows(
+                        analysis_rows,
+                        Path(args.paper_answers_csv),
+                    )
                 if report.has_failures and args.fail_on_question_mismatch:
                     return 1
             except Exception:
