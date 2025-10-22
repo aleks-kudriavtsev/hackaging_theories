@@ -10,6 +10,7 @@ from theories_pipeline.outputs import (
     export_question_answers,
     export_theories,
     export_theory_papers,
+    QUESTION_COLUMNS,
 )
 from theories_pipeline.ontology import TheoryOntology
 from theories_pipeline.theories import TheoryAssignment, aggregate_theory_assignments
@@ -68,10 +69,9 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         row = next(reader)
         assert row["theory_id"].startswith("activity-theory")
         assert row["number_of_collected_papers"] == "1"
-        assert "target" in reader.fieldnames
-        assert "deficit" in reader.fieldnames
-        assert row["target"] == ""
-        assert row["deficit"] == ""
+        fieldnames = reader.fieldnames or []
+        assert "target" not in fieldnames
+        assert "deficit" not in fieldnames
 
     with theory_papers_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -87,25 +87,8 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             "paper_url",
             "paper_name",
             "paper_year",
-            "Q1",
-            "Q1_confidence",
-            "Q2",
-            "Q2_confidence",
-            "Q3",
-            "Q3_confidence",
-            "Q4",
-            "Q4_confidence",
-            "Q5",
-            "Q5_confidence",
-            "Q6",
-            "Q6_confidence",
-            "Q7",
-            "Q7_confidence",
-            "Q8",
-            "Q8_confidence",
-            "Q9",
-            "Q9_confidence",
+            *QUESTION_COLUMNS,
         }
         assert expected_columns.issubset(set(reader.fieldnames or []))
+        assert not any(column.endswith("_confidence") for column in reader.fieldnames or [])
         assert row["Q1"] == "Answer"
-        assert row["Q1_confidence"] == "0.750"

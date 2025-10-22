@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Collection, Dict, Iterable, List, Mapping, Sequence
 
 import sys
 
@@ -19,7 +19,19 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:  # pragma: no cover - convenience for scripts
     sys.path.insert(0, str(SRC_PATH))
 
-from theories_pipeline.outputs import QUESTION_COLUMNS, QUESTION_CONFIDENCE_COLUMNS  # noqa: E402
+from itertools import zip_longest
+
+from theories_pipeline import outputs as outputs_module  # noqa: E402
+
+QUESTION_COLUMNS = tuple(outputs_module.QUESTION_COLUMNS)
+_CONFIDENCE_COLUMNS = tuple(getattr(outputs_module, "QUESTION_CONFIDENCE_COLUMNS", ()))
+QUESTION_CONFIDENCE_LOOKUP = {
+    question: confidence
+    for question, confidence in zip_longest(
+        QUESTION_COLUMNS, _CONFIDENCE_COLUMNS, fillvalue=None
+    )
+    if question is not None and confidence
+}
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +130,14 @@ def _compute_log_score(
     return total, contributions
 
 
-def _collect_deficits(rows: Iterable[Mapping[str, str]]) -> List[Dict[str, Any]]:
+def _collect_deficits(
+    rows: Sequence[Mapping[str, str]]
+) -> tuple[List[Dict[str, Any]], bool]:
+    has_target_column = any("target" in row for row in rows)
+    has_deficit_column = any("deficit" in row for row in rows)
+    if not has_target_column or not has_deficit_column:
+        return [], False
+
     deficits: List[Dict[str, Any]] = []
     for row in rows:
         target = _parse_int(row.get("target"))
@@ -135,12 +154,30 @@ def _collect_deficits(rows: Iterable[Mapping[str, str]]) -> List[Dict[str, Any]]
             }
         )
     deficits.sort(key=lambda item: (-item["deficit"], item["theory_name"] or ""))
-    return deficits
+    return deficits, True
 
 
-def _summarise_questions(rows: Iterable[Mapping[str, str]]) -> Dict[str, QuestionMetrics]:
+def _resolve_confidence_column(
+    question_id: str, available_fields: Collection[str]
+) -> str | None:
+    direct = QUESTION_CONFIDENCE_LOOKUP.get(question_id)
+    if direct and direct in available_fields:
+        return direct
+
+    fallback = f"{question_id}_confidence"
+    if fallback in available_fields:
+        return fallback
+    return None
+
+
+def _summarise_questions(rows: Sequence[Mapping[str, str]]) -> Dict[str, QuestionMetrics]:
     metrics: Dict[str, QuestionMetrics] = {}
-    for question_id, confidence_column in zip(QUESTION_COLUMNS, QUESTION_CONFIDENCE_COLUMNS):
+    available_fields: set[str] = set()
+    for row in rows:
+        available_fields.update(row.keys())
+
+    for question_id in QUESTION_COLUMNS:
+        confidence_column = _resolve_confidence_column(question_id, available_fields)
         answered = 0
         yes_count = 0
         blank_count = 0
@@ -153,9 +190,10 @@ def _summarise_questions(rows: Iterable[Mapping[str, str]]) -> Dict[str, Questio
                 answered += 1
                 if answer.lower().startswith("yes"):
                     yes_count += 1
-            confidence_value = _parse_float(row.get(confidence_column))
-            if confidence_value is not None:
-                confidences.append(confidence_value)
+            if confidence_column:
+                confidence_value = _parse_float(row.get(confidence_column))
+                if confidence_value is not None:
+                    confidences.append(confidence_value)
         metrics[question_id] = QuestionMetrics(
             question_id=question_id,
             answered=answered,
@@ -172,6 +210,7 @@ def _build_markdown(
     theory_rows: Sequence[Mapping[str, str]],
     question_metrics: Mapping[str, QuestionMetrics],
     deficits: Sequence[Mapping[str, Any]],
+    deficit_data_available: bool,
     question_row_count: int,
     timestamp: str,
 ) -> str:
@@ -213,7 +252,9 @@ def _build_markdown(
 
     lines.append("## Target Deficits")
     lines.append("")
-    if deficits:
+    if not deficit_data_available:
+        lines.append("Target/deficit columns not present in export.")
+    elif deficits:
         lines.append("| Theory | Papers | Target | Deficit |")
         lines.append("| --- | ---: | ---: | ---: |")
         for entry in deficits:
@@ -240,7 +281,7 @@ def generate_progress_report(
     question_rows = _read_csv(questions_path)
 
     log_score, log_contributions = _compute_log_score(theory_rows)
-    deficits = _collect_deficits(theory_rows)
+    deficits, deficit_data_available = _collect_deficits(theory_rows)
     question_metrics = _summarise_questions(question_rows)
 
     alerts: List[str] = []
@@ -288,6 +329,7 @@ def generate_progress_report(
         },
         "log_score_breakdown": log_contributions,
         "deficits": deficits,
+        "deficit_data_available": deficit_data_available,
         "alerts": alerts,
     }
 
@@ -301,6 +343,7 @@ def generate_progress_report(
         theory_rows,
         question_metrics,
         deficits,
+        deficit_data_available,
         len(question_rows),
         timestamp,
     )
