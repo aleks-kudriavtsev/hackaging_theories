@@ -146,64 +146,44 @@ inter-request delay to respect OpenAI rate limits. For long queues, write to a
 dated `--output` path so that you can resume from the last successful file if a
 network failure stops the run.
 
-### Step 3 – Full-text harvesting (`scripts/step3_fetch_fulltext.py`)
+### Step 2 – Filter + full-text enrichment (`scripts/step2_filter_reviews.py`)
 
 **Canonical command**
 
 ```bash
-python scripts/step3_fetch_fulltext.py \
-    --input data/pipeline/filtered_reviews.json \
-    --output data/pipeline/filtered_reviews_fulltext.json
-```
-
-**Key flags and inputs**
-
-* `--failures` records unresolved downloads to `<output>.failures.json` by
-  default; point it elsewhere when you want a persistent retry queue.
-* `--processes` and `--concurrency` let you choose a process pool or thread pool
-  for PMC fetches; the default automatically switches to multi-process once the
-  queue exceeds 100 items.
-* `--entrez-interval`, `--entrez-max-attempts`, `--entrez-retry-wait`, and
-  `--entrez-batch-size` map onto the PubMed E-utilities rate controls and accept
-  environment variable overrides (`PUBMED_RATE_INTERVAL`, `PUBMED_MAX_ATTEMPTS`,
-  etc.).
-
-**Parallelism and staging tips**
-
-Install `pdfminer.six` (and optionally `pdf2image` + `pytesseract`) when you
-expect scanned PDFs. The script creates worker-safe rate limiters so you can
-increase `--processes` on larger machines. When PMC throttles with HTTP 429, the
-exponential backoff kicks in automatically, but you can resume stubborn IDs by
-rerunning with the same `--failures` log after removing the recovered entries.
-
-### Step 4 – Theory extraction (`scripts/step4_extract_theories.py`)
-
-**Canonical command**
-
-```bash
-python scripts/step4_extract_theories.py \
-    --input data/pipeline/filtered_reviews_fulltext.json \
+python scripts/step2_filter_reviews.py \
+    --input data/pipeline/start_reviews.json \
+    --filtered-output data/pipeline/filtered_reviews.json \
     --output data/pipeline/aging_theories.json \
-    --processes 4
+    --processes 4 --extraction-processes 4
 ```
 
 **Key flags and inputs**
 
-* `--chunk-chars` and `--chunk-overlap` control how long each review excerpt is
-  and how much context overlaps between adjacent prompts, keeping prompts inside
-  the model window.
-* `--request-timeout` and `--delay` tune API pacing when OpenAI responds slowly
-  or you need to back off aggressive retry loops.
-* `--checkpoint` persists per-review annotations; it defaults to the output path
-  so reruns skip already processed entries and append only the missing ones.
+* `--model`, `--delay`, `--batch-size`, `--cache`, and `--processes` govern the
+  initial relevance filter against titles/abstracts.
+* `--fulltext-processes` and `--fulltext-concurrency` switch between process and
+  thread workers for PMC/OpenAlex retrieval when you want to override the
+  auto-scaling defaults.
+* `--entrez-interval`, `--entrez-max-attempts`, `--entrez-retry-wait`, and
+  `--entrez-batch-size` mirror the PubMed E-utilities knobs exposed in
+  `step3_fetch_fulltext.py`; environment variables with the same names continue
+  to work.
+* `--extraction-model`, `--extraction-processes`, `--extraction-delay`,
+  `--chunk-chars`, and `--chunk-overlap` configure the gpt-5-nano theory
+  extraction pipeline that now runs immediately after full-text retrieval.
+* `--failures` writes unresolved PDF/PMC downloads to `<output>.failures.json`
+  so you can retry them later without touching already-processed articles.
 
 **Parallelism and staging tips**
 
-Provide `OPENAI_API_KEY` before launching. The script auto-scales worker
-processes based on queue size but honours any explicit `--processes` value. For
-long corpora, keep the generated checkpoint file under version control or copy
-it aside; restarting with the same checkpoint continues where the previous run
-stopped without duplicating requests.
+The integrated step streams each relevant review through three stages without
+round-tripping intermediate JSON: filtering, full-text harvesting (PMC first,
+then OpenAlex PDF parsing/OCR), and gpt-5-nano theory extraction. The output is
+the enriched `aging_theories.json` bundle containing the per-article full text,
+raw `raw_theory_mentions`, and the canonical `theory_registry` consumed by step
+5. Optional scripts `step3_fetch_fulltext.py` and `step4_extract_theories.py`
+remain available when you need to diagnose a single stage in isolation.
 
 ### Step 5 – Ontology synthesis (`scripts/step5_generate_ontology.py`)
 
@@ -305,25 +285,19 @@ same papers. Exports land where `config/pipeline.yaml` points (e.g.,
 1. **Review harvesting (`step1_*`).** PubMed, OpenAlex, and an optional Google
    Scholar collector gather review articles about aging theories. Outputs are
    merged and deduplicated into `start_reviews.json`.
-2. **Relevance filtering (`step2_filter_reviews.py`).** Titles/abstracts are
-   screened by an OpenAI model, with batched requests and multi-process workers
-   for large queues. Decisions are stored in `filtered_reviews.json`.
-3. **Full-text enrichment (`step3_fetch_fulltext.py`).** PubMed Central (PMC)
-   open-access copies are downloaded when available and normalised to plain
-   text, saving results to `filtered_reviews_fulltext.json`. The script batches
-   PMCID lookups by default—200 articles per Entrez `efetch` call—to stay within
-   NCBI response limits while keeping 10k–100k review queues manageable. Override
-   this with `--entrez-batch-size <N>` or `PUBMED_BATCH_SIZE=<N>` if you need a
-   different cadence.
-4. **Theory extraction (`step4_extract_theories.py`).** Long reviews are chunked
-   and sent to the LLM to identify aging theories. Outputs include per-review
-   annotations and a consolidated registry in `aging_theories.json`.
-5. **Ontology synthesis (`step5_generate_ontology.py`).** The extracted theories
+2. **Filtering, full-text enrichment, and theory extraction (`step2_filter_reviews.py`).**
+   Titles/abstracts are screened by an OpenAI model, retained reviews have their
+   PMC/OpenAlex full texts pulled in automatically, and gpt-5-nano extracts raw
+   theory mentions plus a canonical registry. This produces
+   `filtered_reviews.json`, `aging_theories.json`, and (optionally)
+   `<output>.failures.json` for unresolved PDFs. The legacy `step3_*`/`step4_*`
+   scripts remain useful for debugging individual stages.
+3. **Ontology synthesis (`step5_generate_ontology.py`).** The extracted theories
    are clustered into balanced groups/subgroups and annotated with suggested
    search keywords, producing `aging_ontology.json` plus reconciliation reports.
    Pass `--examples-per-theory <N>` to control how many representative article
    titles accompany each theory in the LLM prompt (use `0` to disable them).
-6. **Ontology-driven collection (`collect_theories.py`).** Suggested queries are
+4. **Ontology-driven collection (`collect_theories.py`).** Suggested queries are
    merged into the collector config, adaptive expansion discovers new keywords,
    and a global rejection registry prevents re-processing already rejected
    papers. Papers, theory assignments, and question answers are exported as CSV
