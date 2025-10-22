@@ -199,12 +199,17 @@ class OntologyOptimizer:
     # Internal helpers
     # ------------------------------------------------------------------
     def _refresh_used_ids(self) -> None:
-        self._used_ids.clear()
-        for ref in self._collect_refs():
-            self._used_ids.add(ref.key)
+        fresh: set[str] = set()
+        self._collect_refs(used=fresh)
+        self._used_ids = fresh
 
-    def _collect_refs(self) -> List[TheoryRef]:
+    def _collect_refs(self, *, used: Optional[set[str]] = None) -> List[TheoryRef]:
         refs: List[TheoryRef] = []
+        local_used: set[str]
+        if used is None:
+            local_used = set()
+        else:
+            local_used = used
 
         def visit(group: MutableMapping[str, Any]) -> None:
             theories = group.get("theories")
@@ -212,7 +217,7 @@ class OntologyOptimizer:
                 for node in theories:
                     if not isinstance(node, MutableMapping):
                         continue
-                    key = _ensure_theory_id(node, self._used_ids)
+                    key = _ensure_theory_id(node, local_used)
                     label = _theory_label(node)
                     refs.append(TheoryRef(key=key, label=label, group=group, node=node))
 
