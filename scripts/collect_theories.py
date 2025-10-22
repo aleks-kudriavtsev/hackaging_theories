@@ -847,6 +847,36 @@ def audit_runtime_ontology_nodes(
         )
 
 
+def audit_runtime_node_counts(
+    runtime_targets: Mapping[str, Mapping[str, Any]],
+    ontology_targets: Mapping[str, Mapping[str, Any]],
+    *,
+    strict: bool = False,
+) -> None:
+    """Ensure the runtime target tree matches the final ontology node count."""
+
+    runtime_count = len(TheoryOntology.from_targets_config(runtime_targets).names())
+    final_count = len(TheoryOntology.from_targets_config(ontology_targets).names())
+
+    if runtime_count == final_count:
+        logger.info(
+            "Runtime ontology audit: node counts match (%d nodes)",
+            runtime_count,
+        )
+        return
+
+    logger.warning(
+        "Runtime ontology audit node-count mismatch: runtime nodes=%d, final nodes=%d",
+        runtime_count,
+        final_count,
+    )
+
+    if strict:
+        raise SystemExit(
+            "Runtime ontology audit failed: node count mismatch between runtime targets and final ontology"
+        )
+
+
 def _select_autofragment_hint(
     *,
     node_name: str,
@@ -2327,6 +2357,11 @@ def run_pipeline(
     if isinstance(corpus_cfg, Mapping) and "strict_ontology_audit" in corpus_cfg:
         strict_audit_config = _coerce_bool(corpus_cfg.get("strict_ontology_audit"))
     strict_audit_enabled = bool(getattr(args, "strict_ontology_audit", False) or strict_audit_config)
+    audit_runtime_node_counts(
+        runtime_targets,
+        ontology_targets,
+        strict=strict_audit_enabled,
+    )
     audit_runtime_ontology_nodes(runtime_targets, ontology_targets, strict=strict_audit_enabled)
 
     ontology_suggestions_summary: Dict[str, Any] = {}
@@ -2473,19 +2508,7 @@ def run_pipeline(
         }
         for name, record in coverage_summary.items()
     }
-    depth_deficit_groups = ontology.depth_deficits(coverage_counts)
-    depth_deficit_summary = {
-        depth: [
-            {
-                "name": record.name,
-                "count": record.count,
-                "target": record.target,
-                "deficit": record.deficit,
-            }
-            for record in records
-        ]
-        for depth, records in depth_deficit_groups.items()
-    }
+    depth_deficit_summary = ontology.deficit_summary_by_depth(coverage_counts)
 
     outputs = config["outputs"]
     papers_path = Path(outputs["papers"])
