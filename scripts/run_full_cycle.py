@@ -318,10 +318,10 @@ def _prepare_collector_config(
     corpus_cfg.setdefault("cache_dir", str(workdir / "collector_state"))
 
     outputs_cfg = config.setdefault("outputs", {})
-    outputs_cfg.setdefault("papers", str(workdir / "collected_papers.csv"))
-    outputs_cfg.setdefault("theories", str(workdir / "aging_theories.csv"))
+    outputs_cfg["papers"] = str(workdir / "collected_papers.csv")
+    outputs_cfg["theories"] = str(workdir / "aging_theories.csv")
     outputs_cfg.setdefault("theory_papers", str(workdir / "theory_papers.csv"))
-    outputs_cfg.setdefault("questions", str(workdir / "paper_answers.csv"))
+    outputs_cfg["questions"] = str(workdir / "paper_answers.csv")
     outputs_cfg.setdefault(
         "questions_no_confidence", str(workdir / "paper_answers_no_confidence.csv")
     )
@@ -398,6 +398,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
         theories_path = Path(outputs_cfg.get("theories", workdir / "aging_theories.csv"))
         questions_path = Path(outputs_cfg.get("questions", workdir / "paper_answers.csv"))
+        papers_path = Path(outputs_cfg.get("papers", workdir / "collected_papers.csv"))
+        questions_no_confidence_path = Path(
+            outputs_cfg.get(
+                "questions_no_confidence", workdir / "paper_answers_no_confidence.csv"
+            )
+        )
+        logger.info(
+            "Collector outputs ready: %s (papers), %s (theories), %s (answers), %s (answers no confidence)",
+            papers_path,
+            theories_path,
+            questions_path,
+            questions_no_confidence_path,
+        )
         reports_dir = Path(outputs_cfg.get("reports", workdir / "reports"))
         try:
             score_progress.generate_progress_report(
