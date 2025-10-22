@@ -91,7 +91,7 @@ def chat_completion_json(
     payload = json.dumps(
         {
             "model": model,
-            "temperature": 0,
+            "temperature": 1,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
