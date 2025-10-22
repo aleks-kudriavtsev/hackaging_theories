@@ -327,6 +327,13 @@ corpus:
           queries:
             - "{base_query} histone modification aging"
             - "chromatin state longevity"
+runtime_labels:
+  threshold: 40
+  modes:
+    - child
+    - sibling
+  max_new_labels: 3
+
 extraction:
   llm:
     enabled: true

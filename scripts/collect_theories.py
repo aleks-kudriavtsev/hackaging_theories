@@ -509,6 +509,20 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+
 def _run_bootstrap_phase(
     retriever: LiteratureRetriever,
     llm_client: LLMClient | None,
@@ -1561,11 +1575,60 @@ def collect_for_entry(
                 }
 
     runtime_label_cfg: Mapping[str, Any] | None = None
+    runtime_labels_disabled = False
     raw_runtime_cfg = config.get("runtime_labels")
     if isinstance(raw_runtime_cfg, Mapping):
         runtime_label_cfg = raw_runtime_cfg
-    elif isinstance(context.get("runtime_labels"), Mapping):
-        runtime_label_cfg = context.get("runtime_labels")  # type: ignore[assignment]
+    elif raw_runtime_cfg is False:
+        runtime_labels_disabled = True
+    elif raw_runtime_cfg is True:
+        runtime_label_cfg = {}
+
+    context_runtime_cfg = context.get("runtime_labels")
+    if runtime_label_cfg is None and not runtime_labels_disabled:
+        if isinstance(context_runtime_cfg, Mapping):
+            runtime_label_cfg = context_runtime_cfg  # type: ignore[assignment]
+        elif context_runtime_cfg is False:
+            runtime_labels_disabled = True
+
+    if runtime_label_cfg is None and not runtime_labels_disabled:
+        threshold_candidates = [
+            context.get("runtime_threshold"),
+            context.get("target"),
+            config.get("target"),
+        ]
+        fallback_threshold = None
+        for candidate in threshold_candidates:
+            value = _coerce_int(candidate)
+            if value is not None and value > 0:
+                fallback_threshold = value
+                break
+        if fallback_threshold is None or fallback_threshold <= 0:
+            fallback_threshold = 40
+
+        modes_candidate = context.get("runtime_modes") or context.get("runtime_mode")
+        if isinstance(modes_candidate, (list, tuple, set)):
+            fallback_modes = [
+                str(item).strip().lower() for item in modes_candidate if str(item).strip()
+            ]
+        elif isinstance(modes_candidate, str) and modes_candidate.strip():
+            fallback_modes = [modes_candidate.strip().lower()]
+        else:
+            fallback_modes = ["child", "sibling"]
+        if not fallback_modes:
+            fallback_modes = ["child", "sibling"]
+
+        max_labels_candidate = _coerce_int(context.get("runtime_max_new_labels"))
+        if max_labels_candidate is None or max_labels_candidate <= 0:
+            fallback_max_labels = 3
+        else:
+            fallback_max_labels = max_labels_candidate
+
+        runtime_label_cfg = {
+            "threshold": fallback_threshold,
+            "modes": fallback_modes,
+            "max_new_labels": fallback_max_labels,
+        }
 
     if (
         runtime_label_cfg

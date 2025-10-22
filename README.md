@@ -258,6 +258,10 @@ python scripts/collect_theories.py "aging theory" \
 * Use `--no-resume` to ignore cached progress or `--state-dir` to relocate the
   persistent queue/cache (defaults to `<workdir>/collector/` when orchestrated by
   `run_pipeline.py`).
+* Runtime splitting is governed by the `runtime_labels` section in
+  `config/pipeline.yaml`; by default nodes with 40 or more accepted papers will
+  request up to three new child and sibling proposals to keep the ontology
+  balanced.
 
 **Parallelism and staging tips**
 
