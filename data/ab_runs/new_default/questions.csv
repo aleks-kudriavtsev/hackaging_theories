@@ -1,0 +1,2 @@
+theory_id,paper_url,paper_name,paper_year,Q1,Q2,Q3,Q4,Q5,Q6,Q7,Q8,Q9,Q1_confidence,Q2_confidence,Q3_confidence,Q4_confidence,Q5_confidence,Q6_confidence,Q7_confidence,Q8_confidence,Q9_confidence
+new-default,paper-1,New Default Sample,2024,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9

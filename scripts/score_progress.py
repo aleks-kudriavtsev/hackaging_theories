@@ -87,13 +87,35 @@ def _parse_float(value: str | None) -> float | None:
         return None
 
 
-def _compute_log_score(rows: Iterable[Mapping[str, str]]) -> float:
+def _compute_log_score(
+    rows: Iterable[Mapping[str, str]]
+) -> tuple[float, list[Dict[str, Any]]]:
     total = 0.0
+    contributions: list[Dict[str, Any]] = []
     for row in rows:
         count = _parse_int(row.get("number_of_collected_papers"))
-        if count and count > 0:
-            total += math.log10(count)
-    return total
+        if not count or count <= 0:
+            continue
+        log_value = math.log10(count)
+        contributions.append(
+            {
+                "theory_id": row.get("theory_id"),
+                "theory_name": row.get("theory_name"),
+                "count": count,
+                "log10_contribution": log_value,
+            }
+        )
+        total += log_value
+
+    contributions.sort(key=lambda item: item["log10_contribution"], reverse=True)
+
+    for entry in contributions:
+        if total > 0:
+            entry["log10_share"] = entry["log10_contribution"] / total
+        else:
+            entry["log10_share"] = 0.0
+
+    return total, contributions
 
 
 def _collect_deficits(rows: Iterable[Mapping[str, str]]) -> List[Dict[str, Any]]:
@@ -146,6 +168,7 @@ def _summarise_questions(rows: Iterable[Mapping[str, str]]) -> Dict[str, Questio
 
 def _build_markdown(
     log_score: float,
+    log_contributions: Sequence[Mapping[str, Any]],
     theory_rows: Sequence[Mapping[str, str]],
     question_metrics: Mapping[str, QuestionMetrics],
     deficits: Sequence[Mapping[str, Any]],
@@ -172,6 +195,19 @@ def _build_markdown(
             avg_display = f"{avg_conf:.3f}" if avg_conf is not None else "n/a"
             lines.append(
                 f"| {question_id} | {metric.answered} | {yes_pct:.1f}% | {avg_display} | {metric.blank_count} |"
+            )
+        lines.append("")
+
+    if log_contributions:
+        lines.append("## Σ log₁₀ Contributions")
+        lines.append("")
+        lines.append("| Theory | Papers | log₁₀ | Share |")
+        lines.append("| --- | ---: | ---: | ---: |")
+        for entry in log_contributions:
+            name = entry.get("theory_name") or entry.get("theory_id") or "Unknown"
+            share = float(entry.get("log10_share") or 0.0) * 100
+            lines.append(
+                f"| {name} | {entry.get('count', 0)} | {entry.get('log10_contribution', 0.0):.3f} | {share:.1f}% |"
             )
         lines.append("")
 
@@ -203,7 +239,7 @@ def generate_progress_report(
     theory_rows = _read_csv(theories_path)
     question_rows = _read_csv(questions_path)
 
-    log_score = _compute_log_score(theory_rows)
+    log_score, log_contributions = _compute_log_score(theory_rows)
     deficits = _collect_deficits(theory_rows)
     question_metrics = _summarise_questions(question_rows)
 
@@ -250,6 +286,7 @@ def generate_progress_report(
             }
             for question_id, metric in question_metrics.items()
         },
+        "log_score_breakdown": log_contributions,
         "deficits": deficits,
         "alerts": alerts,
     }
@@ -260,6 +297,7 @@ def generate_progress_report(
 
     markdown = _build_markdown(
         log_score,
+        log_contributions,
         theory_rows,
         question_metrics,
         deficits,

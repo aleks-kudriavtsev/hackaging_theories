@@ -78,6 +78,10 @@ def test_generate_progress_report(tmp_path: Path) -> None:
     assert isclose(report["log_score"], expected_log_score)
     assert report["theory_count"] == 2
     assert report["question_row_count"] == 1
+    breakdown = report["log_score_breakdown"]
+    assert len(breakdown) == 2
+    assert breakdown[0]["theory_id"] == "t1"
+    assert isclose(breakdown[0]["log10_share"], log10(10) / expected_log_score)
     assert report["deficits"] == [
         {
             "theory_id": "t1",
@@ -96,5 +100,7 @@ def test_generate_progress_report(tmp_path: Path) -> None:
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["deficits"][0]["theory_id"] == "t1"
+    assert payload["log_score_breakdown"][0]["theory_id"] == "t1"
     markdown_text = markdown_path.read_text(encoding="utf-8")
+    assert "Σ log₁₀ Contributions" in markdown_text
     assert "Target Deficits" in markdown_text

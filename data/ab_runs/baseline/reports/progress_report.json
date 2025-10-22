@@ -1,0 +1,110 @@
+{
+  "generated_at": "2025-10-22T07:58:02.140771+00:00",
+  "log_score": 3.5385737338068557,
+  "theory_count": 5,
+  "question_row_count": 1,
+  "question_metrics": {
+    "Q1": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q2": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q3": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q4": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q5": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q6": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q7": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q8": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    },
+    "Q9": {
+      "answered": 1,
+      "yes_ratio": 1.0,
+      "blank_count": 0,
+      "average_confidence": 0.85,
+      "min_confidence": 0.85
+    }
+  },
+  "log_score_breakdown": [
+    {
+      "theory_id": "senescence-cascade",
+      "theory_name": "Senescence Cascade",
+      "count": 6,
+      "log10_contribution": 0.7781512503836436,
+      "log10_share": 0.2199053372688933
+    },
+    {
+      "theory_id": "telomere-attrition",
+      "theory_name": "Telomere Attrition",
+      "count": 6,
+      "log10_contribution": 0.7781512503836436,
+      "log10_share": 0.2199053372688933
+    },
+    {
+      "theory_id": "caloric-restriction",
+      "theory_name": "Caloric Restriction",
+      "count": 6,
+      "log10_contribution": 0.7781512503836436,
+      "log10_share": 0.2199053372688933
+    },
+    {
+      "theory_id": "cellular-mechanisms",
+      "theory_name": "Cellular Mechanisms",
+      "count": 4,
+      "log10_contribution": 0.6020599913279624,
+      "log10_share": 0.17014199409666006
+    },
+    {
+      "theory_id": "metabolic-control",
+      "theory_name": "Metabolic Control",
+      "count": 4,
+      "log10_contribution": 0.6020599913279624,
+      "log10_share": 0.17014199409666006
+    }
+  ],
+  "deficits": [],
+  "alerts": []
+}
