@@ -13,7 +13,6 @@ from .theories import AggregatedTheory, TheoryAggregationResult
 
 
 QUESTION_COLUMNS: Sequence[str] = tuple(f"Q{i}" for i in range(1, 10))
-QUESTION_CONFIDENCE_COLUMNS: Sequence[str] = tuple(f"{column}_confidence" for column in QUESTION_COLUMNS)
 
 
 def export_papers(papers: Iterable[PaperMetadata], path: Path) -> Path:
@@ -83,8 +82,6 @@ def export_theories(
                 "theory_id",
                 "theory_name",
                 "number_of_collected_papers",
-                "target",
-                "deficit",
             ],
         )
         writer.writeheader()
@@ -100,19 +97,11 @@ def export_theories(
         else:
             theories = aggregation.theories
         for theory in theories:
-            target = theory.target
-            if target is None:
-                deficit_value = ""
-            else:
-                deficit = max(0, target - theory.number_of_collected_papers)
-                deficit_value = str(deficit)
             writer.writerow(
                 {
                     "theory_id": theory.theory_id,
                     "theory_name": theory.theory_name,
                     "number_of_collected_papers": theory.number_of_collected_papers,
-                    "target": "" if target is None else str(target),
-                    "deficit": deficit_value,
                 }
             )
     return path
@@ -122,14 +111,6 @@ def _paper_lookup(papers: Mapping[str, PaperMetadata] | Iterable[PaperMetadata])
     if isinstance(papers, Mapping):
         return papers
     return {paper.identifier: paper for paper in papers}
-
-
-def _extract_pmid(identifier: str) -> str:
-    lowered = identifier.lower()
-    for prefix in ("pmid:", "pubmed:"):
-        if lowered.startswith(prefix):
-            return identifier.split(":", 1)[1].strip()
-    return ""
 
 
 def export_theory_papers(
@@ -143,7 +124,7 @@ def export_theory_papers(
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["theory_id", "paper_url", "paper_name", "paper_year", "doi", "pmid"],
+            fieldnames=["theory_id", "paper_url", "paper_name", "paper_year"],
         )
         writer.writeheader()
         for theory in aggregation.theories:
@@ -151,15 +132,12 @@ def export_theory_papers(
                 paper = lookup.get(paper_id)
                 if paper is None:
                     continue
-                pmid = _extract_pmid(paper.identifier)
                 writer.writerow(
                     {
                         "theory_id": theory.theory_id,
                         "paper_url": paper.identifier,
                         "paper_name": paper.title,
                         "paper_year": paper.year if paper.year is not None else "",
-                        "doi": paper.doi if paper.doi is not None else "",
-                        "pmid": pmid,
                     }
                 )
     return path
@@ -189,7 +167,6 @@ def export_question_answers(
                 "paper_name",
                 "paper_year",
                 *QUESTION_COLUMNS,
-                *QUESTION_CONFIDENCE_COLUMNS,
             ],
         )
         writer.writeheader()
@@ -205,12 +182,8 @@ def export_question_answers(
                     "paper_name": paper.title,
                     "paper_year": paper.year if paper.year is not None else "",
                 }
-                for index, question_id in enumerate(QUESTION_COLUMNS):
+                for question_id in QUESTION_COLUMNS:
                     answer_entry = paper_answers.get(question_id)
                     row[question_id] = answer_entry[1] if answer_entry else ""
-                    confidence_column = QUESTION_CONFIDENCE_COLUMNS[index]
-                    row[confidence_column] = (
-                        f"{answer_entry[0]:.3f}" if answer_entry and answer_entry[0] is not None else ""
-                    )
                 writer.writerow(row)
     return path

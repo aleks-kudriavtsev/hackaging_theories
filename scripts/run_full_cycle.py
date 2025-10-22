@@ -290,6 +290,7 @@ def _prepare_collector_config(
     outputs_cfg = config.setdefault("outputs", {})
     outputs_cfg.setdefault("papers", str(workdir / "papers.csv"))
     outputs_cfg.setdefault("theories", str(workdir / "theories.csv"))
+    outputs_cfg.setdefault("theory_papers", str(workdir / "theory_papers.csv"))
     outputs_cfg.setdefault("questions", str(workdir / "questions.csv"))
     outputs_cfg.setdefault("cache_dir", str(workdir / "cache"))
     outputs_cfg.setdefault("reports", str(workdir / "reports"))

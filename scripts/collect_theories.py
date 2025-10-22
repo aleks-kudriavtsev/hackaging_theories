@@ -2255,9 +2255,10 @@ def run_pipeline(
     theories_path = Path(outputs["theories"])
     export_theories(aggregation, theories_path)
 
-    theory_papers_path = outputs.get("theory_papers")
+    theory_papers_path_value = outputs.get("theory_papers")
+    theory_papers_path = Path(theory_papers_path_value) if theory_papers_path_value else None
     if theory_papers_path:
-        export_theory_papers(aggregation, papers, Path(theory_papers_path))
+        export_theory_papers(aggregation, papers, theory_papers_path)
 
     questions_path = Path(outputs["questions"])
     export_question_answers(question_answers, papers, aggregation, questions_path)
@@ -2277,7 +2278,9 @@ def run_pipeline(
         f"Exported {len(aggregation.theories)} theories (covering {total_theory_rows} papers) to {theories_path}"
     )
     if theory_papers_path:
-        print(f"Exported per-theory paper table to {theory_papers_path}")
+        path_text = str(theory_papers_path)
+        print(f"Exported per-theory paper table to {path_text}")
+        logger.info("Exported per-theory paper table to %s", path_text)
     print(f"Exported {total_question_rows} question rows to {questions_path}")
 
     for theory_name, summary in summary_report.items():
