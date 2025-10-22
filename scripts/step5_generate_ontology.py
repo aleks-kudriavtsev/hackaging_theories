@@ -53,6 +53,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping,
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
+REFINEMENT_MODEL = "gpt-5-mini"
+
 # The OpenAI ``gpt-5-mini`` model currently accepts up to ~272k tokens.  The
 # prompt builder below therefore keeps a safety margin and attempts to stay
 # within ~240k tokens (roughly 960k UTF-8 characters assuming 4 characters per
@@ -212,6 +214,14 @@ def _load_registry_builder() -> Optional[
     return None
 
 
+def _clone_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _clone_json(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_clone_json(item) for item in value]
+    return value
+
+
 def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
     """Ensure the OpenAI payload has a predictable ``groups`` list."""
 
@@ -229,28 +239,19 @@ def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
     return payload
 
 
-def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
+def _invoke_chat_model(
+    messages: Sequence[Mapping[str, object]],
+    api_key: str,
+    *,
+    model: str,
+    temperature: float = 1.0,
+) -> Tuple[Dict[str, object], Dict[str, object]]:
     payload = json.dumps(
         {
             "model": model,
-            "temperature": 1,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an ontology architect specialising in aging and "
-                        "geroscience. Group related theories into parent clusters "
-                        "and create subtheories for popular themes. Use the supplied "
-                        "statistics to decide when to elevate a parent group. "
-                        "Return JSON with a top-level 'groups' list. Each group "
-                        "must contain 'name', optional 'description', optional "
-                        "'subgroups', and a 'theories' list. Theories may include "
-                        "nested 'children'."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            "messages": list(messages),
         }
     ).encode("utf-8")
 
@@ -282,7 +283,284 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
     except json.JSONDecodeError as err:
         raise RuntimeError("OpenAI returned invalid JSON payload: " + content) from err
 
-    return _normalise_groups(parsed)
+    metadata: Dict[str, object] = {}
+    for key in ("id", "model", "created", "usage"):
+        if key in data:
+            metadata[key] = data[key]
+    return dict(parsed), metadata
+
+
+def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
+    parsed, metadata = _invoke_chat_model(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an ontology architect specialising in aging and "
+                    "geroscience. Group related theories into parent clusters "
+                    "and create subtheories for popular themes. Use the supplied "
+                    "statistics to decide when to elevate a parent group. "
+                    "Return JSON with a top-level 'groups' list. Each group "
+                    "must contain 'name', optional 'description', optional "
+                    "'subgroups', and a 'theories' list. Theories may include "
+                    "nested 'children'."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        api_key,
+        model=model,
+        temperature=1.0,
+    )
+    payload = _normalise_groups(parsed)
+    if metadata:
+        payload["_response_metadata"] = metadata
+    return payload
+
+
+def _summarise_groups_for_refinement(
+    groups: Sequence[Mapping[str, object]],
+) -> List[Dict[str, object]]:
+    summary: List[Dict[str, object]] = []
+
+    def _collect(group: Mapping[str, object]) -> Optional[Dict[str, object]]:
+        payload: Dict[str, object] = {}
+
+        name = group.get("name") if isinstance(group.get("name"), str) else None
+        if name:
+            payload["name"] = name
+
+        description = group.get("description") if isinstance(group.get("description"), str) else None
+        if description:
+            payload["description"] = description
+
+        theories_payload: List[Dict[str, object]] = []
+        theories = group.get("theories")
+        if isinstance(theories, Sequence) and not isinstance(theories, (str, bytes)):
+            for theory in theories:
+                if isinstance(theory, Mapping):
+                    theory_payload: Dict[str, object] = {}
+                    for key in ("theory_id", "id", "preferred_label", "label"):
+                        value = theory.get(key)
+                        if isinstance(value, str) and value.strip():
+                            theory_payload.setdefault(key, value)
+                    supporting = theory.get("supporting_articles")
+                    if isinstance(supporting, Sequence) and not isinstance(supporting, (str, bytes)):
+                        theory_payload["supporting_articles"] = [
+                            article for article in supporting if isinstance(article, str)
+                        ]
+                    if theory_payload:
+                        theories_payload.append(theory_payload)
+        if theories_payload:
+            payload["theories"] = theories_payload
+
+        subgroups_payload: List[Dict[str, object]] = []
+        subgroups = group.get("subgroups")
+        if isinstance(subgroups, Sequence) and not isinstance(subgroups, (str, bytes)):
+            for child in subgroups:
+                if isinstance(child, Mapping):
+                    collected = _collect(child)
+                    if collected:
+                        subgroups_payload.append(collected)
+        if subgroups_payload:
+            payload["subgroups"] = subgroups_payload
+
+        if not payload:
+            return None
+        return payload
+
+    for group in groups:
+        if isinstance(group, Mapping):
+            collected = _collect(group)
+            if collected:
+                summary.append(collected)
+    return summary
+
+
+def _materialise_refined_hierarchy(
+    groups: Sequence[Mapping[str, object]],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    attachments: List[Tuple[str, Dict[str, Any]]] = []
+    unresolved: List[str] = []
+
+    def _clone_group(group: Mapping[str, object]) -> Optional[Dict[str, Any]]:
+        parent_name: Optional[str] = None
+        for key in ("parent", "parent_group", "parent_name"):
+            raw_parent = group.get(key)
+            if isinstance(raw_parent, str) and raw_parent.strip():
+                parent_name = raw_parent.strip()
+                break
+
+        payload: Dict[str, Any] = {}
+        for key, value in group.items():
+            if key in {"parent", "parent_group", "parent_name", "subgroups"}:
+                continue
+            if key == "theories":
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    payload["theories"] = [
+                        _clone_json(item)
+                        for item in value
+                        if isinstance(item, Mapping)
+                    ]
+                continue
+            payload[key] = _clone_json(value)
+
+        subgroups_payload: List[Dict[str, Any]] = []
+        subgroups = group.get("subgroups")
+        if isinstance(subgroups, Sequence) and not isinstance(subgroups, (str, bytes)):
+            for child in subgroups:
+                if isinstance(child, Mapping):
+                    cloned_child = _clone_group(child)
+                    if cloned_child:
+                        subgroups_payload.append(cloned_child)
+        if subgroups_payload:
+            payload["subgroups"] = subgroups_payload
+
+        if parent_name:
+            attachments.append((parent_name, payload))
+        return payload if payload else None
+
+    top_level: List[Dict[str, Any]] = []
+    for group in groups:
+        if isinstance(group, Mapping):
+            cloned = _clone_group(group)
+            if cloned:
+                top_level.append(cloned)
+
+    name_index: Dict[str, Dict[str, Any]] = {}
+
+    def _register(node: Mapping[str, Any]) -> None:
+        identifier = node.get("id") if isinstance(node.get("id"), str) else None
+        name = node.get("name") if isinstance(node.get("name"), str) else None
+        keys: List[str] = []
+        if identifier and identifier.strip():
+            keys.append(identifier.strip().lower())
+        if name and name.strip():
+            keys.append(name.strip().lower())
+        for key in keys:
+            name_index.setdefault(key, node)  # first occurrence wins
+        subgroups = node.get("subgroups")
+        if isinstance(subgroups, Sequence) and not isinstance(subgroups, (str, bytes)):
+            for child in subgroups:
+                if isinstance(child, Mapping):
+                    _register(child)
+
+    for node in top_level:
+        _register(node)
+
+    attached_ids: Set[int] = set()
+    for parent_name, child in attachments:
+        lookup_key = parent_name.strip().lower()
+        parent_node = name_index.get(lookup_key)
+        if parent_node is None:
+            unresolved.append(parent_name)
+            continue
+        subgroups = parent_node.setdefault("subgroups", [])
+        if child not in subgroups:
+            subgroups.append(child)
+        attached_ids.add(id(child))
+        _register(child)
+
+    refined_roots = [node for node in top_level if id(node) not in attached_ids]
+    return refined_roots, unresolved
+
+
+def refine_group_hierarchy(
+    groups: Sequence[Mapping[str, object]],
+    api_key: Optional[str],
+    *,
+    model: str = REFINEMENT_MODEL,
+    call_model: Optional[
+        Callable[..., Tuple[Dict[str, object], Dict[str, object]]]
+    ] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    metadata: Dict[str, Any] = {
+        "status": "skipped" if not groups else "pending",
+        "model": model,
+        "input_group_count": len(groups),
+    }
+
+    if not groups:
+        metadata["reason"] = "no_groups"
+        return [], metadata
+
+    if not api_key:
+        metadata["reason"] = "missing_api_key"
+        metadata["status"] = "skipped"
+        return [_clone_json(group) for group in groups if isinstance(group, Mapping)], metadata
+
+    summary = _summarise_groups_for_refinement(groups)
+    summary_json = json.dumps(summary, ensure_ascii=False, indent=2)
+    prompt = textwrap.dedent(
+        f"""
+        The list below contains ontology groups produced by an earlier LLM pass.
+        Each entry provides the group name, optional description and the theories
+        currently assigned to it (with canonical theory identifiers and supporting
+        article IDs). Some groups may be synonymous or represent parent/child
+        relationships.
+
+        Refine the hierarchy to minimise duplicates:
+        - Merge groups that describe the same conceptual idea by selecting one
+          canonical parent and nesting the others under it as subgroups.
+        - When a subgroup represents a more specific scope of its parent, keep
+          its theories attached to the subgroup while ensuring the parent exists.
+        - Represent parent-child links via nested ``subgroups`` arrays rather than
+          separate ``parent`` references. Preserve the canonical ``theory_id``
+          assignments exactly as provided.
+        - Return JSON with a single top-level key ``groups`` describing the
+          refined hierarchy. Groups without a natural parent should remain at the
+          top level.
+
+        Existing groups:
+        {summary_json}
+        """
+    ).strip()
+
+    metadata["prompt_characters"] = len(prompt)
+    metadata["estimated_prompt_tokens"] = _estimate_prompt_tokens(prompt)
+
+    call_fn = call_model
+    if call_fn is None:
+        def default_call_fn(
+            messages: Sequence[Mapping[str, object]],
+            key: str,
+            *,
+            model: str = model,
+            temperature: float = 0.4,
+        ) -> Tuple[Dict[str, object], Dict[str, object]]:
+            return _invoke_chat_model(messages, key, model=model, temperature=temperature)
+
+        call_fn = default_call_fn
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You specialise in ontology consolidation. Reconcile overlapping "
+                "groups by creating explicit parent/child relationships while "
+                "keeping theory identifiers intact."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    parsed, response_metadata = call_fn(messages, api_key, model=model, temperature=0.4)
+    metadata["status"] = "completed"
+    metadata["output_group_count"] = len(parsed.get("groups", [])) if isinstance(parsed, Mapping) else 0
+    if response_metadata:
+        metadata["response_metadata"] = response_metadata
+
+    refined_payload = _normalise_groups(parsed)
+    refined_groups, unresolved = _materialise_refined_hierarchy(refined_payload.get("groups", []))
+    if unresolved:
+        metadata.setdefault("warnings", []).append(
+            {
+                "event": "unresolved_parent_reference",
+                "parent_names": sorted({name for name in unresolved if isinstance(name, str)}),
+            }
+        )
+    metadata["materialised_group_count"] = len(refined_groups)
+    return refined_groups, metadata
 
 
 def _chunk_summary(
@@ -1486,6 +1764,22 @@ def main(argv: List[str] | None = None) -> int:
         groups_for_reconciliation = response.get("groups", [])
         prompt_adjustments = _collect_prompt_metadata([response])
 
+    refinement_metadata: Dict[str, Any] = {}
+    refined_groups_snapshot: List[Dict[str, Any]] = []
+    if isinstance(groups_for_reconciliation, Sequence) and not isinstance(
+        groups_for_reconciliation, (str, bytes)
+    ):
+        refined_groups_snapshot, refinement_metadata = refine_group_hierarchy(
+            groups_for_reconciliation,
+            api_key,
+        )
+        groups_for_reconciliation = refined_groups_snapshot
+    if isinstance(response, Mapping):
+        response = dict(response)
+        response.setdefault("refined_groups", _clone_json(refined_groups_snapshot))
+        if refinement_metadata:
+            response.setdefault("_refinement_metadata", refinement_metadata)
+
     article_index = _canonical_article_index(registry)
     reconciled_groups, reconciliation = _reconcile_groups(
         groups_for_reconciliation,
@@ -1502,6 +1796,23 @@ def main(argv: List[str] | None = None) -> int:
         )
 
     _attach_suggested_queries(reconciled_groups)
+
+    if refinement_metadata:
+        refinement_note: Dict[str, Any] = {
+            "event": "group_refinement",
+            "status": refinement_metadata.get("status"),
+            "model": refinement_metadata.get("model"),
+            "input_group_count": refinement_metadata.get("input_group_count"),
+            "output_group_count": refinement_metadata.get("output_group_count"),
+            "materialised_group_count": refinement_metadata.get("materialised_group_count"),
+        }
+        if refinement_metadata.get("reason"):
+            refinement_note["reason"] = refinement_metadata["reason"]
+        if refinement_metadata.get("warnings"):
+            refinement_note["warnings"] = refinement_metadata["warnings"]
+        if refinement_metadata.get("response_metadata"):
+            refinement_note["response_metadata"] = refinement_metadata["response_metadata"]
+        reconciliation.setdefault("notes", []).append(refinement_note)
 
     reconciliation.setdefault("notes", []).append(
         {
@@ -1560,6 +1871,10 @@ def main(argv: List[str] | None = None) -> int:
         "prompt_adjustments": prompt_adjustments,
         "ontology": {
             "raw": response,
+            "refined": {
+                "groups": _clone_json(refined_groups_snapshot),
+                "metadata": refinement_metadata,
+            },
             "final": {
                 "groups": reconciled_groups,
             },
