@@ -296,7 +296,7 @@ def validate(questions: Sequence[QuestionRow], ground_truth: Sequence[GroundTrut
                     if candidate.theory_id == entry.theory_id:
                         row = candidate
                         break
-            if row is None and candidates:
+            if row is None and candidates and not entry.theory_id:
                 row = candidates[0]
                 if theory_key == UNSPECIFIED_THEORY:
                     theory_key = row.theory_id
