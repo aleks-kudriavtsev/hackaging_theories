@@ -160,6 +160,10 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
     assert Path(step5_command[step5_command.index("--input") + 1]) == Path(paths.theories)
     assert Path(step5_command[step5_command.index("--output") + 1]) == Path(paths.ontology)
     assert (
+        step5_command[step5_command.index("--max-theories-per-group") + 1]
+        == str(run_pipeline.DEFAULT_ONTOLOGY_MAX_THEORIES)
+    )
+    assert (
         step5_command[step5_command.index("--examples-per-theory") + 1]
         == str(DEFAULT_ONTOLOGY_EXAMPLES)
     )

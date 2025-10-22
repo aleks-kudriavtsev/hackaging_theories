@@ -12,6 +12,7 @@ SPEC.loader.exec_module(_MODULE)
 _coerce_articles_from_documents = _MODULE._coerce_articles_from_documents
 _load_json_payload = _MODULE._load_json_payload
 _load_registry_builder = _MODULE._load_registry_builder
+_limit_group_theories = _MODULE._limit_group_theories
 
 
 def test_load_json_payload_returns_documents_when_registry_missing(tmp_path: Path) -> None:
@@ -80,3 +81,28 @@ def test_load_registry_builder_handles_direct_execution(monkeypatch) -> None:
         assert builder.__module__ == module_name
     finally:
         _MODULE.sys.modules.pop(module_name, None)
+
+
+def test_limit_group_theories_splits_large_groups() -> None:
+    theories = [
+        {"theory_id": f"T{index}", "preferred_label": f"Theory {index}"}
+        for index in range(45)
+    ]
+    groups = [{"name": "Cellular", "theories": theories}]
+    reconciliation: dict = {}
+
+    processed = _limit_group_theories(groups, 40, reconciliation=reconciliation)
+
+    assert len(processed) == 1
+    main_group = processed[0]
+    assert len(main_group["theories"]) == 40
+    assert "subgroups" in main_group
+    overflow_group = main_group["subgroups"][0]
+    assert overflow_group["name"].startswith("Cellular (auto-split")
+    assert [theory["theory_id"] for theory in overflow_group["theories"]] == [
+        f"T{index}" for index in range(40, 45)
+    ]
+
+    adjustments = reconciliation.get("group_splits")
+    assert adjustments and adjustments[0]["limit"] == 40
+    assert adjustments[0]["overflow_groups"][0] == [f"T{index}" for index in range(40, 45)]
