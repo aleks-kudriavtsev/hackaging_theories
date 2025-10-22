@@ -110,9 +110,9 @@ def run_analysis(
     questions_path: Path,
     ground_truth_path: Path,
 ) -> tuple[question_validation.ValidationReport, List[Mapping[str, str | None]]]:
+    report = question_validation.validate_from_paths(questions_path, ground_truth_path)
     questions = question_validation.load_questions(questions_path)
     ground_truth = question_validation.load_ground_truth(ground_truth_path)
-    report = question_validation.validate(questions, ground_truth)
     rows = generate_answer_rows(questions, ground_truth, report)
     return report, rows
 
