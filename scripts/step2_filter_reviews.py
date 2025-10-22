@@ -70,7 +70,7 @@ async def _call_openai(
         try:
             response = await client.chat.completions.create(
                 model=model,
-                temperature=0,
+                temperature=1,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": OPENAI_SYSTEM_PROMPT},
