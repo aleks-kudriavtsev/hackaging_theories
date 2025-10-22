@@ -895,6 +895,15 @@ def main(argv: List[str] | None = None) -> int:
         help="Seconds to wait between theory extraction OpenAI calls.",
     )
     parser.add_argument(
+        "--extraction-concurrency",
+        type=int,
+        default=5,
+        help=(
+            "Maximum number of concurrent OpenAI requests per worker during the theory "
+            "extraction stage."
+        ),
+    )
+    parser.add_argument(
         "--chunk-chars",
         type=int,
         default=12000,
@@ -949,6 +958,9 @@ def main(argv: List[str] | None = None) -> int:
         return 3
     if args.extraction_processes is not None and args.extraction_processes <= 0:
         print("--extraction-processes must be a positive integer", file=sys.stderr)
+        return 4
+    if args.extraction_concurrency <= 0:
+        print("--extraction-concurrency must be a positive integer", file=sys.stderr)
         return 4
 
     def _env_float(name: str, default: float) -> float:
@@ -1146,6 +1158,7 @@ def main(argv: List[str] | None = None) -> int:
             args.chunk_overlap,
             extraction_processes,
             args.extraction_timeout,
+            args.extraction_concurrency,
         )
     else:
         annotated_records = []

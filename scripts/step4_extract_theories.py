@@ -30,6 +30,7 @@ python scripts/step4_extract_theories.py \
 from __future__ import annotations
 
 import argparse
+import asyncio
 import difflib
 import json
 import math
@@ -40,12 +41,20 @@ import re
 import socket
 import sys
 import textwrap
-import time
 import unicodedata
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import urllib.error
 import urllib.request
+
+try:
+    from openai import AsyncOpenAI
+except ModuleNotFoundError:  # pragma: no cover - fallback for tests without openai
+    class AsyncOpenAI:  # type: ignore[override]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ModuleNotFoundError(
+                "The openai package is required for asynchronous theory extraction."
+            )
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -160,6 +169,58 @@ def call_openai(
     return _normalise_theory_list(parsed)
 
 
+async def _async_call_openai(
+    client: AsyncOpenAI,
+    prompt: str,
+    model: str,
+    semaphore: asyncio.Semaphore,
+    delay: float,
+    *,
+    request_timeout: Optional[float] = None,
+    temperature: float = 1.0,
+) -> Dict:
+    async with semaphore:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract distinct aging theories from the supplied review text. "
+                            "Return JSON with keys `theories` (list of strings) and `notes` "
+                            "(optional explanatory text)."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=request_timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - network error handling
+            raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+        finally:
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, KeyError) as err:  # pragma: no cover
+        raise RuntimeError(f"Unexpected OpenAI response: {response!r}") from err
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as err:
+        raise RuntimeError(
+            "OpenAI returned invalid JSON payload: " + content
+        ) from err
+
+    return _normalise_theory_list(parsed)
+
+
 def chunk_review_text(text: str, chunk_chars: int, chunk_overlap: int) -> List[str]:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -229,6 +290,178 @@ def build_prompt(
     ).strip()
 
 
+def _wait_for_prompt_lock() -> None:
+    with PROMPT_LOCK:
+        pass
+
+
+async def _invoke_with_retries(
+    client: AsyncOpenAI,
+    prompt: str,
+    model: str,
+    semaphore: asyncio.Semaphore,
+    delay: float,
+    request_timeout: Optional[float],
+) -> Dict:
+    attempt = 0
+    backoff_delay = 1.0
+    while True:
+        try:
+            return await _async_call_openai(
+                client,
+                prompt,
+                model,
+                semaphore,
+                delay,
+                request_timeout=request_timeout,
+            )
+        except RuntimeError as err:
+            message = str(err)
+            if not _is_network_error(message):
+                raise
+            attempt += 1
+            acquired = PROMPT_LOCK.acquire(block=False)
+            if acquired:
+                try:
+                    print(
+                        (
+                            "Network issue while contacting OpenAI (attempt "
+                            f"{attempt}). Error: {message}\n"
+                            "Verify your internet connection and press Enter to retry."
+                        ),
+                        flush=True,
+                    )
+                    try:
+                        await asyncio.to_thread(
+                            input, "Press Enter once connectivity is restored to retry... "
+                        )
+                    except EOFError:
+                        pass
+                finally:
+                    PROMPT_LOCK.release()
+            else:
+                await asyncio.to_thread(_wait_for_prompt_lock)
+            sleep_time = min(60.0, backoff_delay)
+            await asyncio.sleep(sleep_time)
+            backoff_delay = min(60.0, backoff_delay * 2)
+
+
+async def _process_record_async(
+    client: AsyncOpenAI,
+    semaphore: asyncio.Semaphore,
+    global_idx: int,
+    record: Dict,
+    *,
+    model: str,
+    delay: float,
+    chunk_chars: int,
+    chunk_overlap: int,
+    total_records: int,
+    request_timeout: Optional[float],
+    result_queue: Optional[Any],
+) -> Tuple[int, Dict]:
+    text_source = record.get("full_text") or record.get("abstract") or ""
+    chunks = chunk_review_text(text_source, chunk_chars, chunk_overlap)
+    aggregated_theories: List[str] = []
+    seen_aliases: Set[str] = set()
+    aggregated_notes: List[str] = []
+
+    for chunk_idx, chunk_text in enumerate(chunks):
+        prompt = build_prompt(record, chunk_text, chunk_idx, len(chunks))
+        response = await _invoke_with_retries(
+            client,
+            prompt,
+            model,
+            semaphore,
+            delay,
+            request_timeout,
+        )
+        theories = response.get("theories") if isinstance(response, dict) else []
+        if isinstance(theories, list):
+            for alias in theories:
+                if not isinstance(alias, str):
+                    continue
+                cleaned = alias.strip()
+                if not cleaned:
+                    continue
+                key = cleaned.casefold()
+                if key not in seen_aliases:
+                    seen_aliases.add(key)
+                    aggregated_theories.append(cleaned)
+        notes_field = response.get("notes") if isinstance(response, dict) else None
+        if isinstance(notes_field, str):
+            cleaned_note = notes_field.strip()
+            if cleaned_note and cleaned_note not in aggregated_notes:
+                aggregated_notes.append(cleaned_note)
+        elif isinstance(notes_field, list):
+            for note in notes_field:
+                if not isinstance(note, str):
+                    continue
+                cleaned_note = note.strip()
+                if cleaned_note and cleaned_note not in aggregated_notes:
+                    aggregated_notes.append(cleaned_note)
+
+    annotated_record = record.copy()
+    theory_payload: Dict[str, object] = {"theories": aggregated_theories}
+    if aggregated_notes:
+        theory_payload["notes"] = (
+            aggregated_notes[0]
+            if len(aggregated_notes) == 1
+            else list(aggregated_notes)
+        )
+    theory_payload["chunk_count"] = len(chunks)
+    annotated_record["theory_extraction"] = theory_payload
+
+    if result_queue is not None:
+        await asyncio.to_thread(result_queue.put, (global_idx, annotated_record))
+
+    print(
+        f"Annotated {global_idx + 1}/{total_records} reviews",
+        flush=True,
+    )
+
+    return (global_idx, annotated_record)
+
+
+async def _process_batch_async(
+    batch: List[Tuple[int, Dict]],
+    api_key: str,
+    model: str,
+    delay: float,
+    chunk_chars: int,
+    chunk_overlap: int,
+    total_records: int,
+    request_timeout: Optional[float],
+    result_queue: Optional[Any],
+    concurrency: int,
+) -> List[Tuple[int, Dict]]:
+    if concurrency <= 0:
+        raise ValueError("concurrency must be a positive integer")
+
+    semaphore = asyncio.Semaphore(concurrency)
+    async with AsyncOpenAI(api_key=api_key) as client:
+        tasks = [
+            _process_record_async(
+                client,
+                semaphore,
+                global_idx,
+                record,
+                model=model,
+                delay=delay,
+                chunk_chars=chunk_chars,
+                chunk_overlap=chunk_overlap,
+                total_records=total_records,
+                request_timeout=request_timeout,
+                result_queue=result_queue,
+            )
+            for global_idx, record in batch
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results.sort(key=lambda item: item[0])
+    return results
+
+
 def process_batch(
     payload: Tuple[
         List[Tuple[int, Dict]],
@@ -240,6 +473,7 @@ def process_batch(
         int,
         Optional[float],
         Optional[Any],
+        int,
     ]
 ) -> List[Tuple[int, Dict]]:
     (
@@ -252,98 +486,23 @@ def process_batch(
         total_records,
         request_timeout,
         result_queue,
+        concurrency,
     ) = payload
-    annotated: List[Tuple[int, Dict]] = []
-    for global_idx, record in batch:
-        text_source = record.get("full_text") or record.get("abstract") or ""
-        chunks = chunk_review_text(text_source, chunk_chars, chunk_overlap)
-        aggregated_theories: List[str] = []
-        seen_aliases: Set[str] = set()
-        aggregated_notes: List[str] = []
-        for chunk_idx, chunk_text in enumerate(chunks):
-            prompt = build_prompt(record, chunk_text, chunk_idx, len(chunks))
-            attempt = 0
-            backoff_delay = 1.0
-            while True:
-                try:
-                    response = call_openai(
-                        prompt, api_key, model, timeout=request_timeout
-                    )
-                    break
-                except RuntimeError as err:
-                    message = str(err)
-                    if not _is_network_error(message):
-                        raise
-                    attempt += 1
-                    acquired = PROMPT_LOCK.acquire(block=False)
-                    if acquired:
-                        try:
-                            print(
-                                (
-                                    "Network issue while contacting OpenAI (attempt "
-                                    f"{attempt}). Error: {message}\n"
-                                    "Verify your internet connection and press Enter to retry."
-                                ),
-                                flush=True,
-                            )
-                            try:
-                                input("Press Enter once connectivity is restored to retry... ")
-                            except EOFError:
-                                # In non-interactive environments we still want to pause briefly
-                                pass
-                        finally:
-                            PROMPT_LOCK.release()
-                    else:
-                        with PROMPT_LOCK:
-                            pass
-                    sleep_time = min(60.0, backoff_delay)
-                    time.sleep(sleep_time)
-                    backoff_delay = min(60.0, backoff_delay * 2)
-                    continue
-            theories = response.get("theories") if isinstance(response, dict) else []
-            if isinstance(theories, list):
-                for alias in theories:
-                    if not isinstance(alias, str):
-                        continue
-                    cleaned = alias.strip()
-                    if not cleaned:
-                        continue
-                    key = cleaned.casefold()
-                    if key not in seen_aliases:
-                        seen_aliases.add(key)
-                        aggregated_theories.append(cleaned)
-            notes_field = response.get("notes") if isinstance(response, dict) else None
-            if isinstance(notes_field, str):
-                cleaned_note = notes_field.strip()
-                if cleaned_note and cleaned_note not in aggregated_notes:
-                    aggregated_notes.append(cleaned_note)
-            elif isinstance(notes_field, list):
-                for note in notes_field:
-                    if not isinstance(note, str):
-                        continue
-                    cleaned_note = note.strip()
-                    if cleaned_note and cleaned_note not in aggregated_notes:
-                        aggregated_notes.append(cleaned_note)
 
-        annotated_record = record.copy()
-        theory_payload: Dict[str, object] = {"theories": aggregated_theories}
-        if aggregated_notes:
-            theory_payload["notes"] = (
-                aggregated_notes[0]
-                if len(aggregated_notes) == 1
-                else list(aggregated_notes)
-            )
-        theory_payload["chunk_count"] = len(chunks)
-        annotated_record["theory_extraction"] = theory_payload
-        annotated.append((global_idx, annotated_record))
-        if result_queue is not None:
-            result_queue.put((global_idx, annotated_record))
-        print(
-            f"Annotated {global_idx + 1}/{total_records} reviews",
-            flush=True,
+    return asyncio.run(
+        _process_batch_async(
+            batch,
+            api_key,
+            model,
+            delay,
+            chunk_chars,
+            chunk_overlap,
+            total_records,
+            request_timeout,
+            result_queue,
+            concurrency,
         )
-        time.sleep(delay)
-    return annotated
+    )
 
 
 def extract_theories(
@@ -355,6 +514,7 @@ def extract_theories(
     chunk_overlap: int,
     processes: int,
     request_timeout: Optional[float],
+    concurrency: int,
 ) -> List[Dict]:
     return run_extraction(
         records,
@@ -365,6 +525,7 @@ def extract_theories(
         chunk_overlap,
         processes,
         request_timeout,
+        concurrency,
         set(),
         None,
     )
@@ -379,6 +540,7 @@ def run_extraction(
     chunk_overlap: int,
     processes: int,
     request_timeout: Optional[float],
+    concurrency: int,
     processed_indices: Set[int],
     result_queue: Optional[Any],
 ) -> List[Tuple[int, Dict]]:
@@ -405,6 +567,7 @@ def run_extraction(
             total_records,
             request_timeout,
             result_queue,
+            concurrency,
         )
         annotated_pairs = process_batch(payload)
     else:
@@ -425,6 +588,7 @@ def run_extraction(
                 total_records,
                 request_timeout,
                 result_queue,
+                concurrency,
             )
             for batch in batches
         ]
@@ -887,6 +1051,15 @@ def main(argv: List[str] | None = None) -> int:
     )
     parser.add_argument("--delay", type=float, default=0.5)
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help=(
+            "Maximum number of concurrent OpenAI requests per worker during theory "
+            "extraction."
+        ),
+    )
+    parser.add_argument(
         "--chunk-chars",
         type=int,
         default=12000,
@@ -967,6 +1140,10 @@ def main(argv: List[str] | None = None) -> int:
     else:
         processes = max(1, min(processes, len(records)))
 
+    if args.concurrency <= 0:
+        print("--concurrency must be a positive integer", file=sys.stderr)
+        return 2
+
     chunk_chars = args.chunk_chars
     if args.compat_max_chars is not None:
         chunk_chars = args.compat_max_chars
@@ -1008,6 +1185,7 @@ def main(argv: List[str] | None = None) -> int:
                 args.chunk_overlap,
                 processes,
                 args.request_timeout,
+                args.concurrency,
                 processed_indices,
                 result_queue,
             )
