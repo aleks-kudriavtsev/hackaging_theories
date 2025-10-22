@@ -2419,6 +2419,23 @@ def run_pipeline(
     questions_path = Path(outputs["questions"])
     export_question_answers(question_answers, papers, aggregation, questions_path)
 
+    no_confidence_path_value = outputs.get("questions_no_confidence")
+    if no_confidence_path_value:
+        questions_no_confidence_path = Path(no_confidence_path_value)
+    else:
+        suffix = questions_path.suffix
+        stem = questions_path.stem
+        questions_no_confidence_path = questions_path.with_name(
+            f"{stem}_no_confidence{suffix}"
+        )
+    export_question_answers(
+        question_answers,
+        papers,
+        aggregation,
+        questions_no_confidence_path,
+        include_confidence=False,
+    )
+
     competition_cfg = outputs.get("competition") if isinstance(outputs, Mapping) else None
     if isinstance(competition_cfg, Mapping):
         competition_papers = competition_cfg.get("papers")
@@ -2454,7 +2471,7 @@ def run_pipeline(
     total_theory_rows = sum(theory.number_of_collected_papers for theory in aggregation.theories)
     total_question_rows = sum(len(ids) for ids in aggregation.paper_to_theory_ids.values())
 
-    print(f"Exported {len(papers)} papers to {papers_path}")
+    print(f"Exported {len(papers)} collected papers to {papers_path}")
     print(
         f"Exported {len(aggregation.theories)} theories (covering {total_theory_rows} papers) to {theories_path}"
     )
@@ -2462,7 +2479,12 @@ def run_pipeline(
         path_text = str(theory_papers_path)
         print(f"Exported per-theory paper table to {path_text}")
         logger.info("Exported per-theory paper table to %s", path_text)
-    print(f"Exported {total_question_rows} question rows to {questions_path}")
+    print(
+        f"Exported {total_question_rows} question rows (with confidence) to {questions_path}"
+    )
+    print(
+        f"Exported {total_question_rows} question rows (without confidence) to {questions_no_confidence_path}"
+    )
 
     for theory_name, summary in summary_report.items():
         print(format_summary(theory_name, summary))

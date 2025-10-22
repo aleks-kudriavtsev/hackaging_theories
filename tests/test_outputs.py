@@ -11,6 +11,7 @@ from theories_pipeline.outputs import (
     COMPETITION_THEORY_COLUMNS,
     COMPETITION_THEORY_PAPER_COLUMNS,
     QUESTION_COLUMNS,
+    QUESTION_CONFIDENCE_COLUMNS,
     export_competition_papers,
     export_competition_question_answers,
     export_competition_theories,
@@ -55,6 +56,13 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         aggregation,
         tmp_path / "questions.csv",
     )
+    questions_plain_path = export_question_answers(
+        answers,
+        papers,
+        aggregation,
+        tmp_path / "questions_plain.csv",
+        include_confidence=False,
+    )
     competition_papers_path = export_competition_papers(papers, tmp_path / "papers_competition.csv")
     competition_theories_path = export_competition_theories(
         aggregation, tmp_path / "theories_competition.csv"
@@ -78,6 +86,7 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         competition_theories_path,
         competition_theory_papers_path,
         competition_questions_path,
+        questions_plain_path,
     ]:
         assert path.exists()
         with path.open("r", encoding="utf-8") as handle:
@@ -125,6 +134,20 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
         assert row["paper_name"] == "Sample"
 
     with questions_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == [
+            "theory_id",
+            "paper_url",
+            "paper_name",
+            "paper_year",
+            *QUESTION_COLUMNS,
+            *QUESTION_CONFIDENCE_COLUMNS,
+        ]
+        row = next(reader)
+        assert row["Q1"] == "Answer"
+        assert row["Q1_confidence"] == "0.75"
+
+    with questions_plain_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         assert reader.fieldnames == [
             "theory_id",
