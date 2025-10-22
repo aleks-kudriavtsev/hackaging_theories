@@ -374,6 +374,14 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--filter-cache",
+        dest="filter_cache",
+        help=(
+            "Path to the JSON cache storing step 2 LLM relevance decisions. "
+            "Defaults to <workdir>/filter_cache.json when omitted."
+        ),
+    )
+    parser.add_argument(
         "--theory-model",
         "--extract-model",
         dest="theory_model",
@@ -526,6 +534,12 @@ def main(argv: List[str] | None = None) -> int:
     workdir_path = Path(args.workdir)
     workdir_path.mkdir(parents=True, exist_ok=True)
 
+    filter_cache_path = (
+        Path(args.filter_cache)
+        if args.filter_cache
+        else workdir_path / "filter_cache.json"
+    )
+
     if args.compat_max_chars is not None:
         args.chunk_chars = args.compat_max_chars
 
@@ -663,6 +677,8 @@ def main(argv: List[str] | None = None) -> int:
                 args.filter_model,
                 "--delay",
                 str(args.filter_delay),
+                "--cache",
+                str(filter_cache_path),
                 *(
                     ["--processes", str(args.filter_processes)]
                     if args.filter_processes is not None
