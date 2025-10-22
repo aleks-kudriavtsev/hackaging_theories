@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help=(
             "Optional per-node retrieval quota applied to ontology-derived targets "
-            "(default: 10 per analytics guidance)."
+            "(default: 10; align with the current analytics guidance)."
         ),
     )
     parser.add_argument(
@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Return a non-zero exit code when question validation finds missing papers or "
-            "answer mismatches.",
+            "answer mismatches."
         ),
     )
     return parser

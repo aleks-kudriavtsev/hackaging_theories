@@ -232,6 +232,10 @@ def test_cli_defaults_apply_updated_target_quota(tmp_path: Path) -> None:
     parser = run_full_cycle.build_parser()
     args = parser.parse_args([])
 
+    help_text = parser.format_help()
+    assert "default: 10" in help_text
+    assert "analytics guidance" in help_text
+
     assert args.default_target == 10
 
     workdir = tmp_path / "defaults"
