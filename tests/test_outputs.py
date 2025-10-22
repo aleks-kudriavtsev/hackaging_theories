@@ -11,7 +11,6 @@ from theories_pipeline.outputs import (
     COMPETITION_THEORY_COLUMNS,
     COMPETITION_THEORY_PAPER_COLUMNS,
     QUESTION_COLUMNS,
-    QUESTION_CONFIDENCE_COLUMNS,
     export_competition_papers,
     export_competition_question_answers,
     export_competition_theories,
@@ -133,11 +132,9 @@ def test_export_functions_create_csv(tmp_path: Path) -> None:
             "paper_name",
             "paper_year",
             *QUESTION_COLUMNS,
-            *QUESTION_CONFIDENCE_COLUMNS,
         ]
         row = next(reader)
         assert row["Q1"] == "Answer"
-        assert row["Q1_confidence"] == "0.75"
 
     with competition_papers_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)

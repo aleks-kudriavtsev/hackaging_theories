@@ -17,7 +17,6 @@ from theories_pipeline.outputs import (
     COMPETITION_THEORY_COLUMNS,
     COMPETITION_THEORY_PAPER_COLUMNS,
     QUESTION_COLUMNS,
-    QUESTION_CONFIDENCE_COLUMNS,
 )
 
 
@@ -148,7 +147,6 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
             "paper_name",
             "paper_year",
             *QUESTION_COLUMNS,
-            *QUESTION_CONFIDENCE_COLUMNS,
         ]
 
     competition_dir = workdir / "competition"
