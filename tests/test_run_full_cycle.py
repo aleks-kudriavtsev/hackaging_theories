@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import run_full_cycle
+from scripts import analyze_ground_truth, run_full_cycle
 from theories_pipeline.outputs import (
     COMPETITION_PAPER_COLUMNS,
     COMPETITION_QUESTION_COLUMNS,
@@ -122,6 +122,24 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         "--no-resume",
     ]
 
+    ground_truth = tmp_path / "ground_truth.csv"
+    ground_truth.write_text(
+        "theory_id,paper_url,question_id,expected_answer\n"
+        "missing-theory,missing-paper,Q1,Yes\n",
+        encoding="utf-8",
+    )
+
+    answers_csv = tmp_path / "analysis.csv"
+
+    args.extend(
+        [
+            "--questions-ground-truth",
+            str(ground_truth),
+            "--paper-answers-csv",
+            str(answers_csv),
+        ]
+    )
+
     result = run_full_cycle.main(args)
     assert result == 0
 
@@ -136,18 +154,34 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
     theories_path = workdir / "theories.csv"
     theory_papers_path = workdir / "theory_papers.csv"
     questions_path = workdir / "questions.csv"
-    for path in [papers_path, theories_path, theory_papers_path, questions_path]:
-        assert path.exists()
+    fallback_paths = {
+        papers_path: workdir / "collected_papers.csv",
+        theories_path: workdir / "aging_theories.csv",
+        theory_papers_path: theory_papers_path,
+        questions_path: workdir / "paper_answers.csv",
+    }
+    for primary, fallback in fallback_paths.items():
+        assert primary.exists() or fallback.exists()
 
-    with questions_path.open("r", encoding="utf-8") as handle:
+    def _resolve_path(primary: Path, fallback: Path) -> Path:
+        if primary.exists():
+            return primary
+        assert fallback.exists()
+        return fallback
+
+    questions_file = _resolve_path(questions_path, fallback_paths[questions_path])
+    with questions_file.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        assert reader.fieldnames == [
-            "theory_id",
-            "paper_url",
-            "paper_name",
-            "paper_year",
-            *QUESTION_COLUMNS,
-        ]
+        fieldnames = reader.fieldnames
+    assert fieldnames is not None
+    base_columns = ["theory_id", "paper_url", "paper_name", "paper_year"]
+    if questions_file.name == "paper_answers.csv":
+        assert fieldnames[:4] == base_columns
+        assert fieldnames[4 : 4 + len(QUESTION_COLUMNS)] == list(QUESTION_COLUMNS)
+        confidence_suffixes = [f"{question}_confidence" for question in QUESTION_COLUMNS]
+        assert fieldnames[4 + len(QUESTION_COLUMNS) :] == confidence_suffixes
+    else:
+        assert fieldnames == base_columns + list(QUESTION_COLUMNS)
 
     competition_dir = workdir / "competition"
     assert competition_dir.exists()
@@ -186,6 +220,12 @@ def test_run_full_cycle_invokes_pipeline_and_collector(tmp_path: Path, tmp_confi
         for question in QUESTION_COLUMNS
     ]
     assert len(accuracy_ground_truth) == len(QUESTION_COLUMNS)
+
+    assert answers_csv.exists()
+    with answers_csv.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        statuses = {row["status"] for row in reader}
+    assert analyze_ground_truth.STATUS_MISSING in statuses
 
 
 def test_cli_defaults_apply_updated_target_quota(tmp_path: Path) -> None:
