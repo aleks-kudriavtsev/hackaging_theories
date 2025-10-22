@@ -71,6 +71,12 @@ PROMPT_CHARACTER_BUDGET = PROMPT_TOKEN_BUDGET * AVERAGE_CHARS_PER_TOKEN
 SUPPORTING_ARTICLE_CAPS = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 0)
 REPRESENTATIVE_ARTICLE_CAPS = (40, 20, 10, 5, 2, 1, 0)
 
+# Soft cap applied when reconciling oversized ontology groups. When more than
+# this number of theories end up directly under the same group, the overflow is
+# redistributed into auto-generated subgroups. The value mirrors the
+# ``--max-theories-per-group`` CLI option default.
+DEFAULT_MAX_THEORIES_PER_GROUP = 40
+
 
 def _load_json_payload(path: str) -> Mapping[str, object] | Sequence[object]:
     """Load a JSON payload, tolerating concatenated JSON documents."""
@@ -1209,10 +1215,11 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument(
         "--max-theories-per-group",
         type=int,
-        default=0,
+        default=DEFAULT_MAX_THEORIES_PER_GROUP,
         help=(
             "Maximum number of theories allowed per ontology group after reconciliation. "
-            "Values <= 0 disable automatic splitting."
+            "Defaults to %(default)s, which automatically splits oversized groups into "
+            "auto-generated subgroups. Values <= 0 disable the safeguard."
         ),
     )
     parser.add_argument(

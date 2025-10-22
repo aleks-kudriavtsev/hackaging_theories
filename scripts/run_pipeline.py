@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Mapping, Sequence
 from scripts import collect_theories
 
 
+DEFAULT_ONTOLOGY_MAX_THEORIES = 40
+
+
 def _normalise_doi(doi: str | None) -> str | None:
     if not doi:
         return None
@@ -477,6 +480,15 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ontology-max-theories",
+        type=int,
+        default=DEFAULT_ONTOLOGY_MAX_THEORIES,
+        help=(
+            "Maximum number of theories permitted per reconciled ontology group in "
+            "step 5 before automatic subgroup splitting is triggered."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-run steps even if their output files already exist.",
@@ -745,6 +757,8 @@ def main(argv: List[str] | None = None) -> int:
                 str(args.ontology_top_n),
                 "--examples-per-theory",
                 str(args.ontology_examples),
+                "--max-theories-per-group",
+                str(args.ontology_max_theories),
                 *(
                     ["--processes", str(args.ontology_processes)]
                     if args.ontology_processes is not None
