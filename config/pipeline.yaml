@@ -26,6 +26,10 @@ api_keys:
 data_sources:
   seed_papers: data/examples/seed_papers.json
 
+global:
+  prefer_reviews: false
+  global_limit: 1500
+
 providers:
   - name: openalex
     type: openalex
@@ -131,6 +135,24 @@ providers:
       to: 2023-01-15
     categories:
       - geriatrics
+
+llm_defaults:
+  filter_model: "gpt-5-nano"
+  classification_model: "gpt-5-nano"
+  extraction_model: "gpt-4"
+  batch_size: 1
+  request_timeout: 90
+  max_retries: 4
+  retry_backoff: 2.0
+
+performance:
+  filter_processes: 6
+  classification_workers: 4
+  theory_extract_workers: 4
+  prefer_parallel_fetch: true
+
+collection:
+  target_per_theory: 8
 
 classification:
   llm:
@@ -239,10 +261,10 @@ corpus:
     balance:
       max_children: 6
     cache_path: data/cache/bootstrap_ontology.json
-    update_targets: false
+    update_targets: true
   cache_dir: data/cache/literature
   min_citation_count: 5
-  prefer_reviews: true
+  prefer_reviews: false
   sort_by_citations: true
   global_limit: 1500
   expansion:
