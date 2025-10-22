@@ -133,6 +133,7 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
         "scripts/step3_fetch_fulltext.py",
         "scripts/step4_extract_theories.py",
         "scripts/step5_generate_ontology.py",
+        "scripts/step5_optimize_ontology.py",
     ]
     assert [cmd[1] for cmd in commands] == expected_scripts
 
@@ -159,6 +160,10 @@ def test_run_pipeline_executes_all_steps_and_merges(tmp_path, monkeypatch, sampl
     step5_command = commands[5]
     assert Path(step5_command[step5_command.index("--input") + 1]) == Path(paths.theories)
     assert Path(step5_command[step5_command.index("--output") + 1]) == Path(paths.ontology)
+
+    step5b_command = commands[6]
+    assert Path(step5b_command[step5b_command.index("--input") + 1]) == Path(paths.ontology)
+    assert Path(step5b_command[step5b_command.index("--output") + 1]) == Path(paths.ontology)
     assert (
         step5_command[step5_command.index("--max-theories-per-group") + 1]
         == str(run_pipeline.DEFAULT_ONTOLOGY_MAX_THEORIES)
