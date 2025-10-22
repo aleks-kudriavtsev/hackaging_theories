@@ -1,0 +1,267 @@
+{
+  "generated_at": "2025-10-22T07:42:05.459871Z",
+  "model": "gpt-5-mini",
+  "input_file": "data/pipeline/aging_theories.json",
+  "total_unique_theories": 3,
+  "examples_per_theory": 3,
+  "registry_source": "embedded",
+  "registry_reconstructed": false,
+  "worker_processes": 1,
+  "auto_processes_suggestion": 1,
+  "requested_processes": null,
+  "chunk_size": 3,
+  "auto_chunk_size_suggestion": 3,
+  "prompt_summary": [
+    {
+      "theory_id": "caloric_restriction",
+      "label": "Caloric Restriction Theory",
+      "aliases": [
+        "Dietary Restriction Longevity Theory",
+        "Metabolic Longevity Hypothesis"
+      ],
+      "article_count": 1,
+      "supporting_articles": [
+        "A3"
+      ],
+      "representative_articles": [
+        {
+          "id": "A3",
+          "title": "Caloric restriction mimetics and longevity",
+          "doi": "10.1000/aging.003",
+          "journal": "Nutrition and Aging",
+          "publication_year": 2020,
+          "authors": [
+            "A. Gómez",
+            "R. Chen"
+          ]
+        }
+      ]
+    },
+    {
+      "theory_id": "damage_accumulation",
+      "label": "Damage Accumulation Theory",
+      "aliases": [
+        "Wear and Tear Theory",
+        "Oxidative Damage Hypothesis"
+      ],
+      "article_count": 1,
+      "supporting_articles": [
+        "A1"
+      ],
+      "representative_articles": [
+        {
+          "id": "A1",
+          "title": "Oxidative stress and damage accumulation in aging organisms",
+          "doi": "10.1000/aging.001",
+          "journal": "Journal of Geroscience",
+          "publication_year": 2018,
+          "authors": [
+            "J. Smith",
+            "L. Nguyen"
+          ]
+        }
+      ]
+    },
+    {
+      "theory_id": "telomere_attrition",
+      "label": "Telomere Attrition Theory",
+      "aliases": [
+        "Telomere Shortening Hypothesis"
+      ],
+      "article_count": 1,
+      "supporting_articles": [
+        "A2"
+      ],
+      "representative_articles": [
+        {
+          "id": "A2",
+          "title": "Telomere attrition as a biomarker of biological aging",
+          "doi": "10.1000/aging.002",
+          "journal": "Ageing Research Reviews",
+          "publication_year": 2019,
+          "authors": [
+            "C. Johnson",
+            "M. Patel"
+          ]
+        }
+      ]
+    }
+  ],
+  "prompt_adjustments": [],
+  "ontology": {
+    "raw": {
+      "groups": [
+        {
+          "name": "Cellular Mechanisms of Aging",
+          "description": "Mechanistic explanations grounded in cellular damage and maintenance.",
+          "theories": [
+            {
+              "theory_id": "damage_accumulation",
+              "preferred_label": "Damage Accumulation",
+              "supporting_articles": [
+                "A1"
+              ]
+            },
+            {
+              "theory_id": "telomere_attrition",
+              "preferred_label": "Telomere Attrition",
+              "supporting_articles": [
+                "A2"
+              ]
+            },
+            {
+              "theory_id": "caloric_restriction",
+              "preferred_label": "Caloric Restriction",
+              "supporting_articles": [
+                "A3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "final": {
+      "groups": [
+        {
+          "name": "Cellular Mechanisms of Aging",
+          "description": "Mechanistic explanations grounded in cellular damage and maintenance.",
+          "theories": [
+            {
+              "theory_id": "damage_accumulation",
+              "label": "Damage Accumulation Theory",
+              "preferred_label": "Damage Accumulation",
+              "aliases": [
+                "Wear and Tear Theory",
+                "Oxidative Damage Hypothesis"
+              ],
+              "supporting_articles": [
+                "A1"
+              ]
+            },
+            {
+              "theory_id": "telomere_attrition",
+              "label": "Telomere Attrition Theory",
+              "preferred_label": "Telomere Attrition",
+              "aliases": [
+                "Telomere Shortening Hypothesis"
+              ],
+              "supporting_articles": [
+                "A2"
+              ]
+            }
+          ],
+          "subgroups": [
+            {
+              "name": "Cellular Mechanisms of Aging (auto-split 2)",
+              "description": "Automatically created to satisfy the max_theories_per_group limit.",
+              "theories": [
+                {
+                  "theory_id": "caloric_restriction",
+                  "label": "Caloric Restriction Theory",
+                  "preferred_label": "Caloric Restriction",
+                  "aliases": [
+                    "Dietary Restriction Longevity Theory",
+                    "Metabolic Longevity Hypothesis"
+                  ],
+                  "supporting_articles": [
+                    "A3"
+                  ]
+                }
+              ],
+              "suggested_queries": [
+                "Caloric Restriction",
+                "\"Caloric Restriction\"",
+                "\"Caloric Restriction\" aging",
+                "Caloric Restriction theory",
+                "\"Caloric Restriction Theory\"",
+                "\"Caloric Restriction Theory\" aging",
+                "Dietary Restriction Longevity Theory",
+                "\"Dietary Restriction Longevity Theory\"",
+                "\"Dietary Restriction Longevity Theory\" aging",
+                "Metabolic Longevity Hypothesis",
+                "\"Metabolic Longevity Hypothesis\"",
+                "\"Metabolic Longevity Hypothesis\" aging",
+                "Metabolic Longevity Hypothesis theory"
+              ]
+            }
+          ],
+          "suggested_queries": [
+            "Damage Accumulation",
+            "\"Damage Accumulation\"",
+            "\"Damage Accumulation\" aging",
+            "Damage Accumulation theory",
+            "\"Damage Accumulation Theory\"",
+            "\"Damage Accumulation Theory\" aging",
+            "Wear and Tear Theory",
+            "\"Wear and Tear Theory\"",
+            "\"Wear and Tear Theory\" aging",
+            "Oxidative Damage Hypothesis",
+            "\"Oxidative Damage Hypothesis\"",
+            "\"Oxidative Damage Hypothesis\" aging",
+            "Oxidative Damage Hypothesis theory",
+            "Telomere Attrition",
+            "\"Telomere Attrition\"",
+            "\"Telomere Attrition\" aging",
+            "Telomere Attrition theory",
+            "\"Telomere Attrition Theory\"",
+            "\"Telomere Attrition Theory\" aging",
+            "Telomere Shortening Hypothesis",
+            "\"Telomere Shortening Hypothesis\"",
+            "\"Telomere Shortening Hypothesis\" aging",
+            "Telomere Shortening Hypothesis theory",
+            "Caloric Restriction",
+            "\"Caloric Restriction\"",
+            "\"Caloric Restriction\" aging",
+            "Caloric Restriction theory",
+            "\"Caloric Restriction Theory\"",
+            "\"Caloric Restriction Theory\" aging",
+            "Dietary Restriction Longevity Theory",
+            "\"Dietary Restriction Longevity Theory\"",
+            "\"Dietary Restriction Longevity Theory\" aging",
+            "Metabolic Longevity Hypothesis",
+            "\"Metabolic Longevity Hypothesis\"",
+            "\"Metabolic Longevity Hypothesis\" aging",
+            "Metabolic Longevity Hypothesis theory"
+          ]
+        }
+      ]
+    }
+  },
+  "reconciliation_report": {
+    "total_groups": 1,
+    "total_reassignments": 0,
+    "worker_processes": 1,
+    "process_configuration": "auto",
+    "auto_processes_suggestion": 1,
+    "requested_processes": null,
+    "chunk_size": 3,
+    "auto_chunk_size_suggestion": 3,
+    "group_splits": [
+      {
+        "group_path": "Cellular Mechanisms of Aging",
+        "original_theory_count": 3,
+        "retained_theory_ids": [
+          "damage_accumulation",
+          "telomere_attrition"
+        ],
+        "overflow_groups": [
+          [
+            "caloric_restriction"
+          ]
+        ],
+        "limit": 2
+      }
+    ],
+    "notes": [
+      {
+        "event": "worker_processes",
+        "process_count": 1,
+        "auto_suggestion": 1,
+        "requested_processes": null,
+        "configuration": "auto",
+        "chunk_size": 3,
+        "auto_chunk_size_suggestion": 3
+      }
+    ]
+  }
+}
