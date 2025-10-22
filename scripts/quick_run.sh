@@ -13,7 +13,7 @@ if [ -z "$OPENAI_API_KEY" ]; then
 fi
 
 echo "Quick run: workdir=$WORKDIR filter_procs=$FILTER_PROCS classify_workers=$CLASSIFY_WORKERS theory_workers=$THEORY_WORKERS"
-echo "Models: filter=gpt-5-nano, classify=gpt-5-nano, extract=gpt-4"
+echo "Models: filter=gpt-5-nano, classify=gpt-5-nano, extract=gpt-5-mini"
 
 # Step 1: bootstrap / collect initial reviews
 echo "STEP 1: bootstrap collect reviews..."
