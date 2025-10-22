@@ -1231,6 +1231,15 @@ def main(argv: List[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--registry-temperature",
+        type=float,
+        default=0.2,
+        help=(
+            "Sampling temperature applied when reconciling extracted theory "
+            "aliases during registry reconstruction."
+        ),
+    )
+    parser.add_argument(
         "--registry-request-timeout",
         type=float,
         default=60.0,
@@ -1273,6 +1282,11 @@ def main(argv: List[str] | None = None) -> int:
                 break
 
     registry = data_mapping.get("theory_registry") if isinstance(data_mapping, Mapping) else None
+    synonym_registry: Optional[Mapping[str, object]] = None
+    if isinstance(data_mapping, Mapping):
+        raw_synonyms = data_mapping.get("synonym_registry")
+        if isinstance(raw_synonyms, Mapping):
+            synonym_registry = raw_synonyms
     article_records: List[Mapping[str, object]] = []
     registry_source = "embedded"
 
@@ -1306,10 +1320,11 @@ def main(argv: List[str] | None = None) -> int:
             "reconstruct it from checkpoint annotations...",
             file=sys.stderr,
         )
-        registry = build_theory_registry(
+        registry, synonym_registry = build_theory_registry(
             article_records,
             api_key,
             args.registry_model,
+            args.registry_temperature,
             args.registry_request_timeout,
         )
         registry_reconstructed = True
@@ -1523,6 +1538,7 @@ def main(argv: List[str] | None = None) -> int:
                 "record_count": len(article_records),
                 "source": registry_source,
                 "registry_model": args.registry_model,
+                "registry_temperature": args.registry_temperature,
                 "registry_request_timeout": args.registry_request_timeout,
             }
         )
@@ -1548,6 +1564,8 @@ def main(argv: List[str] | None = None) -> int:
                 "groups": reconciled_groups,
             },
         },
+        "theory_registry": registry,
+        "synonym_registry": synonym_registry,
         "reconciliation_report": {
             "total_groups": len(reconciled_groups),
             "total_reassignments": len(reconciliation.get("reassignments", [])),

@@ -41,12 +41,21 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence,
 
 from openai import AsyncOpenAI
 
-from scripts.step3_fetch_fulltext import enrich_records
-from scripts.step4_extract_theories import (
-    DEFAULT_OPENAI_TIMEOUT,
-    build_theory_registry,
-    extract_theories,
-)
+try:
+    from scripts.step3_fetch_fulltext import enrich_records
+    from scripts.step4_extract_theories import (
+        DEFAULT_OPENAI_TIMEOUT,
+        build_theory_registry,
+        extract_theories,
+    )
+except ModuleNotFoundError:  # pragma: no cover - fallback for direct execution
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from scripts.step3_fetch_fulltext import enrich_records
+    from scripts.step4_extract_theories import (
+        DEFAULT_OPENAI_TIMEOUT,
+        build_theory_registry,
+        extract_theories,
+    )
 
 
 OPENAI_SYSTEM_PROMPT = (
@@ -863,6 +872,23 @@ def main(argv: List[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--disambiguation-model",
+        default="gpt-5-mini",
+        help=(
+            "OpenAI model used when reconciling extracted theory aliases against "
+            "the canonical registry."
+        ),
+    )
+    parser.add_argument(
+        "--disambiguation-temperature",
+        type=float,
+        default=0.2,
+        help=(
+            "Sampling temperature applied to the disambiguation model when "
+            "classifying theory synonyms."
+        ),
+    )
+    parser.add_argument(
         "--extraction-delay",
         type=float,
         default=0.5,
@@ -1121,11 +1147,15 @@ def main(argv: List[str] | None = None) -> int:
         annotated_records = []
 
     if annotated_records:
-        theory_registry = build_theory_registry(
-            annotated_records, api_key, args.extraction_model, args.extraction_timeout
+        theory_registry, synonym_registry = build_theory_registry(
+            annotated_records,
+            api_key,
+            args.disambiguation_model,
+            args.disambiguation_temperature,
+            args.extraction_timeout,
         )
     else:
-        theory_registry = {}
+        theory_registry, synonym_registry = {}, {}
 
     aggregated_theories = sorted(theory_registry.keys()) if theory_registry else []
     raw_mentions = _collect_theory_mentions(annotated_records)
@@ -1142,6 +1172,8 @@ def main(argv: List[str] | None = None) -> int:
         "theory_mentions": len(raw_mentions),
         "filter_model": args.model,
         "extraction_model": args.extraction_model,
+        "disambiguation_model": args.disambiguation_model,
+        "disambiguation_temperature": args.disambiguation_temperature,
     }
 
     combined_payload = {
@@ -1149,6 +1181,7 @@ def main(argv: List[str] | None = None) -> int:
         "raw_theory_mentions": raw_mentions,
         "aggregated_theories": aggregated_theories,
         "theory_registry": theory_registry,
+        "synonym_registry": synonym_registry,
         "metadata": metadata,
     }
 
