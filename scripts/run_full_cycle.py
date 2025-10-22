@@ -253,10 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--default-target",
         type=int,
-        default=6,
+        default=10,
         help=(
             "Optional per-node retrieval quota applied to ontology-derived targets "
-            "(default: 6)."
+            "(default: 10 per analytics guidance)."
         ),
     )
     parser.add_argument(
