@@ -13,6 +13,8 @@ _coerce_articles_from_documents = _MODULE._coerce_articles_from_documents
 _load_json_payload = _MODULE._load_json_payload
 _load_registry_builder = _MODULE._load_registry_builder
 _limit_group_theories = _MODULE._limit_group_theories
+_reconcile_groups = _MODULE._reconcile_groups
+refine_group_hierarchy = _MODULE.refine_group_hierarchy
 
 
 def test_load_json_payload_returns_documents_when_registry_missing(tmp_path: Path) -> None:
@@ -106,3 +108,99 @@ def test_limit_group_theories_splits_large_groups() -> None:
     adjustments = reconciliation.get("group_splits")
     assert adjustments and adjustments[0]["limit"] == 40
     assert adjustments[0]["overflow_groups"][0] == [f"T{index}" for index in range(40, 45)]
+
+
+def test_refinement_and_reconciliation_merge_synonymous_groups() -> None:
+    input_groups = [
+        {
+            "name": "Cellular Senescence",
+            "description": "Loss of proliferation capacity",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+        {
+            "name": "Cellular Ageing",
+            "description": "Synonym of senescence",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+    ]
+
+    def fake_call(messages, api_key, *, model, temperature):
+        assert api_key == "test-key"
+        assert model == _MODULE.REFINEMENT_MODEL
+        assert temperature == 0.4
+        assert messages and messages[0]["role"] == "system"
+        payload = {
+            "groups": [
+                {
+                    "name": "Cellular Senescence",
+                    "description": "Unified senescence bucket",
+                },
+                {
+                    "name": "Cellular Ageing",
+                    "parent": "Cellular Senescence",
+                    "theories": [
+                        {
+                            "theory_id": "T1",
+                            "preferred_label": "Cellular Senescence",
+                            "supporting_articles": ["A1"],
+                        }
+                    ],
+                },
+            ]
+        }
+        metadata = {
+            "id": "cmpl-test",
+            "model": model,
+            "usage": {"prompt_tokens": 42, "completion_tokens": 25},
+        }
+        return payload, metadata
+
+    refined_groups, metadata = refine_group_hierarchy(
+        input_groups,
+        "test-key",
+        call_model=fake_call,
+    )
+
+    assert metadata["status"] == "completed"
+    assert metadata["materialised_group_count"] == 1
+    assert metadata["response_metadata"]["usage"]["prompt_tokens"] == 42
+
+    assert len(refined_groups) == 1
+    parent_group = refined_groups[0]
+    assert parent_group["name"] == "Cellular Senescence"
+    assert "subgroups" in parent_group
+    nested = parent_group["subgroups"][0]
+    assert nested["name"] == "Cellular Ageing"
+    assert nested["theories"][0]["theory_id"] == "T1"
+
+    registry = {
+        "T1": {
+            "label": "Cellular Senescence",
+            "aliases": [],
+            "supporting_articles": ["A1"],
+        }
+    }
+    article_index = {"A1": ["T1"]}
+
+    reconciled, reconciliation = _reconcile_groups(
+        refined_groups,
+        registry,
+        article_index=article_index,
+    )
+
+    assert len(reconciled) == 1
+    reconciled_child = reconciled[0]["subgroups"][0]
+    assert reconciled_child["theories"][0]["supporting_articles"] == ["A1"]
+    assert "duplicate_theories" not in reconciliation
