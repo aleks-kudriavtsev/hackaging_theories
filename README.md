@@ -136,7 +136,9 @@ python scripts/step2_filter_reviews.py \
 * `--batch-size` and `--concurrency` trade off token use and latency by packing
   multiple abstracts per request and limiting simultaneous API calls.
 * `--processes` lets you pin the number of worker processes; leaving it blank
-  auto-scales based on queue size and CPU availability.
+  auto-scales based on queue size and CPU availability. The same value now acts
+  as the default for the downstream extraction stage unless you override
+  `--extraction-processes`.
 
 **Parallelism and staging tips**
 
@@ -172,7 +174,9 @@ python scripts/step2_filter_reviews.py \
   to work.
 * `--extraction-model`, `--extraction-processes`, `--extraction-delay`,
   `--chunk-chars`, and `--chunk-overlap` configure the gpt-5-nano theory
-  extraction pipeline that now runs immediately after full-text retrieval.
+  extraction pipeline that now runs immediately after full-text retrieval. When
+  you omit `--extraction-processes`, the script reuses the `--processes` value
+  (subject to CPU and workload limits) before falling back to auto-scaling.
 * `--failures` writes unresolved PDF/PMC downloads to `<output>.failures.json`
   so you can retry them later without touching already-processed articles.
 

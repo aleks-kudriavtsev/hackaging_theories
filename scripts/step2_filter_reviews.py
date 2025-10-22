@@ -918,7 +918,8 @@ def main(argv: List[str] | None = None) -> int:
         default=None,
         help=(
             "Number of worker processes for theory extraction. When omitted the "
-            "script auto-scales based on the relevant record volume."
+            "script auto-scales based on the relevant record volume, defaulting "
+            "to --processes when that flag is provided."
         ),
     )
     args = parser.parse_args(argv)
@@ -1125,10 +1126,13 @@ def main(argv: List[str] | None = None) -> int:
     if enriched_records:
         relevant_count = len(enriched_records)
         if args.extraction_processes is None:
-            auto_extract = min(
-                cpu_total,
-                max(1, math.ceil(relevant_count / min_records_per_worker)),
-            )
+            if args.processes is not None:
+                auto_extract = min(args.processes, cpu_total)
+            else:
+                auto_extract = min(
+                    cpu_total,
+                    max(1, math.ceil(relevant_count / min_records_per_worker)),
+                )
         else:
             auto_extract = args.extraction_processes
         extraction_processes = max(1, min(auto_extract, relevant_count))
