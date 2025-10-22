@@ -42,12 +42,14 @@ from .filtering import RelevanceFilter, FilterDecision
 from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
 from .review_bootstrap import (
     BootstrapResult,
+    BootstrapVerificationRecorder,
     ReviewDocument,
     build_bootstrap_ontology,
     extract_theories_from_review,
     merge_bootstrap_into_targets,
     normalise_review_metadata,
     pull_top_cited_reviews,
+    summarise_verification_records,
     write_bootstrap_cache,
 )
 from .runtime_bootstrap import (
@@ -98,12 +100,14 @@ __all__ = [
     "LLMRateLimitError",
     "ReviewDocument",
     "BootstrapResult",
+    "BootstrapVerificationRecorder",
     "pull_top_cited_reviews",
     "normalise_review_metadata",
     "extract_theories_from_review",
     "build_bootstrap_ontology",
     "merge_bootstrap_into_targets",
     "write_bootstrap_cache",
+    "summarise_verification_records",
     "RuntimeOntologyBootstrapper",
     "RuntimeLabelRequest",
     "RuntimeLabelResponse",

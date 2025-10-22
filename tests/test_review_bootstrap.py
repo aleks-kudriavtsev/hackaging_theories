@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from theories_pipeline.literature import PaperMetadata, RetrievalResult
 from theories_pipeline.review_bootstrap import (
     BootstrapResult,
+    BootstrapVerificationRecorder,
     ReviewDocument,
     build_bootstrap_ontology,
     extract_theories_from_review,
+    main as bootstrap_main,
     merge_bootstrap_into_targets,
     normalise_review_metadata,
     pull_top_cited_reviews,
 )
+from theories_pipeline.llm import LLMResponse
 
 
 class _FakeRetriever:
@@ -150,6 +155,69 @@ def test_extract_theories_and_build_bootstrap_tree() -> None:
     assert {name.lower() for name in sub_names} == {"engagement", "participation"}
 
 
+def test_extract_theories_respects_max_theories_without_llm() -> None:
+    paper = PaperMetadata(
+        identifier="rev-max-1",
+        title="Extensive theory catalog",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2018,
+        doi=None,
+        full_text="Activity Theory discusses engagement. Socioemotional Selectivity Theory emphasises goals. Continuity Theory continues.",
+        citation_count=75,
+        is_review=True,
+    )
+    review = ReviewDocument(query="aging theories", paper=paper, citations=75)
+
+    result = extract_theories_from_review(review, llm_client=None, max_theories=2)
+
+    assert len(result.theories) == 2
+    extracted_names = {node["name"] for node in result.theories}
+    assert "Activity Theory" in extracted_names
+
+
+class _StaticLLMClient:
+    def __init__(self, payload: Mapping[str, Any]) -> None:
+        self.payload = payload
+        self.calls: List[Sequence[Sequence[Any]]] = []
+
+    def generate(self, messages_batch: Sequence[Sequence[Any]]) -> List[LLMResponse]:
+        self.calls.append(messages_batch)
+        return [LLMResponse(content=json.dumps(self.payload), cached=False)]
+
+
+def test_extract_theories_respects_max_theories_with_llm() -> None:
+    paper = PaperMetadata(
+        identifier="rev-max-llm",
+        title="LLM rich review",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2017,
+        doi=None,
+        full_text="",
+        citation_count=60,
+        is_review=True,
+    )
+    review = ReviewDocument(query="aging theories", paper=paper, citations=60)
+
+    payload = {
+        "theories": [
+            {"name": "Activity Theory", "subtheories": []},
+            {"name": "Continuity Theory", "subtheories": []},
+            {"name": "Disengagement Theory", "subtheories": []},
+        ]
+    }
+    client = _StaticLLMClient(payload)
+
+    result = extract_theories_from_review(review, llm_client=client, max_theories=2)
+
+    assert len(result.theories) == 2
+    assert client.calls, "LLM client should be invoked"
+    assert {node["name"] for node in result.theories} <= {entry["name"] for entry in payload["theories"]}
+
+
 def _leaf_count_from_config(node: Mapping[str, Any]) -> int:
     sub = node.get("subtheories")
     if not isinstance(sub, Mapping) or not sub:
@@ -194,6 +262,63 @@ def test_build_bootstrap_ontology_balances_children_evenly() -> None:
         for node in subtheories.values()
     ]
     assert max(branch_sizes) - min(branch_sizes) <= 1
+
+
+def test_bootstrap_verification_recorder_emits_reports(tmp_path: Path, capsys) -> None:
+    paper = PaperMetadata(
+        identifier="rev-verify",
+        title="Verification review",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2022,
+        doi=None,
+        full_text="",
+        citation_count=42,
+        is_review=True,
+    )
+    review = ReviewDocument(query="verification", paper=paper, citations=42)
+    theories = [
+        {
+            "name": "Parent Theory",
+            "subtheories": [
+                {"name": "Child A", "subtheories": []},
+                {"name": "Child B", "subtheories": [{"name": "Grandchild", "subtheories": []}]},
+            ],
+        }
+    ]
+    result = BootstrapResult(review=review, theories=theories)
+
+    recorder = BootstrapVerificationRecorder(tmp_path / "verify")
+    recorder.record(result)
+    summary = recorder.finalise()
+
+    results_path = recorder.results_path
+    report_path = recorder.report_path
+
+    assert results_path.exists()
+    assert report_path.exists()
+
+    lines = [line for line in results_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    stored = json.loads(lines[0])
+    assert stored["summary"]["total_nodes"] == 4
+    assert stored["summary"]["leaf_nodes"] == 2
+
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report_payload == summary
+    assert report_payload["total_nodes"] == 4
+    assert report_payload["reviews_with_nodes"] == 1
+
+    report_path.unlink()
+    exit_code = bootstrap_main(["verify", str(results_path)])
+    assert exit_code == 0
+    cli_output = capsys.readouterr().out.strip()
+    assert cli_output, "CLI should print summary JSON"
+    cli_summary = json.loads(cli_output)
+    assert cli_summary["total_nodes"] == 4
+    refreshed = json.loads(report_path.read_text(encoding="utf-8"))
+    assert refreshed == cli_summary
 
 def test_merge_bootstrap_into_targets_handles_missing_nodes() -> None:
     base = {
