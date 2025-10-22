@@ -61,6 +61,241 @@ them into end-to-end commands that scale to very large corpora.
    caches, and the global rejection registry end up under `data/pipeline/` by
    default so subsequent runs resume automatically.
 
+## Stage-by-stage execution
+
+### Step 1A – PubMed review bootstrap (`scripts/step1_pubmed_search.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step1_pubmed_search.py \
+    --output data/pipeline/start_reviews.json
+```
+
+**Key flags and inputs**
+
+* `--query` overrides the default PubMed Title/Abstract search that narrows the
+  corpus to review articles about aging theories. Use it to experiment with
+  tighter date ranges or alternate vocabularies without editing code.
+* `--output` controls where the metadata JSON is written. The default is
+  `data/pipeline/start_reviews.json`, but you can point to
+  `start_reviews_pubmed.json` when you want to keep PubMed output separate from
+  OpenAlex before merging.
+* Optional environment variables—`PUBMED_API_KEY`, `PUBMED_TOOL`, and
+  `PUBMED_EMAIL`—raise rate limits and attach contact metadata to your E-utility
+  calls.
+
+**Parallelism and staging tips**
+
+The script streams requests sequentially but respects the PubMed policies by
+pausing ~0.34 seconds between batches; raise this delay manually if you see 429
+errors. Re-running the command with the same `--output` simply overwrites the
+JSON, so keep dated filenames when you want incremental checkpoints.
+
+### Step 1B – OpenAlex enrichment (`scripts/step1b_openalex_search.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step1b_openalex_search.py \
+    --output data/pipeline/start_reviews_openalex.json
+```
+
+**Key flags and inputs**
+
+* `--terms` lists the default aging-theory phrases. Provide your own phrases or
+  supply a file of synonyms to broaden discovery.
+* `--per-page` (default 200) and `--filter` arguments mirror the OpenAlex REST
+  API query language; they let you keep the response size manageable while
+  chaining extra filters such as publication years.
+* Network hygiene is tunable with `--request-interval`, `--max-attempts`, and
+  `--retry-wait`. Each has an accompanying environment variable (`OPENALEX_*`)
+  so you can centralise rate-limit settings when running from orchestrators.
+
+**Parallelism and staging tips**
+
+The collector deduplicates on the OpenAlex work identifier, which means you can
+append additional `--terms` in follow-up runs and then merge JSON payloads by
+hand or through `run_pipeline.py`. Keep the API key (`OPENALEX_API_KEY`) in your
+environment to benefit from higher request quotas.
+
+### Step 2 – LLM relevance filter (`scripts/step2_filter_reviews.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step2_filter_reviews.py \
+    --input data/pipeline/start_reviews.json \
+    --output data/pipeline/filtered_reviews.json
+```
+
+**Key flags and inputs**
+
+* `--model` selects the OpenAI chat model (default `gpt-5-nano`); bump to
+  `gpt-5-mini` for stricter judgements when cost allows.
+* `--batch-size` and `--concurrency` trade off token use and latency by packing
+  multiple abstracts per request and limiting simultaneous API calls.
+* `--processes` lets you pin the number of worker processes; leaving it blank
+  auto-scales based on queue size and CPU availability.
+
+**Parallelism and staging tips**
+
+Set `OPENAI_API_KEY` in your shell before launching. The script fan-outs to as
+many worker processes as needed (capped by CPU cores) while maintaining an
+inter-request delay to respect OpenAI rate limits. For long queues, write to a
+dated `--output` path so that you can resume from the last successful file if a
+network failure stops the run.
+
+### Step 3 – Full-text harvesting (`scripts/step3_fetch_fulltext.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step3_fetch_fulltext.py \
+    --input data/pipeline/filtered_reviews.json \
+    --output data/pipeline/filtered_reviews_fulltext.json
+```
+
+**Key flags and inputs**
+
+* `--failures` records unresolved downloads to `<output>.failures.json` by
+  default; point it elsewhere when you want a persistent retry queue.
+* `--processes` and `--concurrency` let you choose a process pool or thread pool
+  for PMC fetches; the default automatically switches to multi-process once the
+  queue exceeds 100 items.
+* `--entrez-interval`, `--entrez-max-attempts`, `--entrez-retry-wait`, and
+  `--entrez-batch-size` map onto the PubMed E-utilities rate controls and accept
+  environment variable overrides (`PUBMED_RATE_INTERVAL`, `PUBMED_MAX_ATTEMPTS`,
+  etc.).
+
+**Parallelism and staging tips**
+
+Install `pdfminer.six` (and optionally `pdf2image` + `pytesseract`) when you
+expect scanned PDFs. The script creates worker-safe rate limiters so you can
+increase `--processes` on larger machines. When PMC throttles with HTTP 429, the
+exponential backoff kicks in automatically, but you can resume stubborn IDs by
+rerunning with the same `--failures` log after removing the recovered entries.
+
+### Step 4 – Theory extraction (`scripts/step4_extract_theories.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step4_extract_theories.py \
+    --input data/pipeline/filtered_reviews_fulltext.json \
+    --output data/pipeline/aging_theories.json \
+    --processes 4
+```
+
+**Key flags and inputs**
+
+* `--chunk-chars` and `--chunk-overlap` control how long each review excerpt is
+  and how much context overlaps between adjacent prompts, keeping prompts inside
+  the model window.
+* `--request-timeout` and `--delay` tune API pacing when OpenAI responds slowly
+  or you need to back off aggressive retry loops.
+* `--checkpoint` persists per-review annotations; it defaults to the output path
+  so reruns skip already processed entries and append only the missing ones.
+
+**Parallelism and staging tips**
+
+Provide `OPENAI_API_KEY` before launching. The script auto-scales worker
+processes based on queue size but honours any explicit `--processes` value. For
+long corpora, keep the generated checkpoint file under version control or copy
+it aside; restarting with the same checkpoint continues where the previous run
+stopped without duplicating requests.
+
+### Step 5 – Ontology synthesis (`scripts/step5_generate_ontology.py`)
+
+**Canonical command**
+
+```bash
+python scripts/step5_generate_ontology.py \
+    --input data/pipeline/aging_theories.json \
+    --output data/pipeline/aging_ontology.json
+```
+
+**Key flags and inputs**
+
+* `--model` (default `gpt-5-mini`) governs the ontology synthesis quality; pair
+  it with `--top-n` to trim the registry summary when you want cheaper trial
+  runs.
+* `--processes`, `--chunk-size`, and `--examples-per-theory` shape how the
+  canonical registry is split across worker prompts and how many representative
+  titles accompany each theory.
+* Use `--llm-response` to hydrate the reconciler from a saved model response and
+  `--max-theories-per-group` to enforce balanced group sizes when rebuilding the
+  ontology.
+* When the input file lacks a `theory_registry`, the script can reconstruct it
+  from checkpoint annotations using the fallback model specified by
+  `--registry-model` and the timeout in `--registry-request-timeout`.
+
+**Parallelism and staging tips**
+
+Set `OPENAI_API_KEY` unless you feed a cached `--llm-response`. Large corpora
+benefit from multi-process mode, but keep an eye on token budgets—chunking keeps
+individual prompts within the ~240k token safety margin enforced by the prompt
+builder. Store the raw LLM response alongside `aging_ontology.json` so you can
+regenerate reconciled artefacts without another API call.
+
+### Ontology-driven expansion (`scripts/collect_theories.py`)
+
+**Canonical command**
+
+```bash
+python scripts/collect_theories.py "aging theory" \
+    --config config/pipeline.yaml
+```
+
+**Key flags and inputs**
+
+* `--providers` restricts retrieval to a subset of the configured sources, while
+  API key overrides (e.g., `--openalex-api-key`) follow the precedence
+  CLI > config > environment.
+* `--parallel-fetch` and `--classification-workers` adjust concurrent provider
+  fetches and LLM post-processing throughput; they fall back to sensible config
+  defaults when omitted.
+* Use `--no-resume` to ignore cached progress or `--state-dir` to relocate the
+  persistent queue/cache (defaults to `<workdir>/collector/` when orchestrated by
+  `run_pipeline.py`).
+
+**Parallelism and staging tips**
+
+The collector resumes automatically from its state directory—copy this folder to
+checkpoint long crawls or to fan out across machines. Cached LLM responses live
+under `data/cache/llm` by default; share the directory to avoid reclassifying the
+same papers. Exports land where `config/pipeline.yaml` points (e.g.,
+`data/pipeline/papers.csv` when launched through the orchestrators).
+
+### Post-processing and accuracy checks
+
+* Generate the CSV bundle and competition-friendly tables by running
+  `collect_theories.py`; the helper writes `papers.csv`, `theories.csv`,
+  `theory_papers.csv`, `questions.csv`, and optional competition exports defined
+  in the config.
+* Summarise coverage and confidence trends with:
+
+  ```bash
+  python scripts/score_progress.py --workdir data/pipeline
+  ```
+
+  The report builder loads `<workdir>/theories.csv` and `questions.csv`, then
+  emits Markdown/JSON dashboards under `<workdir>/reports/`.
+* Audit per-question accuracy against labelled data with:
+
+  ```bash
+  python scripts/validate_questions.py \
+      --questions data/pipeline/questions.csv \
+      --ground-truth path/to/answers.csv
+  ```
+
+  The tool prints a failure summary and can export a JSON report for tracking
+  regressions.
+* For ad-hoc literature sampling or rerunning the Q&A extractor, lean on
+  `scripts/analyze_papers.py` with the same API-key override flags as the
+  collector. It respects the configured caches and parallel fetchers, making it a
+  convenient staging area before re-injecting results into the pipeline.
+
 ## Pipeline stages
 
 1. **Review harvesting (`step1_*`).** PubMed, OpenAlex, and an optional Google
