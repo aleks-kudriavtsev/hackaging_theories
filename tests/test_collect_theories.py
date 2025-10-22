@@ -225,6 +225,8 @@ def _prepare_args(tmp_path: Path, config_path: Path, *, quickstart: bool, target
         llm_api_key=None,
         parallel_fetch=None,
         classification_workers=None,
+        verify_bootstrap=False,
+        bootstrap_verify_dir=None,
     )
 
 
@@ -310,6 +312,89 @@ def test_main_uses_config_targets_when_available(monkeypatch, tmp_path):
 
     assert validate_calls, "validate_targets should run for managed ontologies"
     assert tmp_path.joinpath("data", "cache", "ontologies").exists() is False
+
+
+def test_verify_bootstrap_flag_enables_override(monkeypatch, tmp_path):
+    targets = {"Managed Node": {"target": 5, "queries": ["foo"]}}
+    config_path = _write_config(tmp_path, targets)
+    args = _prepare_args(tmp_path, config_path, quickstart=False, target_count=None)
+    args.verify_bootstrap = True
+    args.bootstrap_verify_dir = tmp_path / "verify_out"
+
+    captured_override: Dict[str, Any] = {}
+
+    def bootstrap_hook(*_a, **kwargs):
+        override = kwargs.get("verification_override")
+        if isinstance(override, Mapping):
+            captured_override.update(override)
+        return {}, {}, {}
+
+    validate_calls: list[dict] = []
+    _patch_runtime(
+        monkeypatch,
+        tmp_path,
+        args=args,
+        validate_calls=validate_calls,
+        bootstrap_hook=bootstrap_hook,
+    )
+
+    collect_theories.main()
+
+    assert captured_override["enabled"] is True
+    assert captured_override["output_dir"] == args.bootstrap_verify_dir
+
+
+def test_run_bootstrap_phase_emits_verification_files(tmp_path):
+    retriever = SimpleNamespace(
+        collect_queries=lambda *_a, **_k: SimpleNamespace(
+            papers=[
+                PaperMetadata(
+                    identifier="rev-verify",
+                    title="Verification review",
+                    authors=("Author",),
+                    abstract="Discusses Activity Theory. Subtheories: Engagement; Participation.",
+                    source="openalex",
+                    year=2020,
+                    doi=None,
+                    full_text="",
+                    citation_count=50,
+                    is_review=True,
+                )
+            ],
+            newly_added=1,
+            summary={},
+        )
+    )
+
+    corpus_cfg: Mapping[str, Any] = {
+        "bootstrap": {
+            "enabled": True,
+            "queries": ["aging theory"],
+            "min_citations": 0,
+            "max_theories": 2,
+        }
+    }
+
+    verification_dir = tmp_path / "verify"
+    config, nodes, review_map = collect_theories._run_bootstrap_phase(  # type: ignore[attr-defined]
+        retriever,
+        llm_client=None,
+        corpus_cfg=corpus_cfg,
+        context={},
+        verification_override={"output_dir": verification_dir},
+    )
+
+    verification_cfg = config.get("verification", {})
+    assert verification_cfg.get("enabled") is True
+    assert Path(verification_cfg["output_dir"]) == verification_dir
+    assert Path(verification_cfg["results_path"]).exists()
+    assert Path(verification_cfg["report_path"]).exists()
+    summary = verification_cfg.get("summary", {})
+    assert summary.get("total_reviews") == 1
+    assert summary.get("total_nodes", 0) >= 1
+
+    assert nodes, "Bootstrap nodes should not be empty"
+    assert any(review_map.values()), "Review map should contain retrieved papers"
 
 
 def test_quickstart_generates_cache_and_skips_validation(monkeypatch, tmp_path, capsys):

@@ -177,6 +177,37 @@ def test_extract_theories_respects_max_theories_without_llm() -> None:
     assert "Activity Theory" in extracted_names
 
 
+def test_deterministic_hierarchy_preserves_structure_with_limit() -> None:
+    paper = PaperMetadata(
+        identifier="rev-max-struct",
+        title="Extensive theory catalog",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2018,
+        doi=None,
+        full_text=(
+            "Activity Theory examines engagement. Subtheories: Engagement; Participation.\n"
+            "Continuity Theory maintains identity. Subtheories: Stability; Maintenance."
+        ),
+        citation_count=80,
+        is_review=True,
+    )
+    review = ReviewDocument(query="aging theories", paper=paper, citations=80)
+
+    result = extract_theories_from_review(review, llm_client=None, max_theories=1)
+
+    assert result.theories == [
+        {
+            "name": "Activity Theory",
+            "subtheories": [
+                {"name": "Engagement", "subtheories": []},
+                {"name": "Participation", "subtheories": []},
+            ],
+        }
+    ]
+
+
 class _StaticLLMClient:
     def __init__(self, payload: Mapping[str, Any]) -> None:
         self.payload = payload
@@ -216,6 +247,46 @@ def test_extract_theories_respects_max_theories_with_llm() -> None:
     assert len(result.theories) == 2
     assert client.calls, "LLM client should be invoked"
     assert {node["name"] for node in result.theories} <= {entry["name"] for entry in payload["theories"]}
+
+
+def test_llm_branch_preserves_payload_structure_with_limit() -> None:
+    paper = PaperMetadata(
+        identifier="rev-max-llm-struct",
+        title="LLM structured review",
+        authors=("Author",),
+        abstract="",
+        source="openalex",
+        year=2017,
+        doi=None,
+        full_text="",
+        citation_count=60,
+        is_review=True,
+    )
+    review = ReviewDocument(query="aging theories", paper=paper, citations=60)
+
+    payload = {
+        "theories": [
+            {
+                "name": "Activity Theory",
+                "subtheories": [
+                    {"name": "Engagement", "subtheories": []},
+                    {"name": "Participation", "subtheories": []},
+                ],
+            },
+            {
+                "name": "Continuity Theory",
+                "subtheories": [
+                    {"name": "Stability", "subtheories": []},
+                ],
+            },
+        ]
+    }
+    client = _StaticLLMClient(payload)
+
+    result = extract_theories_from_review(review, llm_client=client, max_theories=1)
+
+    assert result.theories == payload["theories"][:1]
+    assert client.calls, "LLM client should be invoked"
 
 
 def _leaf_count_from_config(node: Mapping[str, Any]) -> int:
