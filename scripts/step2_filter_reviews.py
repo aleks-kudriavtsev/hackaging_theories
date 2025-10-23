@@ -31,13 +31,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import math
 import os
 import sys
+from collections import OrderedDict
 from multiprocessing import Process, Queue
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from openai import AsyncOpenAI
 
@@ -265,6 +277,336 @@ def _normalise_doi(doi: str | None) -> str | None:
             cleaned = cleaned[len(prefix) :]
             break
     return cleaned.strip() or None
+
+
+def _iter_strings(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            if isinstance(item, str):
+                yield item
+
+
+def _stable_keys_from_identifier(value: object) -> List[str]:
+    keys: List[str] = []
+    if not isinstance(value, str):
+        return keys
+
+    trimmed = value.strip()
+    if not trimmed:
+        return keys
+
+    lowered = trimmed.lower()
+    if lowered.startswith("pmid:"):
+        identifier = trimmed.split(":", 1)[1].strip()
+        if identifier:
+            keys.append(f"pmid:{identifier}")
+        return keys
+
+    if trimmed.isdigit():
+        keys.append(f"pmid:{trimmed}")
+        return keys
+
+    normalized_doi = _normalise_doi(trimmed)
+    if normalized_doi and "/" in normalized_doi:
+        keys.append(f"doi:{normalized_doi}")
+
+    openalex_candidate: str | None = None
+    if lowered.startswith("openalex:"):
+        openalex_candidate = trimmed.split(":", 1)[1].strip()
+    elif lowered.startswith("https://openalex.org/"):
+        openalex_candidate = trimmed[len("https://openalex.org/") :].strip()
+    elif lowered.startswith("http://openalex.org/"):
+        openalex_candidate = trimmed[len("http://openalex.org/") :].strip()
+    elif trimmed.upper().startswith("W") and trimmed[1:].isdigit():
+        openalex_candidate = trimmed
+
+    if openalex_candidate:
+        keys.append(f"openalex:{openalex_candidate.lower()}")
+
+    return list(dict.fromkeys(keys))
+
+
+def _candidate_article_identifiers(record: Mapping[str, object]) -> List[str]:
+    identifiers: List[str] = []
+    for field in ("article_id", "id", "uid"):
+        value = record.get(field)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                identifiers.append(cleaned)
+    return identifiers
+
+
+def _stable_identifier_keys(record: Mapping[str, object]) -> List[str]:
+    keys: List[str] = []
+
+    for value in _iter_strings(record.get("pmid")):
+        cleaned = value.strip()
+        if cleaned.lower().startswith("pmid:"):
+            cleaned = cleaned.split(":", 1)[1].strip()
+        if cleaned:
+            keys.append(f"pmid:{cleaned}")
+
+    for value in _iter_strings(record.get("pmids")):
+        cleaned = value.strip()
+        if cleaned.lower().startswith("pmid:"):
+            cleaned = cleaned.split(":", 1)[1].strip()
+        if cleaned:
+            keys.append(f"pmid:{cleaned}")
+
+    for value in _iter_strings(record.get("doi")):
+        normalized = _normalise_doi(value)
+        if normalized and "/" in normalized:
+            keys.append(f"doi:{normalized}")
+
+    for value in _iter_strings(record.get("dois")):
+        normalized = _normalise_doi(value)
+        if normalized and "/" in normalized:
+            keys.append(f"doi:{normalized}")
+
+    for value in _iter_strings(record.get("openalex_id")):
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered.startswith("openalex:"):
+            cleaned = cleaned.split(":", 1)[1].strip()
+        elif lowered.startswith("https://openalex.org/"):
+            cleaned = cleaned[len("https://openalex.org/") :].strip()
+        elif lowered.startswith("http://openalex.org/"):
+            cleaned = cleaned[len("http://openalex.org/") :].strip()
+        if cleaned:
+            keys.append(f"openalex:{cleaned.lower()}")
+
+    for value in _iter_strings(record.get("openalex_ids")):
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered.startswith("openalex:"):
+            cleaned = cleaned.split(":", 1)[1].strip()
+        elif lowered.startswith("https://openalex.org/"):
+            cleaned = cleaned[len("https://openalex.org/") :].strip()
+        elif lowered.startswith("http://openalex.org/"):
+            cleaned = cleaned[len("http://openalex.org/") :].strip()
+        if cleaned:
+            keys.append(f"openalex:{cleaned.lower()}")
+
+    for identifier in _candidate_article_identifiers(record):
+        keys.extend(_stable_keys_from_identifier(identifier))
+
+    return list(dict.fromkeys(keys))
+
+
+def _collect_failure_keys(entry: Mapping[str, object]) -> List[str]:
+    keys = _stable_identifier_keys(entry)
+    for identifier in _candidate_article_identifiers(entry):
+        keys.extend(_stable_keys_from_identifier(identifier))
+    return list(dict.fromkeys(keys))
+
+
+def load_enriched_payload(path: str | os.PathLike[str] | None) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "payload": {},
+        "articles": [],
+        "article_index": {},
+        "article_id_index": {},
+        "raw_theory_mentions": [],
+        "mention_index": {},
+        "theory_registry": {},
+        "theory_registry_index": {},
+        "synonym_registry": {},
+        "synonym_index": {},
+    }
+    if not path:
+        return result
+
+    payload_path = Path(path)
+    if not payload_path.exists():
+        return result
+
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        print(
+            f"Warning: could not decode enriched payload at {payload_path}: {err}",
+            file=sys.stderr,
+        )
+        return result
+
+    if not isinstance(payload, Mapping):
+        return result
+
+    result["payload"] = dict(payload)
+
+    article_index: Dict[str, Dict] = {}
+    article_id_index: Dict[str, Dict] = {}
+    articles_field = payload.get("articles")
+    articles_list: List[Dict] = []
+    if isinstance(articles_field, list):
+        for article in articles_field:
+            if not isinstance(article, Mapping):
+                continue
+            article_dict = dict(article)
+            articles_list.append(article_dict)
+            for key in _stable_identifier_keys(article_dict):
+                article_index.setdefault(key, article_dict)
+            for identifier in _candidate_article_identifiers(article_dict):
+                article_id_index.setdefault(identifier, article_dict)
+    result["articles"] = articles_list
+    result["article_index"] = article_index
+    result["article_id_index"] = article_id_index
+
+    mention_index: Dict[str, List[Dict]] = {}
+    mentions_field = payload.get("raw_theory_mentions")
+    mentions_list: List[Dict] = []
+    if isinstance(mentions_field, list):
+        for mention in mentions_field:
+            if not isinstance(mention, Mapping):
+                continue
+            mention_dict = dict(mention)
+            mentions_list.append(mention_dict)
+            mention_keys = _stable_identifier_keys(mention_dict)
+            if not mention_keys:
+                for identifier in _candidate_article_identifiers(mention_dict):
+                    mention_keys.extend(_stable_keys_from_identifier(identifier))
+            for key in list(dict.fromkeys(mention_keys)):
+                if not key:
+                    continue
+                mention_index.setdefault(key, []).append(mention_dict)
+    result["raw_theory_mentions"] = mentions_list
+    result["mention_index"] = mention_index
+
+    registry_field = payload.get("theory_registry")
+    registry_dict: Dict[str, Dict] = {}
+    registry_index: Dict[str, List[str]] = {}
+    if isinstance(registry_field, Mapping):
+        for theory_id, data in registry_field.items():
+            if not isinstance(theory_id, str) or not isinstance(data, Mapping):
+                continue
+            entry = dict(data)
+            registry_dict[theory_id] = entry
+            entry_keys = _stable_identifier_keys(entry)
+            supporting = entry.get("supporting_articles")
+            for identifier in _iter_strings(supporting):
+                entry_keys.extend(_stable_keys_from_identifier(identifier))
+            for key in list(dict.fromkeys(entry_keys)):
+                if not key:
+                    continue
+                registry_index.setdefault(key, []).append(theory_id)
+    result["theory_registry"] = registry_dict
+    result["theory_registry_index"] = {
+        key: sorted(dict.fromkeys(values)) for key, values in registry_index.items()
+    }
+
+    synonym_field = payload.get("synonym_registry")
+    synonym_dict: Dict[str, Dict] = {}
+    synonym_index: Dict[str, List[str]] = {}
+    if isinstance(synonym_field, Mapping):
+        for alias, data in synonym_field.items():
+            if not isinstance(alias, str) or not isinstance(data, Mapping):
+                continue
+            entry = dict(data)
+            synonym_dict[alias] = entry
+            alias_keys: List[str] = []
+            sources = entry.get("source_articles")
+            for identifier in _iter_strings(sources):
+                alias_keys.extend(_stable_keys_from_identifier(identifier))
+                referenced = (
+                    article_id_index.get(identifier.strip()) if isinstance(identifier, str) else None
+                )
+                if referenced:
+                    alias_keys.extend(_stable_identifier_keys(referenced))
+            for key in list(dict.fromkeys(alias_keys)):
+                if not key:
+                    continue
+                synonym_index.setdefault(key, []).append(alias)
+    result["synonym_registry"] = synonym_dict
+    result["synonym_index"] = {
+        key: sorted(dict.fromkeys(values)) for key, values in synonym_index.items()
+    }
+
+    return result
+
+
+def load_failure_log(path: str | os.PathLike[str] | None) -> List[Dict]:
+    if not path:
+        return []
+    failure_path = Path(path)
+    if not failure_path.exists():
+        return []
+    try:
+        payload = json.loads(failure_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        print(
+            f"Warning: could not decode failure log at {failure_path}: {err}",
+            file=sys.stderr,
+        )
+        return []
+    if not isinstance(payload, list):
+        return []
+    entries: List[Dict] = []
+    for item in payload:
+        if isinstance(item, Mapping):
+            entries.append(dict(item))
+    return entries
+
+
+def _canonical_failure_key(entry: Mapping[str, object]) -> str:
+    return json.dumps(entry, sort_keys=True, ensure_ascii=False)
+
+
+def _build_failure_store(
+    entries: Sequence[Mapping[str, object]]
+) -> Tuple[OrderedDict[str, Dict], Dict[str, str], Dict[str, Set[str]]]:
+    store: "OrderedDict[str, Dict]" = OrderedDict()
+    key_map: Dict[str, str] = {}
+    references: Dict[str, Set[str]] = {}
+    for entry in entries:
+        entry_dict = dict(entry)
+        canonical = _canonical_failure_key(entry_dict)
+        store[canonical] = entry_dict
+        failure_keys = _collect_failure_keys(entry_dict)
+        ref_set = references.setdefault(canonical, set())
+        for key in failure_keys:
+            key_map[key] = canonical
+            ref_set.add(key)
+    return store, key_map, references
+
+
+def _add_failure_entry(
+    entry: Mapping[str, object],
+    store: "OrderedDict[str, Dict]",
+    key_map: Dict[str, str],
+    references: Dict[str, Set[str]],
+) -> None:
+    entry_dict = dict(entry)
+    canonical = _canonical_failure_key(entry_dict)
+    store[canonical] = entry_dict
+    failure_keys = _collect_failure_keys(entry_dict)
+    ref_set = references.setdefault(canonical, set())
+    for key in failure_keys:
+        key_map[key] = canonical
+        ref_set.add(key)
+
+
+def _remove_failure_key(
+    identifier: str,
+    store: "OrderedDict[str, Dict]",
+    key_map: Dict[str, str],
+    references: Dict[str, Set[str]],
+) -> None:
+    canonical = key_map.pop(identifier, None)
+    if canonical is None:
+        return
+    related = references.pop(canonical, set())
+    for other in list(related):
+        if other == identifier:
+            continue
+        key_map.pop(other, None)
+    store.pop(canonical, None)
 
 
 def _record_cache_keys(record: Mapping[str, object]) -> List[str]:
@@ -941,6 +1283,17 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.input, "r", encoding="utf-8") as fh:
         records = json.load(fh)
 
+    existing_payload = load_enriched_payload(args.output)
+    cached_article_index: Dict[str, Dict] = existing_payload.get("article_index", {})
+    cached_article_id_index: Dict[str, Dict] = existing_payload.get("article_id_index", {})
+    cached_count = len(existing_payload.get("articles", []) or [])
+    if cached_count:
+        print(f"Loaded {cached_count} enriched reviews from {args.output}")
+
+    failure_path = (args.failures or "").strip() or f"{args.output}.failures.json"
+    previous_failures = load_failure_log(failure_path)
+    failure_store, failure_key_map, failure_references = _build_failure_store(previous_failures)
+
     cache_path = args.cache
     cache_store = load_decision_cache(cache_path)
     if cache_path:
@@ -1079,89 +1432,157 @@ def main(argv: List[str] | None = None) -> int:
     else:
         print(f"Identified {len(kept)} relevant reviews")
 
-    enriched_records: List[Dict]
-    failures: List[Dict]
+    annotated_records: List[Dict]
+    new_failures: List[Dict]
     if not kept:
-        enriched_records = []
-        failures = []
-    else:
-        total_relevant = len(kept)
-        if args.fulltext_processes is None:
-            cpu_count = os.cpu_count() or 1
-            fulltext_processes = cpu_count if total_relevant > 100 else 1
-        else:
-            fulltext_processes = args.fulltext_processes
-        fulltext_processes = max(1, min(fulltext_processes, total_relevant))
-
-        entrez_interval = (
-            args.entrez_interval
-            if args.entrez_interval is not None
-            else _env_float("PUBMED_RATE_INTERVAL", 0.34)
-        )
-        entrez_max_attempts = (
-            args.entrez_max_attempts
-            if args.entrez_max_attempts is not None
-            else _env_int("PUBMED_MAX_ATTEMPTS", 5)
-        )
-        raw_retry_wait = (
-            args.entrez_retry_wait
-            if args.entrez_retry_wait is not None
-            else os.environ.get("PUBMED_RETRY_WAIT")
-        )
-        retry_wait_value = None
-        if raw_retry_wait is not None:
-            try:
-                retry_wait_value = float(raw_retry_wait)
-            except (TypeError, ValueError):
-                print(
-                    "Warning: invalid PUBMED_RETRY_WAIT value; using entrez interval",
-                    file=sys.stderr,
-                )
-                retry_wait_value = None
-        entrez_batch_size = (
-            args.entrez_batch_size
-            if args.entrez_batch_size is not None
-            else _env_int("PUBMED_BATCH_SIZE", 200)
-        )
-
-        enriched_records, failures = enrich_records(
-            kept,
-            processes=fulltext_processes,
-            concurrency=args.fulltext_concurrency,
-            rate_limiter=None,
-            entrez_interval=entrez_interval,
-            entrez_max_attempts=entrez_max_attempts,
-            entrez_retry_wait=retry_wait_value,
-            entrez_batch_size=max(1, entrez_batch_size),
-        )
-
-    if enriched_records:
-        relevant_count = len(enriched_records)
-        if args.extraction_processes is None:
-            if args.processes is not None:
-                auto_extract = min(args.processes, cpu_total)
-            else:
-                auto_extract = min(
-                    cpu_total,
-                    max(1, math.ceil(relevant_count / min_records_per_worker)),
-                )
-        else:
-            auto_extract = args.extraction_processes
-        extraction_processes = max(1, min(auto_extract, relevant_count))
-
-        annotated_records = extract_theories(
-            enriched_records,
-            api_key,
-            args.extraction_model,
-            args.extraction_delay,
-            args.chunk_chars,
-            args.chunk_overlap,
-            extraction_processes,
-            args.extraction_timeout,
-            args.extraction_concurrency,
-        )
-    else:
         annotated_records = []
+        new_failures = []
+    else:
+        reused_records: Dict[int, Dict] = {}
+        new_records: List[Dict] = []
+        new_positions: List[int] = []
+
+        for idx, record in enumerate(kept):
+            keys = _stable_identifier_keys(record)
+            cached_article = None
+            for key in keys:
+                cached_article = cached_article_index.get(key)
+                if cached_article is not None:
+                    break
+            if cached_article is None:
+                for identifier in _candidate_article_identifiers(record):
+                    cached_article = cached_article_id_index.get(identifier)
+                    if cached_article is not None:
+                        break
+            if cached_article is not None:
+                reused = copy.deepcopy(cached_article)
+                for field, value in record.items():
+                    reused[field] = value
+                reused_records[idx] = reused
+            else:
+                new_records.append(record)
+                new_positions.append(idx)
+
+        if reused_records:
+            print(f"Reused cached enrichment for {len(reused_records)} reviews")
+        if new_records:
+            print(f"Processing {len(new_records)} new reviews for enrichment")
+
+        new_enriched_records: List[Dict]
+        if new_records:
+            total_new = len(new_records)
+            if args.fulltext_processes is None:
+                cpu_count = os.cpu_count() or 1
+                fulltext_processes = cpu_count if total_new > 100 else 1
+            else:
+                fulltext_processes = args.fulltext_processes
+            fulltext_processes = max(1, min(fulltext_processes, total_new))
+
+            entrez_interval = (
+                args.entrez_interval
+                if args.entrez_interval is not None
+                else _env_float("PUBMED_RATE_INTERVAL", 0.34)
+            )
+            entrez_max_attempts = (
+                args.entrez_max_attempts
+                if args.entrez_max_attempts is not None
+                else _env_int("PUBMED_MAX_ATTEMPTS", 5)
+            )
+            raw_retry_wait = (
+                args.entrez_retry_wait
+                if args.entrez_retry_wait is not None
+                else os.environ.get("PUBMED_RETRY_WAIT")
+            )
+            retry_wait_value = None
+            if raw_retry_wait is not None:
+                try:
+                    retry_wait_value = float(raw_retry_wait)
+                except (TypeError, ValueError):
+                    print(
+                        "Warning: invalid PUBMED_RETRY_WAIT value; using entrez interval",
+                        file=sys.stderr,
+                    )
+                    retry_wait_value = None
+            entrez_batch_size = (
+                args.entrez_batch_size
+                if args.entrez_batch_size is not None
+                else _env_int("PUBMED_BATCH_SIZE", 200)
+            )
+
+            new_enriched_records, new_failures = enrich_records(
+                new_records,
+                processes=fulltext_processes,
+                concurrency=args.fulltext_concurrency,
+                rate_limiter=None,
+                entrez_interval=entrez_interval,
+                entrez_max_attempts=entrez_max_attempts,
+                entrez_retry_wait=retry_wait_value,
+                entrez_batch_size=max(1, entrez_batch_size),
+            )
+        else:
+            new_enriched_records = []
+            new_failures = []
+
+        for failure in new_failures:
+            _add_failure_entry(failure, failure_store, failure_key_map, failure_references)
+
+        new_enriched_by_index = {
+            position: record
+            for position, record in zip(new_positions, new_enriched_records)
+        }
+
+        if new_enriched_records:
+            relevant_count = len(new_enriched_records)
+            if args.extraction_processes is None:
+                if args.processes is not None:
+                    auto_extract = min(args.processes, cpu_total)
+                else:
+                    auto_extract = min(
+                        cpu_total,
+                        max(1, math.ceil(relevant_count / min_records_per_worker)),
+                    )
+            else:
+                auto_extract = args.extraction_processes
+            extraction_processes = max(1, min(auto_extract, relevant_count))
+
+            new_annotated_records = extract_theories(
+                new_enriched_records,
+                api_key,
+                args.extraction_model,
+                args.extraction_delay,
+                args.chunk_chars,
+                args.chunk_overlap,
+                extraction_processes,
+                args.extraction_timeout,
+                args.extraction_concurrency,
+            )
+        else:
+            new_annotated_records = []
+
+        combined_records: Dict[int, Dict] = dict(reused_records)
+        for position, record in zip(new_positions, new_annotated_records):
+            combined_records[position] = record
+        for position in new_positions:
+            if position not in combined_records and position in new_enriched_by_index:
+                combined_records[position] = new_enriched_by_index[position]
+
+        missing_indices = [idx for idx in range(len(kept)) if idx not in combined_records]
+        for idx in missing_indices:
+            combined_records[idx] = kept[idx]
+
+        annotated_records = [combined_records[idx] for idx in range(len(kept))]
+
+    success_keys: Set[str] = set()
+    for record in annotated_records:
+        full_text_value = record.get("full_text") if isinstance(record, Mapping) else None
+        has_fulltext = isinstance(full_text_value, str) and full_text_value.strip()
+        if not has_fulltext:
+            continue
+        for key in _stable_identifier_keys(record):
+            success_keys.add(key)
+
+    for key in success_keys:
+        _remove_failure_key(key, failure_store, failure_key_map, failure_references)
 
     if annotated_records:
         theory_registry, synonym_registry = build_theory_registry(
@@ -1208,15 +1629,15 @@ def main(argv: List[str] | None = None) -> int:
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(combined_payload, fh, ensure_ascii=False, indent=2)
 
-    failure_path = args.failures or f"{args.output}.failures.json"
-    if failures:
+    remaining_failures = list(failure_store.values())
+    if remaining_failures:
         failure_dir = os.path.dirname(failure_path)
         if failure_dir:
             os.makedirs(failure_dir, exist_ok=True)
         with open(failure_path, "w", encoding="utf-8") as fh:
-            json.dump(failures, fh, ensure_ascii=False, indent=2)
-        print(f"Logged {len(failures)} full-text failures to {failure_path}")
-    elif args.failures and os.path.exists(failure_path):
+            json.dump(remaining_failures, fh, ensure_ascii=False, indent=2)
+        print(f"Logged {len(remaining_failures)} full-text failures to {failure_path}")
+    elif os.path.exists(failure_path):
         os.remove(failure_path)
 
     print(
