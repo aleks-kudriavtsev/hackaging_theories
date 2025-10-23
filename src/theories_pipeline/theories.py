@@ -98,6 +98,27 @@ def aggregate_theory_assignments(
         papers to the theories they support.
     """
 
+    normalized_assignments: List[TheoryAssignment] = []
+    for assignment in assignments:
+        if isinstance(assignment, TheoryAssignment):
+            normalized_assignments.append(assignment)
+            continue
+        if not all(hasattr(assignment, attr) for attr in ("paper_id", "theory", "score")):
+            continue
+        try:
+            normalized_assignments.append(
+                TheoryAssignment(
+                    paper_id=str(getattr(assignment, "paper_id")),
+                    theory=str(getattr(assignment, "theory")),
+                    score=float(getattr(assignment, "score")),
+                    depth=int(getattr(assignment, "depth", 0)),
+                )
+            )
+        except Exception:
+            continue
+
+    assignments = tuple(normalized_assignments)
+
     def is_better(new: TheoryAssignment, current: TheoryAssignment) -> bool:
         if new.score > current.score:
             return True

@@ -38,6 +38,12 @@ from .outputs import (
     export_theories,
     export_theory_papers,
 )
+from .result_tables import (
+    normalize_answer,
+    prepare_collected_papers,
+    prepare_normalised_answers,
+    prepare_theory_table,
+)
 from .pipeline_utils import classify_and_extract_parallel
 from .filtering import RelevanceFilter, FilterDecision
 from .llm import LLMClient, LLMClientConfig, LLMClientError, LLMRateLimitError
@@ -97,6 +103,10 @@ __all__ = [
     "export_competition_theories",
     "export_competition_theory_papers",
     "export_competition_question_answers",
+    "prepare_theory_table",
+    "prepare_collected_papers",
+    "prepare_normalised_answers",
+    "normalize_answer",
     "LLMClient",
     "LLMClientConfig",
     "LLMClientError",
