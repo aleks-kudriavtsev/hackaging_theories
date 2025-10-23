@@ -84,6 +84,44 @@ def test_filter_records_processes_batch(monkeypatch: pytest.MonkeyPatch) -> None
     assert "Item 1:" in prompts[0]
 
 
+def test_call_openai_raises_when_content_missing() -> None:
+    class _FakeChatCompletions:
+        def __init__(self, response: object) -> None:
+            self._response = response
+
+        async def create(self, *args, **kwargs):
+            return self._response
+
+    class _FakeChat:
+        def __init__(self, response: object) -> None:
+            self.completions = _FakeChatCompletions(response)
+
+    class _FakeClient:
+        def __init__(self, response: object) -> None:
+            self.chat = _FakeChat(response)
+
+    message = types.SimpleNamespace(content=None, role="assistant")
+    choice = types.SimpleNamespace(message=message, finish_reason="stop")
+    response = types.SimpleNamespace(
+        id="resp-123",
+        model="gpt-test",
+        choices=[choice],
+    )
+
+    client = _FakeClient(response)
+    semaphore = asyncio.Semaphore(1)
+
+    async def _invoke() -> None:
+        await step2._call_openai(client, "prompt", "model", semaphore, delay=0)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(_invoke())
+
+    message_text = str(excinfo.value)
+    assert "missing message content" in message_text
+    assert "resp-123" in message_text
+
+
 def test_filter_records_retries_failed_items(monkeypatch: pytest.MonkeyPatch) -> None:
     records = [
         _record("a", "Aging review", "Discusses aging"),
