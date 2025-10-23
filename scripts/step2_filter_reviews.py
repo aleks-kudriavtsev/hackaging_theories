@@ -657,6 +657,286 @@ def _record_cache_keys(record: Mapping[str, object]) -> List[str]:
     return keys
 
 
+def _stringify_identifier(value: object) -> str | None:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _stable_identifier_keys(record: Mapping[str, object] | None) -> List[str]:
+    if not isinstance(record, Mapping):
+        return []
+
+    keys: List[str] = []
+
+    doi_value = record.get("doi")
+    if isinstance(doi_value, str):
+        normalised = _normalise_doi(doi_value)
+        if normalised:
+            keys.append(f"doi:{normalised}")
+
+    pmid_value = record.get("pmid")
+    if pmid_value is not None:
+        cleaned = _stringify_identifier(pmid_value)
+        if cleaned:
+            keys.append(f"pmid:{cleaned}")
+
+    openalex_fields = ("openalex_id", "openalex")
+    for field in openalex_fields:
+        value = record.get(field)
+        if value is None:
+            continue
+        cleaned = _stringify_identifier(value)
+        if cleaned:
+            keys.append(f"openalex:{cleaned}")
+            break
+
+    pmcid_value = record.get("pmcid")
+    if pmcid_value is not None:
+        cleaned = _stringify_identifier(pmcid_value)
+        if cleaned:
+            keys.append(f"pmcid:{cleaned}")
+
+    return keys
+
+
+def _load_failure_log(path: str | os.PathLike[str] | None) -> List[Dict]:
+    if not path:
+        return []
+
+    failure_path = Path(path)
+    if not failure_path.exists():
+        return []
+
+    try:
+        payload = json.loads(failure_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        print(f"Warning: could not decode failure log at {failure_path}: {err}", file=sys.stderr)
+        return []
+
+    if isinstance(payload, list):
+        failures: List[Dict] = []
+        for item in payload:
+            if isinstance(item, Mapping):
+                failures.append(dict(item))
+        return failures
+
+    return []
+
+
+def _index_existing_payload(
+    payload: Mapping[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    articles_by_identifier: Dict[str, Dict[str, Any]] = {}
+    articles_by_id: Dict[str, Dict[str, Any]] = {}
+    raw_mentions_by_identifier: Dict[str, List[Dict[str, Any]]] = {}
+    registry_by_identifier: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    synonym_by_identifier: Dict[str, List[Dict[str, Any]]] = {}
+
+    articles = payload.get("articles")
+    if isinstance(articles, Sequence) and not isinstance(articles, (str, bytes)):
+        for idx, article in enumerate(articles):
+            if not isinstance(article, Mapping):
+                continue
+            article_dict = dict(article)
+            article_id = article_dict.get("article_id")
+            if not isinstance(article_id, str) or not article_id.strip():
+                article_id = _resolve_article_id(article_dict, idx)
+            else:
+                article_id = article_id.strip()
+            article_dict.setdefault("article_id", article_id)
+            articles_by_id[article_id] = article_dict
+            for key in _stable_identifier_keys(article_dict):
+                articles_by_identifier[key] = article_dict
+
+    raw_mentions = payload.get("raw_theory_mentions")
+    if isinstance(raw_mentions, Sequence) and not isinstance(raw_mentions, (str, bytes)):
+        for mention in raw_mentions:
+            if not isinstance(mention, Mapping):
+                continue
+            mention_dict = dict(mention)
+            mention_keys = _stable_identifier_keys(mention_dict)
+            article_id = mention_dict.get("article_id")
+            if isinstance(article_id, str) and article_id in articles_by_id:
+                article_keys = _stable_identifier_keys(articles_by_id[article_id])
+                mention_keys.extend(article_keys)
+            for key in mention_keys:
+                if not key:
+                    continue
+                raw_mentions_by_identifier.setdefault(key, []).append(mention_dict)
+
+    theory_registry = payload.get("theory_registry")
+    if isinstance(theory_registry, Mapping):
+        for theory_id, entry in theory_registry.items():
+            if not isinstance(entry, Mapping):
+                continue
+            entry_dict = dict(entry)
+            related_keys: List[str] = []
+            for key in entry_dict.get("pmids", []) or []:
+                cleaned = _stringify_identifier(key)
+                if cleaned:
+                    related_keys.append(f"pmid:{cleaned}")
+            for key in entry_dict.get("openalex_ids", []) or []:
+                cleaned = _stringify_identifier(key)
+                if cleaned:
+                    related_keys.append(f"openalex:{cleaned}")
+            provenance = entry_dict.get("provenance")
+            if isinstance(provenance, Mapping):
+                related_keys.extend(_stable_identifier_keys(provenance))
+                article_id = provenance.get("article_id")
+                if isinstance(article_id, str) and article_id in articles_by_id:
+                    related_keys.extend(_stable_identifier_keys(articles_by_id[article_id]))
+            supporting = entry_dict.get("supporting_articles")
+            if isinstance(supporting, Sequence) and not isinstance(supporting, (str, bytes)):
+                for article_id in supporting:
+                    if not isinstance(article_id, str):
+                        continue
+                    article = articles_by_id.get(article_id)
+                    if article:
+                        related_keys.extend(_stable_identifier_keys(article))
+            for key in related_keys:
+                if not key:
+                    continue
+                registry_by_identifier.setdefault(key, []).append((str(theory_id), entry_dict))
+
+    synonym_registry = payload.get("synonym_registry")
+    if isinstance(synonym_registry, Mapping):
+        for alias_key, record in synonym_registry.items():
+            if not isinstance(record, Mapping):
+                continue
+            record_dict = dict(record)
+            source_articles = record_dict.get("source_articles")
+            related_keys: List[str] = []
+            if isinstance(source_articles, Sequence) and not isinstance(source_articles, (str, bytes)):
+                for article_id in source_articles:
+                    if not isinstance(article_id, str):
+                        continue
+                    article = articles_by_id.get(article_id)
+                    if article:
+                        related_keys.extend(_stable_identifier_keys(article))
+            provenance = record_dict.get("provenance")
+            if isinstance(provenance, Mapping):
+                related_keys.extend(_stable_identifier_keys(provenance))
+            for key in related_keys:
+                if not key:
+                    continue
+                synonym_by_identifier.setdefault(key, []).append(record_dict)
+
+    return {
+        "articles_by_identifier": articles_by_identifier,
+        "articles_by_id": articles_by_id,
+        "raw_mentions_by_identifier": raw_mentions_by_identifier,
+        "registry_by_identifier": registry_by_identifier,
+        "synonyms_by_identifier": synonym_by_identifier,
+    }
+
+
+def _load_existing_payload(
+    path: str | os.PathLike[str] | None,
+) -> Tuple[Mapping[str, Any], Dict[str, Dict[str, Any]]]:
+    if not path:
+        return {}, {
+            "articles_by_identifier": {},
+            "articles_by_id": {},
+            "raw_mentions_by_identifier": {},
+            "registry_by_identifier": {},
+            "synonyms_by_identifier": {},
+        }
+
+    output_path = Path(path)
+    if not output_path.exists():
+        return {}, {
+            "articles_by_identifier": {},
+            "articles_by_id": {},
+            "raw_mentions_by_identifier": {},
+            "registry_by_identifier": {},
+            "synonyms_by_identifier": {},
+        }
+
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        print(f"Warning: could not decode existing payload at {output_path}: {err}", file=sys.stderr)
+        return {}, {
+            "articles_by_identifier": {},
+            "articles_by_id": {},
+            "raw_mentions_by_identifier": {},
+            "registry_by_identifier": {},
+            "synonyms_by_identifier": {},
+        }
+
+    if not isinstance(payload, Mapping):
+        return {}, {
+            "articles_by_identifier": {},
+            "articles_by_id": {},
+            "raw_mentions_by_identifier": {},
+            "registry_by_identifier": {},
+            "synonyms_by_identifier": {},
+        }
+
+    indexes = _index_existing_payload(payload)
+    return payload, indexes
+
+
+def _failure_identifier_keys(failure: Mapping[str, Any]) -> List[str]:
+    keys = []
+    for key in _stable_identifier_keys(failure):
+        keys.append(key)
+    url = failure.get("url") if isinstance(failure, Mapping) else None
+    if isinstance(url, str) and url.strip():
+        keys.append(f"url:{url.strip()}")
+    return keys
+
+
+def _merge_failures(
+    existing: Sequence[Mapping[str, Any]],
+    new: Sequence[Mapping[str, Any]],
+    success_records: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    success_keys: set[str] = set()
+    for record in success_records:
+        for key in _stable_identifier_keys(record):
+            success_keys.add(key)
+
+    merged: List[Dict[str, Any]] = []
+    key_to_index: Dict[str, int] = {}
+
+    def add_failure(entry: Mapping[str, Any]) -> None:
+        if not isinstance(entry, Mapping):
+            return
+        keys = _failure_identifier_keys(entry)
+        if keys:
+            stable_subset = [key for key in keys if key.split(":", 1)[0] in {"pmid", "doi", "openalex"}]
+            if any(key in success_keys for key in stable_subset):
+                return
+        target_index: Optional[int] = None
+        for key in keys:
+            existing_index = key_to_index.get(key)
+            if existing_index is not None:
+                target_index = existing_index
+                break
+        entry_dict = dict(entry)
+        if target_index is not None:
+            merged[target_index] = entry_dict
+        else:
+            merged.append(entry_dict)
+            target_index = len(merged) - 1
+        for key in keys:
+            key_to_index[key] = target_index
+
+    for failure in existing:
+        add_failure(failure)
+
+    for failure in new:
+        add_failure(failure)
+
+    return merged
+
+
 def load_decision_cache(path: str | os.PathLike[str] | None) -> Dict[str, Dict]:
     if not path:
         return {}
@@ -1302,6 +1582,17 @@ def main(argv: List[str] | None = None) -> int:
             flush=True,
         )
 
+    failure_path = args.failures or f"{args.output}.failures.json"
+    _existing_payload, existing_indexes = _load_existing_payload(args.output)
+    existing_articles_by_identifier = existing_indexes["articles_by_identifier"]
+    existing_articles_by_id = existing_indexes["articles_by_id"]
+    existing_failures = _load_failure_log(failure_path)
+    if existing_articles_by_identifier:
+        print(
+            f"Loaded {len(existing_articles_by_id)} previously enriched articles from {args.output}",
+            flush=True,
+        )
+
     total_records = len(records)
     if args.processes is not None and args.processes <= 0:
         print("--processes must be a positive integer", file=sys.stderr)
@@ -1612,6 +1903,8 @@ def main(argv: List[str] | None = None) -> int:
         "extraction_model": args.extraction_model,
         "disambiguation_model": args.disambiguation_model,
         "disambiguation_temperature": args.disambiguation_temperature,
+        "reused_records": reused_count,
+        "new_records_processed": len(new_records_for_enrichment),
     }
 
     combined_payload = {
@@ -1622,6 +1915,8 @@ def main(argv: List[str] | None = None) -> int:
         "synonym_registry": synonym_registry,
         "metadata": metadata,
     }
+
+    combined_failures_log = _merge_failures(existing_failures, failures, annotated_records)
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
