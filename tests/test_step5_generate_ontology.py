@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from typing import Set
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "step5_generate_ontology.py"
@@ -17,6 +18,7 @@ _reconcile_groups = _MODULE._reconcile_groups
 _build_llm_pass_audit = _MODULE._build_llm_pass_audit
 consolidate_group_summaries = _MODULE.consolidate_group_summaries
 refine_group_hierarchy = _MODULE.refine_group_hierarchy
+refine_groups_with_llm = _MODULE.refine_groups_with_llm
 
 
 def test_load_json_payload_returns_documents_when_registry_missing(tmp_path: Path) -> None:
@@ -116,7 +118,7 @@ def test_build_llm_pass_audit_clones_metadata() -> None:
     consolidation = {"status": "completed", "model": "gpt-5-mini"}
     refinement = {"status": "pending", "model": "gpt-4.1"}
 
-    audit = _build_llm_pass_audit(consolidation, refinement)
+    audit = _build_llm_pass_audit(consolidation, refinement, [])
 
     assert audit["consolidation"]["status"] == "completed"
     assert audit["refinement"]["model"] == "gpt-4.1"
@@ -188,6 +190,127 @@ def test_consolidate_group_summaries_merges_parent_groups() -> None:
     child_group = parent_group["subgroups"][0]
     assert child_group["name"] == "Cellular Ageing"
     assert child_group["theories"][0]["supporting_articles"] == ["A1"]
+
+
+def test_refine_groups_with_llm_runs_two_passes() -> None:
+    input_groups = [
+        {
+            "name": "Cellular Senescence",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+        {
+            "name": "Cellular Ageing",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+        {
+            "name": "Oxidative Stress",
+            "theories": [
+                {
+                    "theory_id": "T2",
+                    "preferred_label": "Oxidative Stress",
+                    "supporting_articles": ["A2"],
+                }
+            ],
+        },
+    ]
+
+    call_counter = {"count": 0}
+
+    def fake_call(messages, api_key, *, model, temperature):
+        call_counter["count"] += 1
+        assert api_key == "test-key"
+        assert model == _MODULE.GROUP_CONSOLIDATION_MODEL
+        assert messages and "Focus for this pass" in messages[1]["content"]
+        if call_counter["count"] == 1:
+            payload = {
+                "parent_merges": [
+                    {
+                        "parent": {"group_id": "G1"},
+                        "children": [
+                            {"group_id": "G2"},
+                        ],
+                    }
+                ]
+            }
+        else:
+            payload = {"parent_merges": []}
+        metadata = {"id": f"cmpl-{call_counter['count']}", "model": model}
+        return payload, metadata
+
+    cache: Set[str] = set()
+    enriched, metadata = refine_groups_with_llm(
+        input_groups,
+        "test-key",
+        cache=cache,
+        call_model=fake_call,
+    )
+
+    assert call_counter["count"] == 2
+    assert metadata["status"] == "completed"
+    assert len(metadata["passes"]) == 2
+    assert metadata["passes"][0]["suggested_merge_count"] == 1
+    assert metadata["passes"][1]["suggested_merge_count"] == 0
+    assert len(enriched) == 2
+    parent_group = enriched[0]
+    assert parent_group["name"] == "Cellular Senescence"
+    assert parent_group["subgroups"][0]["name"] == "Cellular Ageing"
+    assert parent_group["subgroups"][0]["theories"][0]["supporting_articles"] == ["A1"]
+
+
+def test_refine_groups_with_llm_uses_cache_to_skip_calls() -> None:
+    groups = [
+        {
+            "name": "Cellular Senescence",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        }
+    ]
+
+    def fake_call(messages, api_key, *, model, temperature):
+        raise AssertionError("call_model should not be invoked when cached")
+
+    cache: Set[str] = set()
+    # Seed the cache by running once with a call that records the key.
+    def priming_call(messages, api_key, *, model, temperature):
+        return {"parent_merges": []}, {"id": "seed", "model": model}
+
+    enriched, metadata = refine_groups_with_llm(
+        groups,
+        "test-key",
+        cache=cache,
+        call_model=priming_call,
+    )
+
+    assert metadata["status"] == "completed"
+    assert enriched == groups
+
+    enriched_again, metadata_again = refine_groups_with_llm(
+        groups,
+        "test-key",
+        cache=cache,
+        call_model=fake_call,
+    )
+
+    assert metadata_again["status"] == "skipped"
+    assert metadata_again.get("reason") == "cached"
+    assert enriched_again == groups
 
 
 def test_refinement_and_reconciliation_merge_synonymous_groups() -> None:
@@ -365,6 +488,6 @@ def test_consolidation_and_refinement_pipeline() -> None:
     assert "Damage Accumulation" in captured_prompt["content"]
     assert refined == consolidated
 
-    audit = _build_llm_pass_audit(merge_metadata, refinement_metadata)
+    audit = _build_llm_pass_audit(merge_metadata, refinement_metadata, [])
     assert audit["consolidation"]["applied_merge_count"] == 1
     assert audit["refinement"]["status"] == "completed"

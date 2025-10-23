@@ -81,6 +81,9 @@ REPRESENTATIVE_ARTICLE_CAPS = (40, 20, 10, 5, 2, 1, 0)
 DEFAULT_MAX_THEORIES_PER_GROUP = 40
 
 
+GROUP_REFINEMENT_CACHE: Set[str] = set()
+
+
 def _load_json_payload(path: str) -> Mapping[str, object] | Sequence[object]:
     """Load a JSON payload, tolerating concatenated JSON documents."""
 
@@ -223,17 +226,251 @@ def _clone_json(value: Any) -> Any:
     return value
 
 
+def _summaries_signature(summary: Sequence[Mapping[str, object]]) -> str:
+    """Derive a stable signature for a list of group summaries."""
+
+    serialisable: List[Dict[str, object]] = []
+    for entry in summary:
+        if not isinstance(entry, Mapping):
+            continue
+        payload: Dict[str, object] = {}
+        group_id = entry.get("group_id")
+        if isinstance(group_id, str):
+            payload["group_id"] = group_id
+        name = entry.get("name")
+        if isinstance(name, str) and name.strip():
+            payload["name"] = name.strip().lower()
+        theories = entry.get("theories")
+        identifiers: List[str] = []
+        if isinstance(theories, Sequence) and not isinstance(theories, (str, bytes)):
+            for theory in theories:
+                if not isinstance(theory, Mapping):
+                    continue
+                for key in ("theory_id", "id"):
+                    raw_identifier = theory.get(key)
+                    if isinstance(raw_identifier, str) and raw_identifier.strip():
+                        identifiers.append(raw_identifier.strip())
+                        break
+        if identifiers:
+            payload["theories"] = sorted(set(identifiers))
+        if payload:
+            serialisable.append(payload)
+    serialisable.sort(key=lambda item: (item.get("name", ""), item.get("group_id", "")))
+    return json.dumps(serialisable, sort_keys=True, ensure_ascii=False)
+
+
+def refine_groups_with_llm(
+    groups: Sequence[Mapping[str, object]],
+    api_key: Optional[str],
+    *,
+    model: str = GROUP_CONSOLIDATION_MODEL,
+    cache: Optional[Set[str]] = None,
+    call_model: Optional[
+        Callable[..., Tuple[Dict[str, object], Dict[str, object]]]
+    ] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Use GPT to propose parent group mergers while caching processed signatures."""
+
+    if cache is None:
+        cache = GROUP_REFINEMENT_CACHE
+
+    valid_groups: List[Dict[str, Any]] = []
+    if isinstance(groups, Sequence) and not isinstance(groups, (str, bytes)):
+        for group in groups:
+            if isinstance(group, Mapping):
+                valid_groups.append(_clone_json(group))
+
+    metadata: Dict[str, Any] = {
+        "status": "pending" if valid_groups else "skipped",
+        "model": model,
+        "input_group_count": len(valid_groups),
+        "passes": [],
+    }
+
+    if not valid_groups:
+        metadata.setdefault("reason", "no_groups")
+        return valid_groups, metadata
+
+    if not api_key:
+        metadata["status"] = "skipped"
+        metadata["reason"] = "missing_api_key"
+        return valid_groups, metadata
+
+    pass_configurations = [
+        {
+            "name": "sibling_merges",
+            "focus": "Combine obviously related sibling groups under a shared parent entry.",
+            "cache_prefix": "sibling",
+        },
+        {
+            "name": "hierarchical_merges",
+            "focus": "Review the updated hierarchy for higher-level parent concepts spanning multiple groups.",
+            "cache_prefix": "hierarchy",
+        },
+    ]
+
+    call_fn = call_model
+    if call_fn is None:
+        def default_call_fn(
+            messages: Sequence[Mapping[str, object]],
+            key: str,
+            *,
+            model: str = model,
+            temperature: float = 0.35,
+        ) -> Tuple[Dict[str, object], Dict[str, object]]:
+            return _invoke_chat_model(messages, key, model=model, temperature=temperature)
+
+        call_fn = default_call_fn
+
+    working_groups: List[Dict[str, Any]] = valid_groups
+
+    for index, configuration in enumerate(pass_configurations, start=1):
+        summary, id_lookup, name_lookup, clones = _summarise_groups_for_consolidation(working_groups)
+        pass_metadata: Dict[str, Any] = {
+            "pass": configuration["name"],
+            "status": "pending" if summary else "skipped",
+            "input_group_count": len(clones),
+        }
+
+        if not summary:
+            pass_metadata["reason"] = "no_groups"
+            metadata["passes"].append(pass_metadata)
+            continue
+
+        signature = _summaries_signature(summary)
+        cache_key = f"{configuration['cache_prefix']}::{signature}"
+        pass_metadata["signature"] = signature
+        pass_metadata["cache_key"] = cache_key
+
+        if cache_key in cache:
+            pass_metadata["status"] = "skipped"
+            pass_metadata["reason"] = "cached"
+            pass_metadata["cache_hit"] = True
+            metadata["passes"].append(pass_metadata)
+            working_groups = clones
+            continue
+
+        summary_json = json.dumps(summary, ensure_ascii=False, indent=2)
+        prompt = textwrap.dedent(
+            f"""
+            The JSON array below summarises ontology groups with their canonical theory
+            identifiers and supporting article statistics.
+
+            Focus for this pass: {configuration['focus']}
+
+            Requirements:
+            - Only reference ``group_id`` values present in the summary.
+            - Propose parent relationships via ``parent_merges`` entries.
+            - Preserve ``theory_id`` assignments and the exact ``supporting_articles`` lists.
+            - Prefer reusing existing groups as parents; create a new parent name only when
+              necessary and keep descriptions concise.
+            - Return compact JSON with a top-level key ``parent_merges``.
+
+            Group summaries:
+            {summary_json}
+            """
+        ).strip()
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You specialise in ontology hierarchy curation. Suggest targeted parent "
+                    "relationships while keeping theory identifiers and supporting articles intact."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        parsed, response_metadata = call_fn(messages, api_key, model=model, temperature=0.35)
+        if response_metadata:
+            pass_metadata["response_metadata"] = response_metadata
+
+        parent_merges: List[Mapping[str, object]] = []
+        if isinstance(parsed, Mapping):
+            merge_candidates = parsed.get("parent_merges") or parsed.get("group_merges")
+            if isinstance(merge_candidates, Sequence) and not isinstance(merge_candidates, (str, bytes)):
+                parent_merges = [entry for entry in merge_candidates if isinstance(entry, Mapping)]
+
+        consolidated, audit = _apply_parent_group_merges(clones, id_lookup, name_lookup, parent_merges)
+
+        pass_metadata["status"] = "completed"
+        pass_metadata["suggested_merge_count"] = len(parent_merges)
+        pass_metadata["applied_merge_count"] = audit.get("applied_merge_count", 0)
+        pass_metadata["output_group_count"] = len(consolidated)
+        if audit.get("applied_merges"):
+            pass_metadata["applied_merges"] = audit["applied_merges"]
+        if audit.get("created_parents"):
+            pass_metadata["created_parent_groups"] = sorted(
+                {name for name in audit["created_parents"] if name}
+            )
+        if audit.get("skipped_merges"):
+            pass_metadata["skipped_merges"] = audit["skipped_merges"]
+        if audit.get("unresolved_parents"):
+            pass_metadata.setdefault("warnings", []).append(
+                {
+                    "event": "unresolved_parent_reference",
+                    "parent_ids": sorted(audit["unresolved_parents"]),
+                }
+            )
+        if audit.get("unresolved_children"):
+            pass_metadata.setdefault("warnings", []).append(
+                {
+                    "event": "unresolved_child_reference",
+                    "child_identifiers": sorted(audit["unresolved_children"]),
+                }
+            )
+        if audit.get("repeated_children"):
+            pass_metadata.setdefault("warnings", []).append(
+                {
+                    "event": "duplicate_child_assignment",
+                    "children": sorted(audit["repeated_children"]),
+                }
+            )
+
+        cache.add(cache_key)
+        working_groups = consolidated
+        metadata["passes"].append(pass_metadata)
+
+    metadata["output_group_count"] = len(working_groups)
+    metadata["status"] = (
+        "completed"
+        if any(pass_meta.get("status") == "completed" for pass_meta in metadata["passes"])
+        else "skipped"
+    )
+    if metadata["status"] == "skipped" and metadata["passes"]:
+        reasons = sorted(
+            {
+                pass_meta.get("reason")
+                for pass_meta in metadata["passes"]
+                if pass_meta.get("reason")
+            }
+        )
+        if reasons:
+            metadata["reason"] = ",".join(reasons)
+
+    return working_groups, metadata
+
+
 def _build_llm_pass_audit(
     consolidation_metadata: Mapping[str, Any],
     refinement_metadata: Mapping[str, Any],
+    enrichment_runs: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Collect metadata snapshots for the consolidation/refinement passes."""
+    """Collect metadata snapshots for the LLM-assisted hierarchy passes."""
 
     audit: Dict[str, Any] = {}
     if isinstance(consolidation_metadata, Mapping) and consolidation_metadata:
         audit["consolidation"] = _clone_json(consolidation_metadata)
     if isinstance(refinement_metadata, Mapping) and refinement_metadata:
         audit["refinement"] = _clone_json(refinement_metadata)
+    if isinstance(enrichment_runs, Sequence):
+        collected_runs: List[Dict[str, Any]] = []
+        for entry in enrichment_runs:
+            if isinstance(entry, Mapping) and entry:
+                collected_runs.append(_clone_json(entry))
+        if collected_runs:
+            audit["hierarchy_enrichment"] = collected_runs
     return audit
 
 
@@ -2250,6 +2487,33 @@ def main(argv: List[str] | None = None) -> int:
             api_key,
         )
         groups_for_reconciliation = refined_groups_snapshot
+
+    hierarchy_enrichment_runs: List[Dict[str, Any]] = []
+    if isinstance(groups_for_reconciliation, Sequence) and not isinstance(
+        groups_for_reconciliation, (str, bytes)
+    ):
+        working_groups: List[Dict[str, Any]] = [
+            _clone_json(group)
+            for group in groups_for_reconciliation
+            if isinstance(group, Mapping)
+        ]
+        for iteration in range(2):
+            enriched_groups, enrichment_metadata = refine_groups_with_llm(
+                working_groups,
+                api_key,
+                cache=GROUP_REFINEMENT_CACHE,
+            )
+            hierarchy_enrichment_runs.append(
+                {
+                    "iteration": iteration + 1,
+                    "metadata": enrichment_metadata,
+                    "groups": _clone_json(enriched_groups),
+                }
+            )
+            if enrichment_metadata.get("reason") == "missing_api_key":
+                break
+            working_groups = enriched_groups if enriched_groups else []
+        groups_for_reconciliation = working_groups
     if isinstance(response, Mapping):
         response = dict(response)
         response.setdefault("consolidated_groups", _clone_json(consolidated_groups_snapshot))
@@ -2258,6 +2522,8 @@ def main(argv: List[str] | None = None) -> int:
         response.setdefault("refined_groups", _clone_json(refined_groups_snapshot))
         if refinement_metadata:
             response.setdefault("_refinement_metadata", refinement_metadata)
+        if hierarchy_enrichment_runs:
+            response.setdefault("hierarchy_enrichment_runs", _clone_json(hierarchy_enrichment_runs))
 
     article_index = _canonical_article_index(registry)
     reconciled_groups, reconciliation = _reconcile_groups(
@@ -2279,6 +2545,7 @@ def main(argv: List[str] | None = None) -> int:
     llm_pass_audit = _build_llm_pass_audit(
         consolidation_metadata,
         refinement_metadata,
+        hierarchy_enrichment_runs,
     )
     if llm_pass_audit:
         reconciliation.setdefault("llm_passes", _clone_json(llm_pass_audit))
@@ -2318,6 +2585,24 @@ def main(argv: List[str] | None = None) -> int:
         if refinement_metadata.get("response_metadata"):
             refinement_note["response_metadata"] = refinement_metadata["response_metadata"]
         reconciliation.setdefault("notes", []).append(refinement_note)
+
+    for run in hierarchy_enrichment_runs:
+        metadata = run.get("metadata") if isinstance(run, Mapping) else None
+        if not isinstance(metadata, Mapping):
+            continue
+        note: Dict[str, Any] = {
+            "event": "hierarchy_enrichment",
+            "iteration": run.get("iteration"),
+            "status": metadata.get("status"),
+            "model": metadata.get("model"),
+            "input_group_count": metadata.get("input_group_count"),
+            "output_group_count": metadata.get("output_group_count"),
+        }
+        if metadata.get("reason"):
+            note["reason"] = metadata["reason"]
+        if metadata.get("passes"):
+            note["passes"] = metadata["passes"]
+        reconciliation.setdefault("notes", []).append(note)
 
     reconciliation.setdefault("notes", []).append(
         {
@@ -2384,6 +2669,7 @@ def main(argv: List[str] | None = None) -> int:
                 "groups": _clone_json(refined_groups_snapshot),
                 "metadata": refinement_metadata,
             },
+            "hierarchy_enrichment": _clone_json(hierarchy_enrichment_runs),
             "final": {
                 "groups": reconciled_groups,
             },
