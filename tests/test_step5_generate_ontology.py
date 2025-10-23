@@ -14,6 +14,7 @@ _load_json_payload = _MODULE._load_json_payload
 _load_registry_builder = _MODULE._load_registry_builder
 _limit_group_theories = _MODULE._limit_group_theories
 _reconcile_groups = _MODULE._reconcile_groups
+consolidate_group_summaries = _MODULE.consolidate_group_summaries
 refine_group_hierarchy = _MODULE.refine_group_hierarchy
 
 
@@ -110,6 +111,71 @@ def test_limit_group_theories_splits_large_groups() -> None:
     assert adjustments[0]["overflow_groups"][0] == [f"T{index}" for index in range(40, 45)]
 
 
+def test_consolidate_group_summaries_merges_parent_groups() -> None:
+    input_groups = [
+        {
+            "name": "Cellular Senescence",
+            "description": "Loss of proliferation capacity",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+        {
+            "name": "Cellular Ageing",
+            "description": "Synonym of senescence",
+            "theories": [
+                {
+                    "theory_id": "T1",
+                    "preferred_label": "Cellular Senescence",
+                    "supporting_articles": ["A1"],
+                }
+            ],
+        },
+    ]
+
+    def fake_call(messages, api_key, *, model, temperature):
+        assert api_key == "test-key"
+        assert model == _MODULE.GROUP_CONSOLIDATION_MODEL
+        assert messages and messages[0]["role"] == "system"
+        payload = {
+            "parent_merges": [
+                {
+                    "parent": {"group_id": "G1"},
+                    "children": [
+                        {"group_id": "G2"},
+                    ],
+                }
+            ]
+        }
+        metadata = {
+            "id": "cmpl-merge",
+            "model": model,
+            "usage": {"prompt_tokens": 20, "completion_tokens": 12},
+        }
+        return payload, metadata
+
+    consolidated, metadata = consolidate_group_summaries(
+        input_groups,
+        "test-key",
+        call_model=fake_call,
+    )
+
+    assert metadata["status"] == "completed"
+    assert metadata["applied_merge_count"] == 1
+    assert metadata["suggested_merge_count"] == 1
+    assert len(consolidated) == 1
+    parent_group = consolidated[0]
+    assert parent_group["name"] == "Cellular Senescence"
+    assert "subgroups" in parent_group
+    child_group = parent_group["subgroups"][0]
+    assert child_group["name"] == "Cellular Ageing"
+    assert child_group["theories"][0]["supporting_articles"] == ["A1"]
+
+
 def test_refinement_and_reconciliation_merge_synonymous_groups() -> None:
     input_groups = [
         {
@@ -204,3 +270,83 @@ def test_refinement_and_reconciliation_merge_synonymous_groups() -> None:
     reconciled_child = reconciled[0]["subgroups"][0]
     assert reconciled_child["theories"][0]["supporting_articles"] == ["A1"]
     assert "duplicate_theories" not in reconciliation
+
+
+def test_consolidation_and_refinement_pipeline() -> None:
+    input_groups = [
+        {
+            "name": "Reactive Oxygen Species",
+            "description": "ROS driven damage",
+            "theories": [
+                {
+                    "theory_id": "T_ROS",
+                    "preferred_label": "Oxidative Stress Theory",
+                    "supporting_articles": ["A10", "A11"],
+                }
+            ],
+        },
+        {
+            "name": "Mitochondrial Damage",
+            "description": "Mitochondrial dysfunction",
+            "theories": [
+                {
+                    "theory_id": "T_MITO",
+                    "preferred_label": "Mitochondrial Free Radical Theory",
+                    "supporting_articles": ["A20"],
+                }
+            ],
+        },
+    ]
+
+    def fake_merge(messages, api_key, *, model, temperature):
+        assert api_key == "test-key"
+        payload = {
+            "parent_merges": [
+                {
+                    "parent": {
+                        "name": "Damage Accumulation",
+                        "description": "Parent bucket for damage theories",
+                    },
+                    "children": [
+                        {"group_id": "G1"},
+                        {"group_id": "G2"},
+                    ],
+                }
+            ]
+        }
+        metadata = {"id": "cmpl-merge", "model": model}
+        return payload, metadata
+
+    consolidated, merge_metadata = consolidate_group_summaries(
+        input_groups,
+        "test-key",
+        call_model=fake_merge,
+    )
+
+    assert merge_metadata["created_parent_groups"] == ["Damage Accumulation"]
+    assert len(consolidated) == 1
+    consolidated_parent = consolidated[0]
+    assert consolidated_parent["name"] == "Damage Accumulation"
+    assert {child["name"] for child in consolidated_parent["subgroups"]} == {
+        "Reactive Oxygen Species",
+        "Mitochondrial Damage",
+    }
+
+    captured_prompt: dict = {}
+
+    def fake_refine(messages, api_key, *, model, temperature):
+        assert api_key == "test-key"
+        captured_prompt["content"] = messages[1]["content"]
+        payload = {"groups": json.loads(json.dumps(consolidated))}
+        metadata = {"id": "cmpl-refine", "model": model}
+        return payload, metadata
+
+    refined, refinement_metadata = refine_group_hierarchy(
+        consolidated,
+        "test-key",
+        call_model=fake_refine,
+    )
+
+    assert refinement_metadata["status"] == "completed"
+    assert "Damage Accumulation" in captured_prompt["content"]
+    assert refined == consolidated

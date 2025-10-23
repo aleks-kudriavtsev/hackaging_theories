@@ -54,6 +54,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping,
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 REFINEMENT_MODEL = "gpt-5-mini"
+GROUP_CONSOLIDATION_MODEL = "gpt-5-mini"
 
 # The OpenAI ``gpt-5-mini`` model currently accepts up to ~272k tokens.  The
 # prompt builder below therefore keeps a safety margin and attempts to stay
@@ -316,6 +317,450 @@ def _call_openai(prompt: str, api_key: str, model: str) -> Dict[str, object]:
     if metadata:
         payload["_response_metadata"] = metadata
     return payload
+
+
+def _summarise_groups_for_consolidation(
+    groups: Sequence[Mapping[str, object]]
+) -> Tuple[
+    List[Dict[str, object]],
+    Dict[str, Dict[str, Any]],
+    Dict[str, str],
+    List[Dict[str, Any]],
+]:
+    summary: List[Dict[str, object]] = []
+    id_lookup: Dict[str, Dict[str, Any]] = {}
+    name_lookup: Dict[str, str] = {}
+    clones: List[Dict[str, Any]] = []
+
+    counter = 0
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        counter += 1
+        group_id = f"G{counter}"
+        cloned = _clone_json(group)
+        clones.append(cloned)
+        id_lookup[group_id] = cloned
+
+        entry: Dict[str, object] = {"group_id": group_id}
+
+        name = group.get("name") if isinstance(group.get("name"), str) else None
+        if name and name.strip():
+            entry["name"] = name.strip()
+            name_lookup.setdefault(name.strip().lower(), group_id)
+
+        description = (
+            group.get("description") if isinstance(group.get("description"), str) else None
+        )
+        if description and description.strip():
+            entry["description"] = description.strip()
+
+        theories_summary: List[Dict[str, object]] = []
+        article_ids: Set[str] = set()
+        theories = group.get("theories")
+        if isinstance(theories, Sequence) and not isinstance(theories, (str, bytes)):
+            for theory in theories:
+                if not isinstance(theory, Mapping):
+                    continue
+                theory_payload: Dict[str, object] = {}
+                identifier = None
+                for key in ("theory_id", "id"):
+                    raw_identifier = theory.get(key)
+                    if isinstance(raw_identifier, str) and raw_identifier.strip():
+                        identifier = raw_identifier.strip()
+                        theory_payload[key] = identifier
+                        break
+                preferred_label = theory.get("preferred_label")
+                if isinstance(preferred_label, str) and preferred_label.strip():
+                    theory_payload["preferred_label"] = preferred_label.strip()
+                elif isinstance(theory.get("label"), str) and theory.get("label").strip():
+                    theory_payload["label"] = theory["label"].strip()
+                supporting = theory.get("supporting_articles")
+                if isinstance(supporting, Sequence) and not isinstance(supporting, (str, bytes)):
+                    articles = [
+                        article
+                        for article in supporting
+                        if isinstance(article, str) and article.strip()
+                    ]
+                    if articles:
+                        theory_payload["supporting_articles"] = articles[:5]
+                        article_ids.update(articles)
+                if theory_payload:
+                    theories_summary.append(theory_payload)
+        if theories_summary:
+            entry["theories"] = theories_summary[:5]
+            entry["theory_count"] = len(theories_summary)
+        if article_ids:
+            entry["article_count"] = len(article_ids)
+
+        summary.append(entry)
+
+    return summary, id_lookup, name_lookup, clones
+
+
+def _apply_parent_group_merges(
+    roots: List[Dict[str, Any]],
+    id_lookup: Mapping[str, Dict[str, Any]],
+    name_lookup: Mapping[str, str],
+    merges: Sequence[Mapping[str, object]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    root_groups = list(roots)
+    attached_children: Set[str] = set()
+    applied_merges: List[Dict[str, object]] = []
+    created_parents: List[str] = []
+    skipped_merges: List[Dict[str, object]] = []
+    unresolved_parents: List[str] = []
+    unresolved_children: List[str] = []
+    repeated_children: List[str] = []
+    synthetic_name_lookup: Dict[str, Dict[str, Any]] = {}
+
+    def _resolve_group(
+        identifier: Optional[str],
+        *,
+        name_hint: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        candidates: List[str] = []
+        if isinstance(identifier, str) and identifier.strip():
+            candidates.append(identifier.strip())
+        if isinstance(name_hint, str) and name_hint.strip():
+            candidates.append(name_hint.strip())
+
+        for candidate in candidates:
+            lookup = id_lookup.get(candidate)
+            if lookup is not None:
+                return candidate, lookup
+            mapped = name_lookup.get(candidate.lower())
+            if mapped and mapped in id_lookup:
+                return mapped, id_lookup[mapped]
+            synthetic = synthetic_name_lookup.get(candidate.lower())
+            if synthetic is not None:
+                return None, synthetic
+
+        identifier_hint = candidates[0] if candidates else None
+        return identifier_hint, None
+
+    for merge in merges:
+        if not isinstance(merge, Mapping):
+            continue
+
+        parent_spec = merge.get("parent") or merge.get("parent_group") or merge.get("target")
+        parent_id: Optional[str] = None
+        parent_name: Optional[str] = None
+        parent_description: Optional[str] = None
+        parent_payload: Dict[str, object] = {}
+
+        if isinstance(parent_spec, Mapping):
+            parent_payload = dict(parent_spec)
+            candidate_id = parent_payload.get("group_id") or parent_payload.get("id")
+            if isinstance(candidate_id, str) and candidate_id.strip():
+                parent_id = candidate_id.strip()
+            candidate_name = parent_payload.get("name")
+            if isinstance(candidate_name, str) and candidate_name.strip():
+                parent_name = candidate_name.strip()
+            description = parent_payload.get("description") or parent_payload.get("summary")
+            if isinstance(description, str) and description.strip():
+                parent_description = description.strip()
+        elif isinstance(parent_spec, str) and parent_spec.strip():
+            parent_id = parent_spec.strip()
+
+        if parent_id is None:
+            fallback_parent_id = merge.get("parent_group_id") or merge.get("parent_id")
+            if isinstance(fallback_parent_id, str) and fallback_parent_id.strip():
+                parent_id = fallback_parent_id.strip()
+        if parent_name is None:
+            fallback_name = merge.get("parent_name") or merge.get("name")
+            if isinstance(fallback_name, str) and fallback_name.strip():
+                parent_name = fallback_name.strip()
+        if parent_description is None:
+            fallback_description = merge.get("parent_description")
+            if isinstance(fallback_description, str) and fallback_description.strip():
+                parent_description = fallback_description.strip()
+
+        resolved_parent_id, parent_group = _resolve_group(parent_id, name_hint=parent_name)
+        parent_created = False
+
+        if parent_group is None and parent_name:
+            synthetic = synthetic_name_lookup.get(parent_name.lower())
+            if synthetic is not None:
+                parent_group = synthetic
+
+        if parent_group is None and not parent_name and resolved_parent_id is None:
+            unresolved_parents.append(parent_id or "")
+            continue
+
+        if parent_group is None:
+            if not parent_name:
+                if resolved_parent_id:
+                    unresolved_parents.append(resolved_parent_id)
+                continue
+            parent_group = {
+                "name": parent_name,
+            }
+            if parent_description:
+                parent_group["description"] = parent_description
+            if parent_payload.get("aliases"):
+                aliases = parent_payload.get("aliases")
+                if isinstance(aliases, Sequence) and not isinstance(aliases, (str, bytes)):
+                    parent_group["aliases"] = [
+                        alias
+                        for alias in aliases
+                        if isinstance(alias, str) and alias.strip()
+                    ]
+            if parent_payload.get("theories"):
+                theories_payload = parent_payload.get("theories")
+                if isinstance(theories_payload, Sequence) and not isinstance(
+                    theories_payload, (str, bytes)
+                ):
+                    parent_group["theories"] = [
+                        _clone_json(theory)
+                        for theory in theories_payload
+                        if isinstance(theory, Mapping)
+                    ]
+            root_groups.append(parent_group)
+            synthetic_name_lookup[parent_name.lower()] = parent_group
+            parent_created = True
+
+        subgroups = parent_group.setdefault("subgroups", [])
+        children_spec = (
+            merge.get("children")
+            or merge.get("members")
+            or merge.get("group_ids")
+            or merge.get("subgroups")
+            or []
+        )
+        if not isinstance(children_spec, Sequence) or isinstance(children_spec, (str, bytes)):
+            children_entries = []
+        else:
+            children_entries = list(children_spec)
+
+        applied_child_ids: List[str] = []
+        applied_child_names: List[str] = []
+        unresolved_for_merge: List[str] = []
+        repeated_for_merge: List[str] = []
+
+        for child in children_entries:
+            child_id: Optional[str] = None
+            child_name: Optional[str] = None
+            if isinstance(child, Mapping):
+                candidate = child.get("group_id") or child.get("id")
+                if isinstance(candidate, str) and candidate.strip():
+                    child_id = candidate.strip()
+                name_candidate = child.get("name")
+                if isinstance(name_candidate, str) and name_candidate.strip():
+                    child_name = name_candidate.strip()
+            elif isinstance(child, str) and child.strip():
+                child_id = child.strip()
+
+            resolved_child_id, child_group = _resolve_group(child_id, name_hint=child_name)
+            if child_group is None:
+                unresolved_for_merge.append(child_name or child_id or "")
+                continue
+            if child_group is parent_group:
+                continue
+
+            key = resolved_child_id or (child_group.get("name") or "")
+            key_marker = key.lower() if isinstance(key, str) else str(id(child_group))
+            if key_marker in attached_children:
+                repeated_for_merge.append(child_group.get("name") or resolved_child_id or "")
+                continue
+
+            if child_group in root_groups:
+                root_groups.remove(child_group)
+            if child_group not in subgroups:
+                subgroups.append(child_group)
+
+            attached_children.add(key_marker)
+            applied_child_ids.append(resolved_child_id or "")
+            applied_child_names.append(child_group.get("name") or resolved_child_id or "")
+
+        if applied_child_ids:
+            applied_merges.append(
+                {
+                    "parent_group_id": resolved_parent_id,
+                    "parent_name": parent_group.get("name") or parent_name,
+                    "child_group_ids": [cid for cid in applied_child_ids if cid],
+                    "child_names": applied_child_names,
+                    "parent_created": parent_created,
+                }
+            )
+            if parent_created:
+                created_parents.append(parent_group.get("name") or parent_name or "")
+        else:
+            if parent_created and parent_group in root_groups:
+                root_groups.remove(parent_group)
+                synthetic_name_lookup.pop((parent_name or "").lower(), None)
+            skipped_merges.append(
+                {
+                    "parent_group_id": resolved_parent_id,
+                    "parent_name": parent_name,
+                }
+            )
+
+        if unresolved_for_merge:
+            unresolved_children.extend(unresolved_for_merge)
+        if repeated_for_merge:
+            repeated_children.extend(repeated_for_merge)
+
+    seen: Set[int] = set()
+    deduped_roots: List[Dict[str, Any]] = []
+    for group in root_groups:
+        marker = id(group)
+        if marker in seen:
+            continue
+        deduped_roots.append(group)
+        seen.add(marker)
+
+    audit: Dict[str, Any] = {
+        "applied_merges": applied_merges,
+        "applied_merge_count": len(applied_merges),
+    }
+    if created_parents:
+        audit["created_parents"] = created_parents
+    if skipped_merges:
+        audit["skipped_merges"] = skipped_merges
+    if unresolved_parents:
+        audit["unresolved_parents"] = [
+            identifier for identifier in {item for item in unresolved_parents if item}
+        ]
+    if unresolved_children:
+        audit["unresolved_children"] = [
+            child for child in {item for item in unresolved_children if item}
+        ]
+    if repeated_children:
+        audit["repeated_children"] = [
+            child for child in {item for item in repeated_children if item}
+        ]
+
+    return deduped_roots, audit
+
+
+def consolidate_group_summaries(
+    groups: Sequence[Mapping[str, object]],
+    api_key: Optional[str],
+    *,
+    model: str = GROUP_CONSOLIDATION_MODEL,
+    call_model: Optional[
+        Callable[..., Tuple[Dict[str, object], Dict[str, object]]]
+    ] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    summary, id_lookup, name_lookup, clones = _summarise_groups_for_consolidation(groups)
+
+    metadata: Dict[str, Any] = {
+        "status": "skipped" if not summary else "pending",
+        "model": model,
+        "input_group_count": len(clones),
+        "group_index": {entry["group_id"]: entry.get("name") for entry in summary},
+    }
+
+    if not summary:
+        metadata["reason"] = "no_groups"
+        return [], metadata
+
+    if not api_key:
+        metadata["reason"] = "missing_api_key"
+        metadata["status"] = "skipped"
+        return clones, metadata
+
+    summary_json = json.dumps(summary, ensure_ascii=False, indent=2)
+    prompt = textwrap.dedent(
+        f"""
+        The JSON list below summarises ontology groups produced by a first-pass
+        LLM call. Each entry contains a ``group_id`` plus optional names,
+        descriptions, theory identifiers and supporting article statistics.
+
+        Analyse the summaries and determine whether any groups should share a
+        parent concept. When you believe a shared parent is warranted, propose a
+        merge by referencing the ``group_id`` values of the child groups.
+
+        Requirements:
+        - Only reference ``group_id`` values that appear in the summary.
+        - Respond with JSON containing a top-level key ``parent_merges``.
+        - Each merge entry must include a ``parent`` object (reuse an existing
+          group via ``group_id`` when possible or provide a ``name`` and optional
+          ``description`` for a new parent) and a ``children`` array listing the
+          ``group_id`` values of groups that should become its subgroups.
+        - Preserve theory/article assignments exactly; do not invent new
+          theories or article IDs.
+        - You may include optional rationale fields, but keep the JSON concise.
+
+        Group summaries:
+        {summary_json}
+        """
+    ).strip()
+
+    metadata["prompt_characters"] = len(prompt)
+    metadata["estimated_prompt_tokens"] = _estimate_prompt_tokens(prompt)
+
+    call_fn = call_model
+    if call_fn is None:
+        def default_call_fn(
+            messages: Sequence[Mapping[str, object]],
+            key: str,
+            *,
+            model: str = model,
+            temperature: float = 0.35,
+        ) -> Tuple[Dict[str, object], Dict[str, object]]:
+            return _invoke_chat_model(messages, key, model=model, temperature=temperature)
+
+        call_fn = default_call_fn
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You specialise in consolidating ontology groupings. Suggest parent "
+                "relationships without altering theory assignments."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    parsed, response_metadata = call_fn(messages, api_key, model=model, temperature=0.35)
+    if response_metadata:
+        metadata["response_metadata"] = response_metadata
+
+    parent_merges = []
+    if isinstance(parsed, Mapping):
+        merge_candidates = parsed.get("parent_merges") or parsed.get("group_merges")
+        if isinstance(merge_candidates, Sequence) and not isinstance(merge_candidates, (str, bytes)):
+            parent_merges = [entry for entry in merge_candidates if isinstance(entry, Mapping)]
+
+    consolidated, audit = _apply_parent_group_merges(clones, id_lookup, name_lookup, parent_merges)
+
+    metadata["status"] = "completed"
+    metadata["suggested_merge_count"] = len(parent_merges)
+    metadata["applied_merge_count"] = audit.get("applied_merge_count", 0)
+    metadata["materialised_group_count"] = len(consolidated)
+    metadata["output_group_count"] = len(consolidated)
+    if audit.get("applied_merges"):
+        metadata["applied_merges"] = audit["applied_merges"]
+    if audit.get("created_parents"):
+        metadata["created_parent_groups"] = sorted({name for name in audit["created_parents"] if name})
+    if audit.get("skipped_merges"):
+        metadata["skipped_merges"] = audit["skipped_merges"]
+    if audit.get("unresolved_parents"):
+        metadata.setdefault("warnings", []).append(
+            {
+                "event": "unresolved_parent_reference",
+                "parent_ids": sorted(audit["unresolved_parents"]),
+            }
+        )
+    if audit.get("unresolved_children"):
+        metadata.setdefault("warnings", []).append(
+            {
+                "event": "unresolved_child_reference",
+                "child_identifiers": sorted(audit["unresolved_children"]),
+            }
+        )
+    if audit.get("repeated_children"):
+        metadata.setdefault("warnings", []).append(
+            {
+                "event": "duplicate_child_assignment",
+                "children": sorted(audit["repeated_children"]),
+            }
+        )
+
+    return consolidated, metadata
 
 
 def _summarise_groups_for_refinement(
@@ -1764,6 +2209,23 @@ def main(argv: List[str] | None = None) -> int:
         groups_for_reconciliation = response.get("groups", [])
         prompt_adjustments = _collect_prompt_metadata([response])
 
+    consolidation_metadata: Dict[str, Any] = {}
+    consolidated_groups_snapshot: List[Dict[str, Any]] = []
+    if isinstance(groups_for_reconciliation, Sequence) and not isinstance(
+        groups_for_reconciliation, (str, bytes)
+    ):
+        (
+            consolidated_groups_snapshot,
+            consolidation_metadata,
+        ) = consolidate_group_summaries(
+            groups_for_reconciliation,
+            api_key,
+        )
+        if consolidated_groups_snapshot:
+            groups_for_reconciliation = consolidated_groups_snapshot
+        else:
+            groups_for_reconciliation = []
+
     refinement_metadata: Dict[str, Any] = {}
     refined_groups_snapshot: List[Dict[str, Any]] = []
     if isinstance(groups_for_reconciliation, Sequence) and not isinstance(
@@ -1776,6 +2238,9 @@ def main(argv: List[str] | None = None) -> int:
         groups_for_reconciliation = refined_groups_snapshot
     if isinstance(response, Mapping):
         response = dict(response)
+        response.setdefault("consolidated_groups", _clone_json(consolidated_groups_snapshot))
+        if consolidation_metadata:
+            response.setdefault("_consolidation_metadata", consolidation_metadata)
         response.setdefault("refined_groups", _clone_json(refined_groups_snapshot))
         if refinement_metadata:
             response.setdefault("_refinement_metadata", refinement_metadata)
@@ -1796,6 +2261,25 @@ def main(argv: List[str] | None = None) -> int:
         )
 
     _attach_suggested_queries(reconciled_groups)
+
+    if consolidation_metadata:
+        consolidation_note: Dict[str, Any] = {
+            "event": "group_consolidation",
+            "status": consolidation_metadata.get("status"),
+            "model": consolidation_metadata.get("model"),
+            "input_group_count": consolidation_metadata.get("input_group_count"),
+            "suggested_merge_count": consolidation_metadata.get("suggested_merge_count"),
+            "applied_merge_count": consolidation_metadata.get("applied_merge_count"),
+        }
+        if consolidation_metadata.get("created_parent_groups"):
+            consolidation_note["created_parent_groups"] = consolidation_metadata[
+                "created_parent_groups"
+            ]
+        if consolidation_metadata.get("reason"):
+            consolidation_note["reason"] = consolidation_metadata["reason"]
+        if consolidation_metadata.get("warnings"):
+            consolidation_note["warnings"] = consolidation_metadata["warnings"]
+        reconciliation.setdefault("notes", []).append(consolidation_note)
 
     if refinement_metadata:
         refinement_note: Dict[str, Any] = {
@@ -1871,6 +2355,10 @@ def main(argv: List[str] | None = None) -> int:
         "prompt_adjustments": prompt_adjustments,
         "ontology": {
             "raw": response,
+            "consolidated": {
+                "groups": _clone_json(consolidated_groups_snapshot),
+                "metadata": consolidation_metadata,
+            },
             "refined": {
                 "groups": _clone_json(refined_groups_snapshot),
                 "metadata": refinement_metadata,

@@ -254,6 +254,17 @@ python scripts/step5_generate_ontology.py \
   from checkpoint annotations using the fallback model specified by
   `--registry-model` and the timeout in `--registry-request-timeout`.
 
+**Two-pass consolidation**
+
+After the initial `generate_grouping` prompts finish, the script runs a
+gpt-5-mini consolidation pass over the chunked group summaries. The assistant
+reasons about which top-level groups should share a parent and emits a merge
+plan without touching article assignments. The resulting hierarchy flows into
+the refinement step and every decision—suggested merges, created parents,
+skipped references—is captured in the output JSON under
+`ontology.consolidated.metadata` and mirrored in the reconciliation notes so
+downstream tooling can audit both LLM passes when replaying cached responses.
+
 **Parallelism and staging tips**
 
 Set `OPENAI_API_KEY` unless you feed a cached `--llm-response`. Large corpora
