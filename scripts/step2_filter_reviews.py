@@ -1633,6 +1633,12 @@ def main(argv: List[str] | None = None) -> int:
             )
             return default
 
+    def _has_cached_fulltext(payload: Mapping[str, Any] | None) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        full_text = payload.get("full_text")
+        return isinstance(full_text, str) and bool(full_text.strip())
+
     cpu_total = os.cpu_count() or 1
     min_records_per_worker = 25
     if total_records:
@@ -1737,13 +1743,15 @@ def main(argv: List[str] | None = None) -> int:
             keys = _stable_identifier_keys(record)
             cached_article = None
             for key in keys:
-                cached_article = cached_article_index.get(key)
-                if cached_article is not None:
+                candidate = cached_article_index.get(key)
+                if _has_cached_fulltext(candidate):
+                    cached_article = candidate
                     break
             if cached_article is None:
                 for identifier in _candidate_article_identifiers(record):
-                    cached_article = cached_article_id_index.get(identifier)
-                    if cached_article is not None:
+                    candidate = cached_article_id_index.get(identifier)
+                    if _has_cached_fulltext(candidate):
+                        cached_article = candidate
                         break
             if cached_article is not None:
                 reused = copy.deepcopy(cached_article)
