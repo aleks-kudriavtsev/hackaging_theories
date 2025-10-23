@@ -223,6 +223,20 @@ def _clone_json(value: Any) -> Any:
     return value
 
 
+def _build_llm_pass_audit(
+    consolidation_metadata: Mapping[str, Any],
+    refinement_metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Collect metadata snapshots for the consolidation/refinement passes."""
+
+    audit: Dict[str, Any] = {}
+    if isinstance(consolidation_metadata, Mapping) and consolidation_metadata:
+        audit["consolidation"] = _clone_json(consolidation_metadata)
+    if isinstance(refinement_metadata, Mapping) and refinement_metadata:
+        audit["refinement"] = _clone_json(refinement_metadata)
+    return audit
+
+
 def _normalise_groups(payload: Mapping[str, object]) -> Dict[str, object]:
     """Ensure the OpenAI payload has a predictable ``groups`` list."""
 
@@ -2262,6 +2276,13 @@ def main(argv: List[str] | None = None) -> int:
 
     _attach_suggested_queries(reconciled_groups)
 
+    llm_pass_audit = _build_llm_pass_audit(
+        consolidation_metadata,
+        refinement_metadata,
+    )
+    if llm_pass_audit:
+        reconciliation.setdefault("llm_passes", _clone_json(llm_pass_audit))
+
     if consolidation_metadata:
         consolidation_note: Dict[str, Any] = {
             "event": "group_consolidation",
@@ -2378,6 +2399,7 @@ def main(argv: List[str] | None = None) -> int:
             "requested_processes": requested_processes,
             "chunk_size": chunk_size,
             "auto_chunk_size_suggestion": auto_chunk_size,
+            "llm_passes": _clone_json(llm_pass_audit),
             **reconciliation,
         },
     }

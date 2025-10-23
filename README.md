@@ -262,8 +262,10 @@ reasons about which top-level groups should share a parent and emits a merge
 plan without touching article assignments. The resulting hierarchy flows into
 the refinement step and every decision—suggested merges, created parents,
 skipped references—is captured in the output JSON under
-`ontology.consolidated.metadata` and mirrored in the reconciliation notes so
-downstream tooling can audit both LLM passes when replaying cached responses.
+`ontology.consolidated.metadata` and mirrored in the reconciliation notes. The
+top-level `reconciliation_report.llm_passes` map snapshots both metadata blocks
+so downstream tooling can audit the consolidation and refinement passes when
+replaying cached responses.
 
 **Parallelism and staging tips**
 

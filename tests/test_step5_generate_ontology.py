@@ -14,6 +14,7 @@ _load_json_payload = _MODULE._load_json_payload
 _load_registry_builder = _MODULE._load_registry_builder
 _limit_group_theories = _MODULE._limit_group_theories
 _reconcile_groups = _MODULE._reconcile_groups
+_build_llm_pass_audit = _MODULE._build_llm_pass_audit
 consolidate_group_summaries = _MODULE.consolidate_group_summaries
 refine_group_hierarchy = _MODULE.refine_group_hierarchy
 
@@ -109,6 +110,19 @@ def test_limit_group_theories_splits_large_groups() -> None:
     adjustments = reconciliation.get("group_splits")
     assert adjustments and adjustments[0]["limit"] == 40
     assert adjustments[0]["overflow_groups"][0] == [f"T{index}" for index in range(40, 45)]
+
+
+def test_build_llm_pass_audit_clones_metadata() -> None:
+    consolidation = {"status": "completed", "model": "gpt-5-mini"}
+    refinement = {"status": "pending", "model": "gpt-4.1"}
+
+    audit = _build_llm_pass_audit(consolidation, refinement)
+
+    assert audit["consolidation"]["status"] == "completed"
+    assert audit["refinement"]["model"] == "gpt-4.1"
+
+    consolidation["status"] = "mutated"
+    assert audit["consolidation"]["status"] == "completed"
 
 
 def test_consolidate_group_summaries_merges_parent_groups() -> None:
@@ -350,3 +364,7 @@ def test_consolidation_and_refinement_pipeline() -> None:
     assert refinement_metadata["status"] == "completed"
     assert "Damage Accumulation" in captured_prompt["content"]
     assert refined == consolidated
+
+    audit = _build_llm_pass_audit(merge_metadata, refinement_metadata)
+    assert audit["consolidation"]["applied_merge_count"] == 1
+    assert audit["refinement"]["status"] == "completed"
