@@ -122,13 +122,26 @@ async def _call_openai(
                 await asyncio.sleep(delay)
 
     try:
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        message = choice.message
+        content = message.content
     except (AttributeError, IndexError, KeyError) as err:  # pragma: no cover
         raise RuntimeError(f"Unexpected OpenAI response: {response!r}") from err
 
+    if not isinstance(content, str) or not content.strip():
+        metadata = {
+            "id": getattr(response, "id", None),
+            "model": getattr(response, "model", None),
+            "finish_reason": getattr(choice, "finish_reason", None),
+            "role": getattr(message, "role", None),
+        }
+        raise RuntimeError(
+            "OpenAI response missing message content: " + json.dumps(metadata)
+        )
+
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError as err:
+    except (json.JSONDecodeError, TypeError) as err:
         raise RuntimeError(
             "OpenAI returned invalid JSON payload: " + content
         ) from err
