@@ -21,12 +21,36 @@ class MissingSecretError(RuntimeError):
 
 
 _PLACEHOLDER_API_KEYS: Mapping[str, Iterable[str]] = {
-    "openalex": ("sk-your-openalex-key",),
-    "pubmed": ("your-pubmed-key",),
+    "openalex": ("sk-your-openalex-key", "set-your-openalex-token"),
+    "pubmed": ("your-pubmed-key", "set-your-pubmed-token"),
     "openai": ("sk-your-openai-key",),
+    "serpapi": ("set-your-serpapi-token",),
+    "semantic_scholar": ("set-your-semanticscholar-token",),
+    "crossref_contact": ("you@example.com",),
     "scihub_rapidapi": ("your-rapidapi-token",),
     "annas_archive": ("your-rapidapi-token",),
 }
+
+# The exact list above duplicates values that also live in config/pipeline.yaml, and
+# the two copies already drifted apart once: the guard knew "your-pubmed-key" while
+# the shipped config defaulted to "set-your-pubmed-token", so the placeholder reached
+# the provider as if it were a real token and the run died on someone else's error
+# code instead of stopping here. Matching on shape as well as on the exact list keeps
+# a future default from slipping through when nobody remembers to extend the list.
+_PLACEHOLDER_PREFIXES: tuple[str, ...] = ("your-", "sk-your-", "set-your-")
+
+
+def _placeholder_hint(name: str, config: Mapping[str, Any] | None) -> str:
+    """Name the environment variable that is supposed to carry the real secret."""
+
+    if not isinstance(config, Mapping):
+        return ""
+    descriptor = config.get(name)
+    if isinstance(descriptor, Mapping):
+        env_name = descriptor.get("env")
+        if isinstance(env_name, str) and env_name:
+            return f" (export {env_name})"
+    return ""
 
 
 def resolve_api_keys(
@@ -60,7 +84,11 @@ def resolve_api_keys(
     return resolved
 
 
-def ensure_real_api_keys(values: Mapping[str, str | None]) -> Dict[str, str | None]:
+def ensure_real_api_keys(
+    values: Mapping[str, str | None],
+    *,
+    config: Mapping[str, Any] | None = None,
+) -> Dict[str, str | None]:
     """Ensure configured API keys are not left at documented placeholder values.
 
     The README uses human-friendly placeholder strings (for example,
@@ -80,10 +108,12 @@ def ensure_real_api_keys(values: Mapping[str, str | None]) -> Dict[str, str | No
             continue
         normalized = raw_value.strip().lower()
         placeholders = {value.lower() for value in _PLACEHOLDER_API_KEYS.get(name, ())}
-        if normalized in placeholders:
+        if normalized in placeholders or normalized.startswith(_PLACEHOLDER_PREFIXES):
             offenders.append((name, raw_value))
     if offenders:
-        examples = ", ".join(f"{name}='{value}'" for name, value in offenders)
+        examples = ", ".join(
+            f"{name}='{value}'{_placeholder_hint(name, config)}" for name, value in offenders
+        )
         raise MissingSecretError(
             "Placeholder API key detected. Replace the example value with your real "
             f"credentials for: {examples}"

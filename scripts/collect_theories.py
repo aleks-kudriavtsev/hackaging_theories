@@ -328,7 +328,7 @@ def _load_api_keys(
     base_path: Path | None,
 ) -> Dict[str, str | None]:
     resolved = resolve_api_keys(config_api_keys, base_path=base_path)
-    resolved = ensure_real_api_keys(resolved)
+    resolved = ensure_real_api_keys(resolved, config=config_api_keys)
     overrides = {
         target_key: getattr(args, cli_attr)
         for cli_attr, target_key in _API_KEY_OVERRIDE_MAP.items()
@@ -336,7 +336,7 @@ def _load_api_keys(
     }
     if overrides:
         resolved = {**resolved, **overrides}
-        resolved = ensure_real_api_keys(resolved)
+        resolved = ensure_real_api_keys(resolved, config=config_api_keys)
     return resolved
 
 
@@ -421,6 +421,13 @@ def _quickstart_config(node: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     }
     config[name].setdefault("subtheories", {})
     return config
+
+
+def _resolve_under_project_root(path: str | Path) -> Path:
+    """Resolve a configured path, treating relative values as repository-relative."""
+
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
 
 
 def _persist_quickstart_node(node: Mapping[str, Any], slug: str) -> Path:
@@ -677,7 +684,15 @@ def _run_bootstrap_phase(
 
     bootstrap_nodes = build_bootstrap_ontology(extraction_results, max_children=max_children)
 
-    cache_path = Path(bootstrap_cfg_raw.get("cache_path") or "data/cache/bootstrap_ontology.json")
+    # Anchor to PROJECT_ROOT like every other cache in this module (see the
+    # data/cache/ontologies paths below). A bare relative path resolved against the
+    # process CWD instead, so running this script from anywhere but the repository
+    # root scattered the bootstrap cache where the next run could not find it — and
+    # the test suite, which redirects PROJECT_ROOT to a tmpdir, wrote this one file
+    # straight into the working tree.
+    cache_path = _resolve_under_project_root(
+        bootstrap_cfg_raw.get("cache_path") or "data/cache/bootstrap_ontology.json"
+    )
     if bootstrap_nodes:
         write_bootstrap_cache(cache_path, seed_queries=seed_queries, review_map=review_map, bootstrap_nodes=bootstrap_nodes)
     elif cache_path.exists():
