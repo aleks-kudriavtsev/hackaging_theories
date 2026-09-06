@@ -384,7 +384,18 @@ def test_verify_bootstrap_flag_enables_override(monkeypatch, tmp_path):
     assert captured_override["output_dir"] == args.bootstrap_verify_dir
 
 
-def test_run_bootstrap_phase_emits_verification_files(tmp_path):
+def test_run_bootstrap_phase_emits_verification_files(monkeypatch, tmp_path):
+    # _run_bootstrap_phase persists the bootstrap cache under PROJECT_ROOT; without
+    # redirecting it the test writes data/cache/bootstrap_ontology.json into the
+    # working tree of whoever runs pytest. Keeping the project root and the working
+    # directory apart is what lets the assertions below tell the two destinations
+    # apart instead of accepting either one.
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.setattr(collect_theories, "PROJECT_ROOT", project_root)
+    monkeypatch.chdir(workdir)
     retriever = SimpleNamespace(
         collect_queries=lambda *_a, **_k: SimpleNamespace(
             papers=[
@@ -435,6 +446,15 @@ def test_run_bootstrap_phase_emits_verification_files(tmp_path):
 
     assert nodes, "Bootstrap nodes should not be empty"
     assert any(review_map.values()), "Review map should contain retrieved papers"
+
+    # The cache belongs to the repository the script serves, not to the directory
+    # pytest happened to start in.
+    assert (project_root / "data" / "cache" / "bootstrap_ontology.json").exists(), (
+        "Bootstrap cache was not written under PROJECT_ROOT"
+    )
+    assert not (workdir / "data").exists(), (
+        "Bootstrap cache leaked into the current working directory"
+    )
 
 
 def test_quickstart_generates_cache_and_skips_validation(monkeypatch, tmp_path, capsys):

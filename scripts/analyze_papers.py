@@ -116,7 +116,7 @@ def _load_api_keys(
     base_path: Path | None,
 ) -> Dict[str, str | None]:
     resolved = resolve_api_keys(config_api_keys, base_path=base_path)
-    resolved = ensure_real_api_keys(resolved)
+    resolved = ensure_real_api_keys(resolved, config=config_api_keys)
     overrides = {
         target_key: getattr(args, cli_attr)
         for cli_attr, target_key in _API_KEY_OVERRIDE_MAP.items()
@@ -124,7 +124,7 @@ def _load_api_keys(
     }
     if overrides:
         resolved = {**resolved, **overrides}
-        resolved = ensure_real_api_keys(resolved)
+        resolved = ensure_real_api_keys(resolved, config=config_api_keys)
     return resolved
 
 
