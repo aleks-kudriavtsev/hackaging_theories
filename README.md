@@ -7,6 +7,50 @@ Every stage is available as a standalone script for transparency, and the
 orchestrators in `scripts/run_pipeline.py` and `scripts/run_full_cycle.py` chain
 them into end-to-end commands that scale to very large corpora.
 
+## Integration with aging biomarkers
+
+The [biomarker bridge](docs/biomarker_bridge.md) connects this literature-search
+project to [aging_biomarkers](https://github.com/aleks-kudriavtsev/aging_biomarkers).
+It exports theories as **second-order metadata nodes** that can organise
+reviewable claims across L1 outcomes, L2 biological states and L3 measurements.
+Theories remain a separate layer; they do not replace L2 or create causal links
+between measurements and outcomes merely through shared membership.
+
+From this repository, export the checked-in registry to a portable JSON pack:
+
+```bash
+PYTHONPATH=src python -m theories_pipeline.biomarker_bridge \
+  --input data/pipeline/aging_theories.json \
+  --output ../aging_biomarkers/data/living_evidence/theory_import_audit.json \
+  --source-repository aleks-kudriavtsev/hackaging_theories \
+  --source-commit 6e45f01e5d108d07b11ceee79de850ddfc749446
+```
+
+The output records the input SHA-256 and source commit, preserves stable theory
+IDs, and separates `hypothesis_candidate` from `quarantined_fixture` nodes.
+Use the commit matching your input snapshot when exporting another revision.
+Both `aging_theories.json` and `aging_ontology.json` are supported. The original
+three registry examples use placeholder DOI values `10.1000/aging.001`–`003` and
+are quarantined; their labels are not evidence of scientific validation. The
+receiving system must independently resolve real references and review each
+claim before using it to justify a biomarker-panel proposal.
+
+The Q3 keyword classifier now treats `Proposed longevity intervention` as a
+**screening category**, including for positive, null and negative findings.
+Its provenance contains `screening_only=true`, `efficacy_assessed=false` and
+`requires source-level review`. Keywords and numerical effects cannot produce
+`Validated longevity intervention` through this fallback. The LLM classifier is
+not scientifically validated, and neither its label nor its confidence may
+automatically promote a theory or claim to validated or causal evidence.
+
+Run the 14 focused integration and claim-boundary regressions without installing
+additional test dependencies:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p test_biomarker_bridge.py -v
+PYTHONPATH=src python -m unittest discover -s tests -p test_intervention_claim_guards.py -v
+```
+
 ## Quick start
 
 1. **Create a virtual environment (optional but recommended).**
@@ -452,4 +496,3 @@ challenge live under `data/examples/`.
 Feel free to adapt the modules for additional domains—the pipeline architecture
 is intentionally modular so you can extend or replace components without
 rewriting the full loop.
-

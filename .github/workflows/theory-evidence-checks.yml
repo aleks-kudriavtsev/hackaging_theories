@@ -1,0 +1,26 @@
+name: theory-evidence-checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  scientific-boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reject fixture citations and unsupported intervention claims
+        run: |
+          python3 -S -m unittest discover -s tests -p 'test_biomarker_bridge.py' -v
+          python3 -S -m unittest discover -s tests -p 'test_intervention_claim_guards.py' -v
