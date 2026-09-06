@@ -108,3 +108,87 @@ Run the focused boundary checks with:
 PYTHONPATH=src python -m unittest discover -s tests -p test_biomarker_bridge.py -v
 PYTHONPATH=src python -m unittest discover -s tests -p test_intervention_claim_guards.py -v
 ```
+
+## Curated literature foundation (2026-09-06)
+
+`data/curated/aging_theory_catalog.json` now provides a real, separately curated
+discovery input. It does not replace or promote the old demo registry. Selection
+is purposeful rather than a systematic or exhaustive inventory of aging theories.
+No project-report panel was used as an empirical evidence source.
+
+| Concept | Type | Foundation and scope |
+| --- | --- | --- |
+| Inflammaging | Conceptual framework | Franceschi et al., 2000; original concept, PMID 10911963. |
+| Antagonistic pleiotropy | Evolutionary theory | Williams, 1957; DOI 10.1111/j.1558-5646.1957.tb02911.x. |
+| Hyperfunction | Mechanistic hypothesis | Blagosklonny, 2006; original hypothesis, PMID 17012837. |
+| Free-radical damage | Mechanistic hypothesis | Harman, 1956, PMID 13332224; a context-specific counterexample, Van Raamsdonk and Hekimi, 2009, PMID 19197346, is retained. |
+| Telomere attrition | Mechanistic hypothesis | Harley et al., 1990, PMID 2342578; cultured human fibroblasts, not a validated organismal clock. |
+| Calorie restriction | Intervention family | Historical rat experiment reprinted in 1989, PMID 2520283; human metabolic intervention, Redman et al., 2018, PMID 29576535. |
+
+The eight source records include original conceptual publications and primary
+experiments. Seven PubMed records were retrieved together from Europe PMC;
+the response bytes, request, expected IDs and SHA-256 are retained in
+`data/curated/bibliography/`. Williams' identity was checked on the journal
+record. Bibliographic identity and conceptual relevance were reviewed; a
+systematic correction/retraction review and clinical-claim review were not
+performed by this upstream catalog.
+
+The consumer configuration contains six concepts, 18 context nodes, 24 explicit
+hypothesis links, seven falsifiable research questions and six paired search
+plans. Every concept has L3 measurement, L2 state and L1 outcome context. The
+four protein candidates TNF, IL6, CRP and GDF15 are accompanied by four proposed
+additional measurements: leukocyte telomere length, cellular phospho-S6,
+urinary F2-isoprostanes and leptin. These additions are marked `outside_panel`;
+they do not enter a protein panel automatically. GDF15 is explicitly a
+nonspecific stress comparator, not a direct readout of mTOR or oxidative damage.
+
+Each question specifies its competing explanation, required discriminating
+test and falsification criterion. All upstream links remain `organizes` or
+`proposes_marker`, with empty observation references. No empirical edge,
+confirmed prediction, clinical priority or evidence score is exported.
+
+The six existing theory-query term lists and original prediction-query term
+sets are preserved. The receiver's six theory queries and shared contradiction
+query are byte-for-byte equivalent to the existing baseline. Additional paired
+search plans are proposals and are not reported as completed searches.
+
+### Export and integrity contract
+
+From a committed checkout, use that commit's complete hash:
+
+```bash
+PYTHONPATH=src python -m theories_pipeline.biomarker_bridge \
+  --input data/curated/aging_theory_catalog.json \
+  --output /tmp/curated_theories_pack.json \
+  --consumer-output /tmp/theory_config.json \
+  --source-repository aleks-kudriavtsev/hackaging_theories \
+  --source-commit FULL_COMMIT_HASH
+```
+
+Legacy schema `1.0` fields and conservative citation statuses are unchanged.
+Curated packs additionally contain `consumer_config`, directly accepted by
+`aging_biomarkers/tools/living_evidence/theories.py`, and `discovery_summary`.
+Bibliographic review records are separate from theory-validation status.
+
+`pack.provenance` contains `source_repository`, `source_commit`, `input_file`,
+`registry_sha256` and `consumer_config_sha256`. The last hash is SHA-256 of
+UTF-8 JSON with `ensure_ascii=False`, `sort_keys=True`, and
+`separators=(",", ":")`. The catalog pins the complete `consumer_config` object.
+The exporter independently rebuilds and validates it and requires exact
+equality. A receiver can independently hash `git show COMMIT:input_file` and
+compare its `consumer_config` to the pack. This binds discovery configuration
+to source bytes, rather than trusting a self-declared hash alone.
+
+After editing curated source fields, regenerate the derived pinned object and
+review the diff before committing:
+
+```bash
+PYTHONPATH=src python scripts/refresh_curated_consumer.py \
+  data/curated/aging_theory_catalog.json
+PYTHONPATH=src python -m unittest discover -s tests -p test_curated_catalog.py -v
+```
+
+Malformed references, unreviewed identities, unknown graph nodes/analytes,
+empirical assertions, confirmed predictions and drift of the derived config
+fail closed. The receiver still owns literature retrieval, claim review,
+cohort deduplication, analytical feasibility and three-level panel selection.
