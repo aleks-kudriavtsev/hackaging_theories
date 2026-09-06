@@ -51,7 +51,9 @@ def test_extractor_returns_categorical_answers() -> None:
 
     assert mapped["Q1"].answer == "Yes, quantitatively shown"
     assert mapped["Q2"].answer == "Mechanism supported by experiments"
-    assert mapped["Q3"].answer == "Validated longevity intervention"
+    # An abstract's positive wording cannot validate an intervention by keywords.
+    assert mapped["Q3"].answer == "Proposed longevity intervention"
+    assert json.loads(mapped["Q3"].evidence or "{}")["heuristic"]["efficacy_assessed"] is False
     assert mapped["Q4"].answer == "Changes appear reversible"
     assert mapped["Q5"].answer == "Yes, quantitatively shown"
     assert mapped["Q6"].answer == "Primary focus of the paper"

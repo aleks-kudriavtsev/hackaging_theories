@@ -381,27 +381,28 @@ class QuestionExtractor:
         return none_label, 0.1, None
 
     def _classify_intervention(self, sentences: Sequence[str]) -> Tuple[str, float, Optional[str]]:
-        validated_label, proposed_label, none_label = QUESTION_CHOICES["Q3"]
+        """Detect an intervention mention without claiming validated efficacy.
+
+        The legacy Q3 vocabulary has no separate 'studied, outcome unreviewed'
+        category. Use its proposed category as a screening label, including for
+        null/negative findings. Source-level review must establish study design,
+        direction, species, endpoint and replication before any validation claim.
+        """
+        _, proposed_label, none_label = QUESTION_CHOICES["Q3"]
         intervention_terms = self._get_keywords(
             "Q3",
             proposed_label,
             ("intervention", "treatment", "therapy", "drug", "compound", "supplement", "regimen"),
         )
-        validation_terms = self._get_keywords(
-            "Q3",
-            validated_label,
-            ("extends lifespan", "increased lifespan", "longevity", "survival", "lifespan"),
-        )
+        mention_patterns = [
+            re.compile(r"(?<!\w)" + re.escape(term) + r"(?:s)?(?!\w)", re.I)
+            for term in intervention_terms if term
+        ]
         for sentence in sentences:
-            lowered = sentence.lower()
-            if any(term in lowered for term in intervention_terms):
-                if any(term in lowered for term in validation_terms):
-                    return validated_label, 0.9, sentence.strip()
-                speculative = ("potential", "candidate", "may", "could", "propose", "suggest")
-                if any(term in lowered for term in speculative):
-                    return proposed_label, 0.6, sentence.strip()
-                if "lifespan" in lowered or "longevity" in lowered:
-                    return validated_label, 0.75, sentence.strip()
+            if any(pattern.search(sentence) for pattern in mention_patterns):
+                # Outcome words, numerical effects and even an author's own
+                # 'validated' wording are insufficient for scientific validation.
+                # Preserve the original sentence, including its negation.
                 return proposed_label, 0.55, sentence.strip()
         return none_label, 0.1, None
 
@@ -668,6 +669,10 @@ class QuestionExtractor:
                 "evidence": heuristic_evidence,
             }
         }
+        if question_id == "Q3" and heuristic_answer == QUESTION_CHOICES["Q3"][1]:
+            evidence_payload["heuristic"]["reason"] = "requires source-level review"
+            evidence_payload["heuristic"]["screening_only"] = True
+            evidence_payload["heuristic"]["efficacy_assessed"] = False
 
         if gpt_result is not None:
             normalized_answer = (gpt_result.answer or "").strip()
