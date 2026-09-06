@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .curated_catalog import build_consumer_config, canonical_sha256
+
 SCHEMA_VERSION = "1.0"
 THEORY_CLASSES = {
     "evolutionary_theory", "mechanistic_hypothesis", "conceptual_framework",
@@ -197,7 +199,7 @@ def export_theory_pack(
             raise ValueError(f"Conflicting duplicate theory ID: {theory_id}")
         nodes[theory_id] = node
     theories = sorted(nodes.values(), key=lambda node: node["theory_id"])
-    return {
+    pack = {
         "schema_version": SCHEMA_VERSION, "layer": "theory_metadata",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "provenance": {
@@ -218,6 +220,21 @@ def export_theory_pack(
             "empirical_links_require_separate_claim_review": True,
         },
     }
+    consumer = build_consumer_config(payload, pack)
+    if consumer is not None:
+        if "consumer_config" not in payload:
+            raise ValueError("Curated source must pin its validated consumer_config")
+        pack["consumer_config"] = consumer
+        pack["provenance"]["consumer_config_sha256"] = canonical_sha256(consumer)
+        pack["discovery_summary"] = {
+            "bibliographically_curated_concepts": len(consumer["theories"]),
+            "clinical_context_nodes": len(consumer["nodes"]),
+            "hypothesis_links": len(consumer["links"]),
+            "testable_predictions": len(consumer["predictions"]),
+            "search_questions": len(consumer["search_questions"]),
+            "empirical_edges_created": 0,
+        }
+    return pack
 
 
 def export_from_path(path: Path, *, source_repository: str, source_commit: str) -> dict[str, Any]:
@@ -235,6 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--consumer-output", type=Path, help="Optional validated aging_biomarkers theory_config output")
     parser.add_argument("--source-repository", required=True)
     parser.add_argument("--source-commit", required=True)
     args = parser.parse_args(argv)
@@ -242,8 +260,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         pack = export_from_path(args.input, source_repository=args.source_repository, source_commit=args.source_commit)
     except (ValueError, OSError, TypeError) as error:
         parser.exit(2, f"Theory bridge error: {error}\n")
+    if args.consumer_output and "consumer_config" not in pack:
+        parser.exit(2, "Theory bridge error: input is not a curated discovery catalog\n")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.consumer_output:
+        args.consumer_output.parent.mkdir(parents=True, exist_ok=True)
+        args.consumer_output.write_text(json.dumps(pack["consumer_config"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(pack["summary"]))
     return 0
 

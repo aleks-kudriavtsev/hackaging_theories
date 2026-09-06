@@ -1,0 +1,26 @@
+{
+  "retrieved_at": "2026-09-06T19:55:15.878802+00:00",
+  "url": "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=SRC%3AMED+AND+%28EXT_ID%3A10911963+OR+EXT_ID%3A17012837+OR+EXT_ID%3A13332224+OR+EXT_ID%3A2342578+OR+EXT_ID%3A2520283+OR+EXT_ID%3A29576535+OR+EXT_ID%3A19197346%29&format=json&resultType=core&pageSize=100",
+  "query": "SRC:MED AND (EXT_ID:10911963 OR EXT_ID:17012837 OR EXT_ID:13332224 OR EXT_ID:2342578 OR EXT_ID:2520283 OR EXT_ID:29576535 OR EXT_ID:19197346)",
+  "file": "data/curated/bibliography/europepmc_foundations_20260906.json",
+  "sha256": "cbd58692ef5c2cc7007460c45392c1d4dd5e6208effc1f6968ad56d388f9e926",
+  "expected_pmids": [
+    "10911963",
+    "17012837",
+    "13332224",
+    "2342578",
+    "2520283",
+    "29576535",
+    "19197346"
+  ],
+  "returned_pmids": [
+    "29576535",
+    "19197346",
+    "17012837",
+    "10911963",
+    "2342578",
+    "2520283",
+    "13332224"
+  ],
+  "purpose": "Bibliographic identity, source type and concept/abstract review; not clinical claim verification."
+}

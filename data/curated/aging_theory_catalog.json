@@ -1,0 +1,1719 @@
+{
+  "catalog_schema": "curated_theory_discovery/1.0",
+  "catalog_id": "AGING_THEORY_DISCOVERY_20260906",
+  "curation_date": "2026-09-06",
+  "selection_method": "Purposeful curation of six established concept families from foundational literature; not a systematic or exhaustive ontology. The empirical biomarker shortlist is independently discovered downstream.",
+  "upstream_fixture_policy": "data/pipeline/aging_theories.json remains an explicitly quarantined demonstration snapshot. This catalog is a separate source with real bibliographic records.",
+  "articles": [
+    {
+      "id": "PMID:29576535",
+      "pmid": "29576535",
+      "title": "Metabolic Slowing and Reduced Oxidative Damage with Sustained Caloric Restriction Support the Rate of Living and Oxidative Damage Theories of Aging.",
+      "year": "2018",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/29576535/",
+      "source_type": "primary_human_intervention",
+      "population_scope": "Two-year calorie-restriction analysis in 53 non-obese adults; metabolic and oxidative-stress outcomes, not lifespan.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=29576535]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.1016/j.cmet.2018.02.019"
+    },
+    {
+      "id": "PMID:19197346",
+      "pmid": "19197346",
+      "title": "Deletion of the mitochondrial superoxide dismutase sod-2 extends lifespan in Caenorhabditis elegans.",
+      "year": "2009",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/19197346/",
+      "source_type": "primary_genetic_experiment",
+      "population_scope": "C. elegans sod-2 mutants; species- and genotype-specific counterexample to a simple monotone damage/lifespan model.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=19197346]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.1371/journal.pgen.1000361"
+    },
+    {
+      "id": "PMID:17012837",
+      "pmid": "17012837",
+      "title": "Aging and immortality: quasi-programmed senescence and its pharmacologic inhibition.",
+      "year": "2006",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/17012837/",
+      "source_type": "original_hypothesis_paper",
+      "population_scope": "Mechanistic hypothesis; not a clinical validation study.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=17012837]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.4161/cc.5.18.3288"
+    },
+    {
+      "id": "PMID:10911963",
+      "pmid": "10911963",
+      "title": "Inflamm-aging. An evolutionary perspective on immunosenescence.",
+      "year": "2000",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/10911963/",
+      "source_type": "original_concept_paper",
+      "population_scope": "Conceptual synthesis of immunosenescence; no newly recruited clinical cohort.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=10911963]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.1111/j.1749-6632.2000.tb06651.x"
+    },
+    {
+      "id": "PMID:2342578",
+      "pmid": "2342578",
+      "title": "Telomeres shorten during ageing of human fibroblasts.",
+      "year": "1990",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/2342578/",
+      "source_type": "primary_cell_experiment",
+      "population_scope": "Serially passaged human fibroblasts; organismal outcome inference is untested.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=2342578]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.1038/345458a0"
+    },
+    {
+      "id": "PMID:2520283",
+      "pmid": "2520283",
+      "title": "The effect of retarded growth upon the length of life span and upon the ultimate body size. 1935.",
+      "year": "1989",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/2520283/",
+      "source_type": "historical_primary_experiment_reprint",
+      "population_scope": "1989 reprint of the 1935 rat growth/diet experiment; not a human lifespan study.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=2520283]; title, DOI, publication type and abstract if present"
+      }
+    },
+    {
+      "id": "PMID:13332224",
+      "pmid": "13332224",
+      "title": "Aging:  a theory based on free radical and radiation chemistry.",
+      "year": "1956",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/13332224/",
+      "source_type": "original_hypothesis_paper",
+      "population_scope": "Historical free-radical hypothesis; no validated human biomarker threshold.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=13332224]; title, DOI, publication type and abstract if present"
+      },
+      "doi": "10.1093/geronj/11.3.298"
+    },
+    {
+      "id": "WILLIAMS1957",
+      "doi": "10.1111/j.1558-5646.1957.tb02911.x",
+      "title": "Pleiotropy, natural selection, and the evolution of senescence",
+      "year": "1957",
+      "url": "https://doi.org/10.1111/j.1558-5646.1957.tb02911.x",
+      "source_type": "original_evolutionary_theory_paper",
+      "population_scope": "Evolutionary argument; not a plasma-biomarker experiment.",
+      "bibliographic_review": {
+        "checked_date": "2026-09-06",
+        "reviewed_by": "Codex bibliographic curation",
+        "identity_matches": true,
+        "verification_scope": "bibliographic_identity_and_concept_only",
+        "evidence_location": "https://academic.oup.com/evolut/article-abstract/11/4/398/6868137; title, author, volume, pages, publication date and DOI"
+      }
+    }
+  ],
+  "theory_registry": {
+    "inflammaging": {
+      "theory_id": "inflammaging",
+      "label": "inflammaging",
+      "label_ru": "Инфламмейджинг",
+      "theory_class": "conceptual_framework",
+      "aliases": [],
+      "definition": "Длительное низкоинтенсивное воспалительное состояние рассматривается как один из механизмов возрастной утраты устойчивости и функций. Состояние L2 требует повторных измерений; IL-6, CRP и TNF остаются неспецифичными кандидатами L3.",
+      "scope": "Человек: хроническое состояние и продольные функциональные исходы. Острое воспаление, иммунное старение и SASP не считаются тождественными.",
+      "competing_explanations": [
+        "Острая или хроническая инфекция, ожирение и болезни почек меняют маркеры независимо от старения.",
+        "Снижение функций само может усиливать воспалительный ответ; возможна обратная причинность."
+      ],
+      "query_terms": [
+        "inflammaging",
+        "inflamm-aging"
+      ],
+      "supporting_articles": [
+        "PMID:10911963"
+      ]
+    },
+    "antagonistic_pleiotropy": {
+      "theory_id": "antagonistic_pleiotropy",
+      "label": "antagonistic pleiotropy",
+      "label_ru": "Антагонистическая плейотропия",
+      "theory_class": "evolutionary_theory",
+      "aliases": [],
+      "definition": "Эволюционная теория допускает отбор вариантов, обеспечивающих ранний выигрыш приспособленности ценой позднего ущерба. Концентрация цитокина сама по себе не является измерением плейотропии.",
+      "scope": "Нужны ранние репродуктивные/функциональные выгоды и поздние потери одного признака или варианта, сопоставимые условия и возрастное взаимодействие.",
+      "competing_explanations": [
+        "Мутационное накопление может создавать поздний вред без раннего выигрыша.",
+        "Возрастные различия когорт, экспозиций и выживаемости могут имитировать смену эффекта."
+      ],
+      "query_terms": [
+        "antagonistic pleiotropy"
+      ],
+      "supporting_articles": [
+        "WILLIAMS1957"
+      ]
+    },
+    "hyperfunction": {
+      "theory_id": "hyperfunction",
+      "label": "hyperfunction",
+      "label_ru": "Гиперфункция и квазипрограммы",
+      "theory_class": "mechanistic_hypothesis",
+      "aliases": [],
+      "definition": "После завершения развития продолжающаяся активность ростовых программ может становиться несоразмерной потребностям ткани и способствовать поздним нарушениям. Нужна оценка активности пути; GDF15 не служит прямым измерителем mTOR.",
+      "scope": "Клеточные и тканевые ростовые программы; перенос на функциональные исходы человека требует отдельного причинного исследования.",
+      "competing_explanations": [
+        "Активация ростового пути может быть компенсаторным ответом на повреждение.",
+        "GDF15 может отражать независимые от mTOR болезнь, почечную функцию или стресс."
+      ],
+      "query_terms": [
+        "hyperfunction",
+        "quasi-programmed aging"
+      ],
+      "supporting_articles": [
+        "PMID:17012837"
+      ]
+    },
+    "free_radical_damage": {
+      "theory_id": "free_radical_damage",
+      "label": "free radical damage",
+      "label_ru": "Свободнорадикальное повреждение",
+      "theory_class": "mechanistic_hypothesis",
+      "aliases": [],
+      "definition": "Гипотеза связывает часть возрастных нарушений с накоплением окислительных повреждений. Общая теория повреждений не сводится к этой частной гипотезе; реактивные формы кислорода имеют также сигнальные функции.",
+      "scope": "Не предполагается универсальная монотонная связь окисления и продолжительности жизни. Контрпример sod-2 относится к C. elegans и не доказывает полезность окислительного стресса у человека.",
+      "competing_explanations": [
+        "Редокс-сигналинг и гормезис могут разъединять повреждение и исход.",
+        "Окислительные продукты могут быть следствием болезни или зависеть от клиренса и преаналитики."
+      ],
+      "query_terms": [
+        "free radical theory",
+        "oxidative damage aging"
+      ],
+      "supporting_articles": [
+        "PMID:13332224",
+        "PMID:19197346"
+      ]
+    },
+    "telomere_attrition": {
+      "theory_id": "telomere_attrition",
+      "label": "telomere attrition",
+      "label_ru": "Теломеры и репликативное старение",
+      "theory_class": "mechanistic_hypothesis",
+      "aliases": [],
+      "definition": "Укорочение теломер связано с репликативной историей клеток; исходная работа на фибробластах сама не устанавливает причинную роль теломер в старении организма. Длина теломер требует отдельного небелкового измерения.",
+      "scope": "Клеточный механизм и исследовательское расширение на лейкоцитарные измерения человека; белки плазмы не подменяют теломерный анализ.",
+      "competing_explanations": [
+        "Исходная длина теломер и состав лейкоцитов могут объяснять межличностную ассоциацию.",
+        "Изменение клеточных субпопуляций или воспаление может менять среднюю длину без ускоренного укорочения каждой клетки."
+      ],
+      "query_terms": [
+        "telomere attrition",
+        "telomere shortening"
+      ],
+      "supporting_articles": [
+        "PMID:2342578"
+      ]
+    },
+    "caloric_restriction": {
+      "theory_id": "caloric_restriction",
+      "label": "caloric restriction",
+      "label_ru": "Ограничение питания и поддержание функций",
+      "theory_class": "intervention",
+      "aliases": [],
+      "definition": "Ограничение энергии при достаточном питании — семейство вмешательств для проверки механизмов старения, а не отдельная универсальная теория. Изменение маркера после вмешательства не тождественно функциональной пользе.",
+      "scope": "Исторические результаты на крысах отделены от двухлетнего метаболического исследования человека; увеличение человеческой продолжительности жизни не установлено этими источниками.",
+      "competing_explanations": [
+        "Потеря массы тела может объяснять изменение маркеров без изменения темпа старения.",
+        "Недостаточное питание и потеря мышц могут сопровождаться внешне благоприятной динамикой отдельных показателей."
+      ],
+      "query_terms": [
+        "caloric restriction",
+        "dietary restriction"
+      ],
+      "supporting_articles": [
+        "PMID:2520283",
+        "PMID:29576535"
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "L3_TNF",
+      "level": "L3",
+      "label_ru": "TNF",
+      "analyte_id": "TNF",
+      "measurement_type": "plasma_or_serum_protein_concentration"
+    },
+    {
+      "id": "L3_IL6",
+      "level": "L3",
+      "label_ru": "IL6",
+      "analyte_id": "IL6",
+      "measurement_type": "plasma_or_serum_protein_concentration"
+    },
+    {
+      "id": "L3_CRP",
+      "level": "L3",
+      "label_ru": "CRP",
+      "analyte_id": "CRP",
+      "measurement_type": "plasma_or_serum_protein_concentration"
+    },
+    {
+      "id": "L3_GDF15",
+      "level": "L3",
+      "label_ru": "GDF15",
+      "analyte_id": "GDF15",
+      "measurement_type": "plasma_or_serum_protein_concentration"
+    },
+    {
+      "id": "L3_LEUKOCYTE_TELOMERE_LENGTH",
+      "level": "L3",
+      "label_ru": "Длина теломер лейкоцитов",
+      "analyte_id": "LEUKOCYTE_TELOMERE_LENGTH",
+      "measurement_type": "cell_DNA_telomere_length",
+      "outside_panel": true,
+      "source_ids": [
+        "PMID:2342578"
+      ],
+      "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена."
+    },
+    {
+      "id": "L3_PBMC_PS6",
+      "level": "L3",
+      "label_ru": "Фосфорилирование S6 в заданной клеточной популяции",
+      "analyte_id": "PBMC_PS6",
+      "measurement_type": "cellular_phosphoprotein_pathway_readout",
+      "outside_panel": true,
+      "source_ids": [
+        "PMID:17012837"
+      ],
+      "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена."
+    },
+    {
+      "id": "L3_F2_ISOPROSTANES",
+      "level": "L3",
+      "label_ru": "F2-изопростаны",
+      "analyte_id": "F2_ISOPROSTANES",
+      "measurement_type": "urinary_lipid_oxidation_products",
+      "outside_panel": true,
+      "source_ids": [
+        "PMID:29576535"
+      ],
+      "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена."
+    },
+    {
+      "id": "L3_LEPTIN",
+      "level": "L3",
+      "label_ru": "Лептин",
+      "analyte_id": "LEPTIN",
+      "measurement_type": "plasma_protein_concentration",
+      "outside_panel": true,
+      "source_ids": [
+        "PMID:29576535"
+      ],
+      "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена."
+    },
+    {
+      "id": "L2_PERSISTENT_INFLAMMATION",
+      "level": "L2",
+      "label_ru": "Устойчивое воспалительное состояние",
+      "operational_definition": "Повторные измерения вне острой инфекции с учётом заболеваний и терапии."
+    },
+    {
+      "id": "L2_PHYSIOLOGICAL_RESILIENCE",
+      "level": "L2",
+      "label_ru": "Физиологическая устойчивость",
+      "operational_definition": "Восстановление функции после стандартизированной нагрузки, не однократная концентрация белка."
+    },
+    {
+      "id": "L2_GROWTH_SIGNALING",
+      "level": "L2",
+      "label_ru": "Активность ростового сигналинга",
+      "operational_definition": "Клеточный фосфопротеиновый ответ с определённой популяцией и временем."
+    },
+    {
+      "id": "L2_DAMAGE_BURDEN",
+      "level": "L2",
+      "label_ru": "Накопление окислительных повреждений",
+      "operational_definition": "Независимый прямой показатель окисления с контролем клиренса и преаналитики."
+    },
+    {
+      "id": "L2_REPLICATIVE_SENESCENCE",
+      "level": "L2",
+      "label_ru": "Репликативное клеточное старение",
+      "operational_definition": "Клеточный контекст; средняя длина теломер крови не эквивалентна всему состоянию."
+    },
+    {
+      "id": "L2_ENERGY_BALANCE",
+      "level": "L2",
+      "label_ru": "Адаптация энергетического обмена",
+      "operational_definition": "Питание, состав тела и энергетические затраты; достаточность питания контролируется."
+    },
+    {
+      "id": "L1_ALL_CAUSE_MORTALITY",
+      "level": "L1",
+      "label_ru": "Смертность от всех причин"
+    },
+    {
+      "id": "L1_FUNCTIONAL_DECLINE",
+      "level": "L1",
+      "label_ru": "Продольное снижение функций"
+    },
+    {
+      "id": "L1_AGE_DEPENDENT_FUNCTION",
+      "level": "L1",
+      "label_ru": "Ранние выгоды и поздние функциональные потери"
+    },
+    {
+      "id": "L1_FUNCTIONAL_RESILIENCE",
+      "level": "L1",
+      "label_ru": "Восстановление функций после нагрузки"
+    }
+  ],
+  "links": [
+    {
+      "theory_id": "inflammaging",
+      "node_id": "L3_IL6",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "inflammaging",
+      "node_id": "L3_CRP",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "inflammaging",
+      "node_id": "L3_TNF",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "inflammaging",
+      "node_id": "L2_PERSISTENT_INFLAMMATION",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "inflammaging",
+      "node_id": "L1_ALL_CAUSE_MORTALITY",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "antagonistic_pleiotropy",
+      "node_id": "L3_IL6",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "antagonistic_pleiotropy",
+      "node_id": "L3_TNF",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "antagonistic_pleiotropy",
+      "node_id": "L2_PHYSIOLOGICAL_RESILIENCE",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "antagonistic_pleiotropy",
+      "node_id": "L1_AGE_DEPENDENT_FUNCTION",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "hyperfunction",
+      "node_id": "L3_PBMC_PS6",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "hyperfunction",
+      "node_id": "L3_GDF15",
+      "relation": "proposes_marker",
+      "rationale": "GDF15 — неспецифичный стрессовый компаратор, а не прямое измерение данной теории.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "hyperfunction",
+      "node_id": "L2_GROWTH_SIGNALING",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "hyperfunction",
+      "node_id": "L1_FUNCTIONAL_DECLINE",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "free_radical_damage",
+      "node_id": "L3_F2_ISOPROSTANES",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "free_radical_damage",
+      "node_id": "L3_GDF15",
+      "relation": "proposes_marker",
+      "rationale": "GDF15 — неспецифичный стрессовый компаратор, а не прямое измерение данной теории.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "free_radical_damage",
+      "node_id": "L2_DAMAGE_BURDEN",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "free_radical_damage",
+      "node_id": "L1_FUNCTIONAL_DECLINE",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "telomere_attrition",
+      "node_id": "L3_LEUKOCYTE_TELOMERE_LENGTH",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "telomere_attrition",
+      "node_id": "L2_REPLICATIVE_SENESCENCE",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "telomere_attrition",
+      "node_id": "L1_FUNCTIONAL_DECLINE",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "caloric_restriction",
+      "node_id": "L3_LEPTIN",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "caloric_restriction",
+      "node_id": "L3_F2_ISOPROSTANES",
+      "relation": "proposes_marker",
+      "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "caloric_restriction",
+      "node_id": "L2_ENERGY_BALANCE",
+      "relation": "organizes",
+      "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+      "observation_ids": []
+    },
+    {
+      "theory_id": "caloric_restriction",
+      "node_id": "L1_FUNCTIONAL_RESILIENCE",
+      "relation": "organizes",
+      "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+      "observation_ids": []
+    }
+  ],
+  "predictions": [
+    {
+      "id": "P_INFLAM_PERSISTENCE",
+      "theory_ids": [
+        "inflammaging"
+      ],
+      "analyte_ids": [
+        "IL6",
+        "CRP",
+        "TNF"
+      ],
+      "endpoint": "functional_decline",
+      "question": "Связано ли устойчивое повышение воспалительных маркеров с последующим снижением функций сверх возраста и сопутствующих заболеваний?",
+      "alternative_explanation": "Острая инфекция, ожирение, функция почек или лечение могут объяснять однократное повышение.",
+      "required_test": "Повторные измерения и продольный исход; заранее заданные поправки и проверка независимой когорты.",
+      "observation_ids": [],
+      "query_terms": [
+        "persistent inflammation",
+        "functional decline"
+      ],
+      "falsification_criterion": "После контроля заранее заданных альтернатив и независимой репликации устойчивость маркеров не улучшает прогноз заданного продольного исхода."
+    },
+    {
+      "id": "P_AGE_SIGN_REVERSAL",
+      "theory_ids": [
+        "antagonistic_pleiotropy",
+        "inflammaging"
+      ],
+      "analyte_ids": [
+        "TNF",
+        "IL6"
+      ],
+      "endpoint": "age_dependent_function",
+      "question": "Меняется ли направление связи одного процесса с исходом между возрастными контекстами?",
+      "alternative_explanation": "Различие популяций, методик или тяжести болезни может имитировать возрастную смену эффекта.",
+      "required_test": "Возрастное взаимодействие на сопоставимых данных; ранняя польза и поздний вред должны быть измерены отдельно.",
+      "observation_ids": [],
+      "query_terms": [
+        "age interaction",
+        "antagonistic pleiotropy"
+      ],
+      "falsification_criterion": "Для одного и того же признака отсутствует совместная ранняя выгода и поздняя потеря; одно возрастное взаимодействие без раннего фитнес-выигрыша недостаточно."
+    },
+    {
+      "id": "P_DAMAGE_VS_HYPERFUNCTION",
+      "theory_ids": [
+        "free_radical_damage",
+        "hyperfunction"
+      ],
+      "analyte_ids": [
+        "GDF15",
+        "PBMC_PS6",
+        "F2_ISOPROSTANES"
+      ],
+      "endpoint": "functional_decline",
+      "question": "Добавляют ли прямые клеточные показатели сигналинга и окисления различающую информацию к неспецифичному GDF15 для последующего снижения функций?",
+      "alternative_explanation": "GDF15 отражает неспецифичный стресс и может быть одинаково совместим с несколькими объяснениями.",
+      "required_test": "Одновременные независимые измерения повреждений и ростового сигналинга; различающиеся предсказания и временная последовательность.",
+      "observation_ids": [],
+      "query_terms": [
+        "GDF15",
+        "oxidative damage",
+        "mTOR"
+      ],
+      "falsification_criterion": "Различающие измерения и временные траектории не отделяют заранее заданные конкурирующие модели; неспецифичный GDF15 сам их не различает."
+    },
+    {
+      "id": "P_TELOMERE_INCREMENT",
+      "theory_ids": [
+        "telomere_attrition"
+      ],
+      "analyte_ids": [
+        "LEUKOCYTE_TELOMERE_LENGTH"
+      ],
+      "endpoint": "functional_decline",
+      "question": "Добавляет ли длина теломер информацию к белковой панели и возрасту?",
+      "alternative_explanation": "Состав клеток крови и исходная длина теломер могут объяснять ассоциацию.",
+      "required_test": "Отдельный анализ теломер, клеточный состав, продольный исход и сравнение вложенных моделей.",
+      "observation_ids": [],
+      "query_terms": [
+        "leukocyte telomere",
+        "incremental prediction"
+      ],
+      "falsification_criterion": "После учёта возраста, клеточного состава и технической ошибки теломерное измерение не добавляет информацию в независимой выборке."
+    },
+    {
+      "id": "P_DIET_RESTRICTION_RESPONSE",
+      "theory_ids": [
+        "caloric_restriction",
+        "hyperfunction"
+      ],
+      "analyte_ids": [
+        "GDF15",
+        "LEPTIN",
+        "F2_ISOPROSTANES"
+      ],
+      "endpoint": "functional_resilience",
+      "question": "Отличает ли профиль маркеров улучшение функций от неспецифичного ответа на энергетический дефицит?",
+      "alternative_explanation": "Потеря мышечной массы или сопутствующая болезнь могут менять белки независимо от полезного эффекта.",
+      "required_test": "Контролируемое исследование с функциональными исходами и составом тела; направление маркера само по себе не считается пользой.",
+      "observation_ids": [],
+      "query_terms": [
+        "dietary restriction",
+        "plasma proteomics"
+      ],
+      "falsification_criterion": "Динамика белков объясняется составом тела и энергетическим дефицитом либо не сопровождается сохранением/улучшением функционального исхода."
+    },
+    {
+      "id": "P_REDOX_CONTEXT",
+      "theory_ids": [
+        "free_radical_damage"
+      ],
+      "analyte_ids": [
+        "F2_ISOPROSTANES"
+      ],
+      "endpoint": "functional_decline",
+      "question": "Сохраняется ли связь прямых показателей окисления с функциональным снижением при учёте редокс-сигналинга, почечного клиренса и типа экспозиции?",
+      "alternative_explanation": "Адаптивный редокс-ответ и различия клиренса могут менять показатель без большего повреждения.",
+      "required_test": "Продольная когорта, повторные измерения, учёт функции почек и заданного функционального исхода; видовые эксперименты анализируются отдельно.",
+      "falsification_criterion": "Предзаданная монотонная модель не воспроизводится в независимой человеческой когорте при аналитически сопоставимых измерениях.",
+      "observation_ids": [],
+      "query_terms": []
+    },
+    {
+      "id": "P_TNF_INCREMENT",
+      "theory_ids": [
+        "inflammaging"
+      ],
+      "analyte_ids": [
+        "TNF",
+        "IL6",
+        "CRP"
+      ],
+      "endpoint": "functional_decline",
+      "question": "Добавляет ли измеряемый TNF самостоятельную информацию сверх IL-6 и CRP при приемлемых чувствительности и воспроизводимости анализа?",
+      "alternative_explanation": "Коррелированные воспалительные сигналы и аналитическая нестабильность могут исключать добавочную ценность TNF.",
+      "required_test": "Аналитическая валидация TNF, повторные пробы, сравнение вложенных моделей и независимая проверка исхода.",
+      "falsification_criterion": "TNF не улучшает заранее заданные метрики прогноза/решения либо добавочная информация исчезает после учёта аналитической ошибки.",
+      "observation_ids": [],
+      "query_terms": []
+    }
+  ],
+  "search_questions": [
+    {
+      "id": "SEARCH_INFLAMMAGING",
+      "theory_id": "inflammaging",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"inflammaging\" OR TITLE_ABS:\"inflamm-aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"inflammaging\" OR TITLE_ABS:\"inflamm-aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    },
+    {
+      "id": "SEARCH_ANTAGONISTIC_PLEIOTROPY",
+      "theory_id": "antagonistic_pleiotropy",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"antagonistic pleiotropy\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"antagonistic pleiotropy\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    },
+    {
+      "id": "SEARCH_HYPERFUNCTION",
+      "theory_id": "hyperfunction",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"hyperfunction\" OR TITLE_ABS:\"quasi-programmed aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"hyperfunction\" OR TITLE_ABS:\"quasi-programmed aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    },
+    {
+      "id": "SEARCH_FREE_RADICAL_DAMAGE",
+      "theory_id": "free_radical_damage",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"free radical theory\" OR TITLE_ABS:\"oxidative damage aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"free radical theory\" OR TITLE_ABS:\"oxidative damage aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    },
+    {
+      "id": "SEARCH_TELOMERE_ATTRITION",
+      "theory_id": "telomere_attrition",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"telomere attrition\" OR TITLE_ABS:\"telomere shortening\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"telomere attrition\" OR TITLE_ABS:\"telomere shortening\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    },
+    {
+      "id": "SEARCH_CALORIC_RESTRICTION",
+      "theory_id": "caloric_restriction",
+      "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+      "supportive_query": "(TITLE_ABS:\"caloric restriction\" OR TITLE_ABS:\"dietary restriction\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+      "contradictory_query": "(TITLE_ABS:\"caloric restriction\" OR TITLE_ABS:\"dietary restriction\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+      "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+    }
+  ],
+  "empirical_edges": [],
+  "theory_links": [],
+  "consumer_config": {
+    "schema_version": "1.0",
+    "source": "hackaging_theories_curated_export",
+    "layer": "T",
+    "theories": [
+      {
+        "theory_id": "inflammaging",
+        "label": "inflammaging",
+        "label_ru": "Инфламмейджинг",
+        "kind": "framework",
+        "theory_class": "conceptual_framework",
+        "layer": "T",
+        "description": "Длительное низкоинтенсивное воспалительное состояние рассматривается как один из механизмов возрастной утраты устойчивости и функций. Состояние L2 требует повторных измерений; IL-6, CRP и TNF остаются неспецифичными кандидатами L3.",
+        "scope": "Человек: хроническое состояние и продольные функциональные исходы. Острое воспаление, иммунное старение и SASP не считаются тождественными.",
+        "query_terms": [
+          "inflammaging",
+          "inflamm-aging"
+        ],
+        "competing_explanations": [
+          "Острая или хроническая инфекция, ожирение и болезни почек меняют маркеры независимо от старения.",
+          "Снижение функций само может усиливать воспалительный ответ; возможна обратная причинность."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "PMID:10911963",
+            "title": "Inflamm-aging. An evolutionary perspective on immunosenescence.",
+            "doi": "10.1111/j.1749-6632.2000.tb06651.x",
+            "pmid": "10911963",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/10911963/",
+            "source_type": "original_concept_paper",
+            "population_scope": "Conceptual synthesis of immunosenescence; no newly recruited clinical cohort.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=10911963]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      },
+      {
+        "theory_id": "antagonistic_pleiotropy",
+        "label": "antagonistic pleiotropy",
+        "label_ru": "Антагонистическая плейотропия",
+        "kind": "theory",
+        "theory_class": "evolutionary_theory",
+        "layer": "T",
+        "description": "Эволюционная теория допускает отбор вариантов, обеспечивающих ранний выигрыш приспособленности ценой позднего ущерба. Концентрация цитокина сама по себе не является измерением плейотропии.",
+        "scope": "Нужны ранние репродуктивные/функциональные выгоды и поздние потери одного признака или варианта, сопоставимые условия и возрастное взаимодействие.",
+        "query_terms": [
+          "antagonistic pleiotropy"
+        ],
+        "competing_explanations": [
+          "Мутационное накопление может создавать поздний вред без раннего выигрыша.",
+          "Возрастные различия когорт, экспозиций и выживаемости могут имитировать смену эффекта."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "WILLIAMS1957",
+            "title": "Pleiotropy, natural selection, and the evolution of senescence",
+            "doi": "10.1111/j.1558-5646.1957.tb02911.x",
+            "url": "https://doi.org/10.1111/j.1558-5646.1957.tb02911.x",
+            "source_type": "original_evolutionary_theory_paper",
+            "population_scope": "Evolutionary argument; not a plasma-biomarker experiment.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation",
+            "evidence_location": "https://academic.oup.com/evolut/article-abstract/11/4/398/6868137; title, author, volume, pages, publication date and DOI",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      },
+      {
+        "theory_id": "hyperfunction",
+        "label": "hyperfunction",
+        "label_ru": "Гиперфункция и квазипрограммы",
+        "kind": "theory",
+        "theory_class": "mechanistic_hypothesis",
+        "layer": "T",
+        "description": "После завершения развития продолжающаяся активность ростовых программ может становиться несоразмерной потребностям ткани и способствовать поздним нарушениям. Нужна оценка активности пути; GDF15 не служит прямым измерителем mTOR.",
+        "scope": "Клеточные и тканевые ростовые программы; перенос на функциональные исходы человека требует отдельного причинного исследования.",
+        "query_terms": [
+          "hyperfunction",
+          "quasi-programmed aging"
+        ],
+        "competing_explanations": [
+          "Активация ростового пути может быть компенсаторным ответом на повреждение.",
+          "GDF15 может отражать независимые от mTOR болезнь, почечную функцию или стресс."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "PMID:17012837",
+            "title": "Aging and immortality: quasi-programmed senescence and its pharmacologic inhibition.",
+            "doi": "10.4161/cc.5.18.3288",
+            "pmid": "17012837",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/17012837/",
+            "source_type": "original_hypothesis_paper",
+            "population_scope": "Mechanistic hypothesis; not a clinical validation study.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=17012837]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      },
+      {
+        "theory_id": "free_radical_damage",
+        "label": "free radical damage",
+        "label_ru": "Свободнорадикальное повреждение",
+        "kind": "theory",
+        "theory_class": "mechanistic_hypothesis",
+        "layer": "T",
+        "description": "Гипотеза связывает часть возрастных нарушений с накоплением окислительных повреждений. Общая теория повреждений не сводится к этой частной гипотезе; реактивные формы кислорода имеют также сигнальные функции.",
+        "scope": "Не предполагается универсальная монотонная связь окисления и продолжительности жизни. Контрпример sod-2 относится к C. elegans и не доказывает полезность окислительного стресса у человека.",
+        "query_terms": [
+          "free radical theory",
+          "oxidative damage aging"
+        ],
+        "competing_explanations": [
+          "Редокс-сигналинг и гормезис могут разъединять повреждение и исход.",
+          "Окислительные продукты могут быть следствием болезни или зависеть от клиренса и преаналитики."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "PMID:13332224",
+            "title": "Aging:  a theory based on free radical and radiation chemistry.",
+            "doi": "10.1093/geronj/11.3.298",
+            "pmid": "13332224",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/13332224/",
+            "source_type": "original_hypothesis_paper",
+            "population_scope": "Historical free-radical hypothesis; no validated human biomarker threshold.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=13332224]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          },
+          {
+            "id": "PMID:19197346",
+            "title": "Deletion of the mitochondrial superoxide dismutase sod-2 extends lifespan in Caenorhabditis elegans.",
+            "doi": "10.1371/journal.pgen.1000361",
+            "pmid": "19197346",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/19197346/",
+            "source_type": "primary_genetic_experiment",
+            "population_scope": "C. elegans sod-2 mutants; species- and genotype-specific counterexample to a simple monotone damage/lifespan model.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=19197346]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      },
+      {
+        "theory_id": "telomere_attrition",
+        "label": "telomere attrition",
+        "label_ru": "Теломеры и репликативное старение",
+        "kind": "theory",
+        "theory_class": "mechanistic_hypothesis",
+        "layer": "T",
+        "description": "Укорочение теломер связано с репликативной историей клеток; исходная работа на фибробластах сама не устанавливает причинную роль теломер в старении организма. Длина теломер требует отдельного небелкового измерения.",
+        "scope": "Клеточный механизм и исследовательское расширение на лейкоцитарные измерения человека; белки плазмы не подменяют теломерный анализ.",
+        "query_terms": [
+          "telomere attrition",
+          "telomere shortening"
+        ],
+        "competing_explanations": [
+          "Исходная длина теломер и состав лейкоцитов могут объяснять межличностную ассоциацию.",
+          "Изменение клеточных субпопуляций или воспаление может менять среднюю длину без ускоренного укорочения каждой клетки."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "PMID:2342578",
+            "title": "Telomeres shorten during ageing of human fibroblasts.",
+            "doi": "10.1038/345458a0",
+            "pmid": "2342578",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/2342578/",
+            "source_type": "primary_cell_experiment",
+            "population_scope": "Serially passaged human fibroblasts; organismal outcome inference is untested.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=2342578]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      },
+      {
+        "theory_id": "caloric_restriction",
+        "label": "caloric restriction",
+        "label_ru": "Ограничение питания и поддержание функций",
+        "kind": "intervention_family",
+        "theory_class": "intervention",
+        "layer": "T",
+        "description": "Ограничение энергии при достаточном питании — семейство вмешательств для проверки механизмов старения, а не отдельная универсальная теория. Изменение маркера после вмешательства не тождественно функциональной пользе.",
+        "scope": "Исторические результаты на крысах отделены от двухлетнего метаболического исследования человека; увеличение человеческой продолжительности жизни не установлено этими источниками.",
+        "query_terms": [
+          "caloric restriction",
+          "dietary restriction"
+        ],
+        "competing_explanations": [
+          "Потеря массы тела может объяснять изменение маркеров без изменения темпа старения.",
+          "Недостаточное питание и потеря мышц могут сопровождаться внешне благоприятной динамикой отдельных показателей."
+        ],
+        "source_status": "bibliographic_source_checked",
+        "scientific_validation": "not_assessed",
+        "source_refs": [
+          {
+            "id": "PMID:2520283",
+            "title": "The effect of retarded growth upon the length of life span and upon the ultimate body size. 1935.",
+            "pmid": "2520283",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/2520283/",
+            "source_type": "historical_primary_experiment_reprint",
+            "population_scope": "1989 reprint of the 1935 rat growth/diet experiment; not a human lifespan study.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=2520283]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          },
+          {
+            "id": "PMID:29576535",
+            "title": "Metabolic Slowing and Reduced Oxidative Damage with Sustained Caloric Restriction Support the Rate of Living and Oxidative Damage Theories of Aging.",
+            "doi": "10.1016/j.cmet.2018.02.019",
+            "pmid": "29576535",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/29576535/",
+            "source_type": "primary_human_intervention",
+            "population_scope": "Two-year calorie-restriction analysis in 53 non-obese adults; metabolic and oxidative-stress outcomes, not lifespan.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=29576535]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "causal_claim": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": "L3_TNF",
+        "level": "L3",
+        "label_ru": "TNF",
+        "analyte_id": "TNF",
+        "measurement_type": "plasma_or_serum_protein_concentration",
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_IL6",
+        "level": "L3",
+        "label_ru": "IL6",
+        "analyte_id": "IL6",
+        "measurement_type": "plasma_or_serum_protein_concentration",
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_CRP",
+        "level": "L3",
+        "label_ru": "CRP",
+        "analyte_id": "CRP",
+        "measurement_type": "plasma_or_serum_protein_concentration",
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_GDF15",
+        "level": "L3",
+        "label_ru": "GDF15",
+        "analyte_id": "GDF15",
+        "measurement_type": "plasma_or_serum_protein_concentration",
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_LEUKOCYTE_TELOMERE_LENGTH",
+        "level": "L3",
+        "label_ru": "Длина теломер лейкоцитов",
+        "analyte_id": "LEUKOCYTE_TELOMERE_LENGTH",
+        "measurement_type": "cell_DNA_telomere_length",
+        "outside_panel": true,
+        "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена.",
+        "source_refs": [
+          {
+            "id": "PMID:2342578",
+            "title": "Telomeres shorten during ageing of human fibroblasts.",
+            "doi": "10.1038/345458a0",
+            "pmid": "2342578",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/2342578/",
+            "source_type": "primary_cell_experiment",
+            "population_scope": "Serially passaged human fibroblasts; organismal outcome inference is untested.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=2342578]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_PBMC_PS6",
+        "level": "L3",
+        "label_ru": "Фосфорилирование S6 в заданной клеточной популяции",
+        "analyte_id": "PBMC_PS6",
+        "measurement_type": "cellular_phosphoprotein_pathway_readout",
+        "outside_panel": true,
+        "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена.",
+        "source_refs": [
+          {
+            "id": "PMID:17012837",
+            "title": "Aging and immortality: quasi-programmed senescence and its pharmacologic inhibition.",
+            "doi": "10.4161/cc.5.18.3288",
+            "pmid": "17012837",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/17012837/",
+            "source_type": "original_hypothesis_paper",
+            "population_scope": "Mechanistic hypothesis; not a clinical validation study.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=17012837]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_F2_ISOPROSTANES",
+        "level": "L3",
+        "label_ru": "F2-изопростаны",
+        "analyte_id": "F2_ISOPROSTANES",
+        "measurement_type": "urinary_lipid_oxidation_products",
+        "outside_panel": true,
+        "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена.",
+        "source_refs": [
+          {
+            "id": "PMID:29576535",
+            "title": "Metabolic Slowing and Reduced Oxidative Damage with Sustained Caloric Restriction Support the Rate of Living and Oxidative Damage Theories of Aging.",
+            "doi": "10.1016/j.cmet.2018.02.019",
+            "pmid": "29576535",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/29576535/",
+            "source_type": "primary_human_intervention",
+            "population_scope": "Two-year calorie-restriction analysis in 53 non-obese adults; metabolic and oxidative-stress outcomes, not lifespan.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=29576535]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L3_LEPTIN",
+        "level": "L3",
+        "label_ru": "Лептин",
+        "analyte_id": "LEPTIN",
+        "measurement_type": "plasma_protein_concentration",
+        "outside_panel": true,
+        "proposal_scope": "Дополнительное исследовательское измерение; аналитическая и клиническая пригодность в нашей задаче не установлена.",
+        "source_refs": [
+          {
+            "id": "PMID:29576535",
+            "title": "Metabolic Slowing and Reduced Oxidative Damage with Sustained Caloric Restriction Support the Rate of Living and Oxidative Damage Theories of Aging.",
+            "doi": "10.1016/j.cmet.2018.02.019",
+            "pmid": "29576535",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/29576535/",
+            "source_type": "primary_human_intervention",
+            "population_scope": "Two-year calorie-restriction analysis in 53 non-obese adults; metabolic and oxidative-stress outcomes, not lifespan.",
+            "checked_date": "2026-09-06",
+            "verification_scope": "bibliographic_identity_and_concept_only",
+            "reviewed_by": "Codex bibliographic curation; auditable source snapshot",
+            "evidence_location": "data/curated/bibliography/europepmc_foundations_20260906.json; resultList.result[pmid=29576535]; title, DOI, publication type and abstract if present",
+            "retraction_status": "not_systematically_assessed"
+          }
+        ],
+        "layer": "L3",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_PERSISTENT_INFLAMMATION",
+        "level": "L2",
+        "label_ru": "Устойчивое воспалительное состояние",
+        "operational_definition": "Повторные измерения вне острой инфекции с учётом заболеваний и терапии.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_PHYSIOLOGICAL_RESILIENCE",
+        "level": "L2",
+        "label_ru": "Физиологическая устойчивость",
+        "operational_definition": "Восстановление функции после стандартизированной нагрузки, не однократная концентрация белка.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_GROWTH_SIGNALING",
+        "level": "L2",
+        "label_ru": "Активность ростового сигналинга",
+        "operational_definition": "Клеточный фосфопротеиновый ответ с определённой популяцией и временем.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_DAMAGE_BURDEN",
+        "level": "L2",
+        "label_ru": "Накопление окислительных повреждений",
+        "operational_definition": "Независимый прямой показатель окисления с контролем клиренса и преаналитики.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_REPLICATIVE_SENESCENCE",
+        "level": "L2",
+        "label_ru": "Репликативное клеточное старение",
+        "operational_definition": "Клеточный контекст; средняя длина теломер крови не эквивалентна всему состоянию.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L2_ENERGY_BALANCE",
+        "level": "L2",
+        "label_ru": "Адаптация энергетического обмена",
+        "operational_definition": "Питание, состав тела и энергетические затраты; достаточность питания контролируется.",
+        "layer": "L2",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L1_ALL_CAUSE_MORTALITY",
+        "level": "L1",
+        "label_ru": "Смертность от всех причин",
+        "layer": "L1",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L1_FUNCTIONAL_DECLINE",
+        "level": "L1",
+        "label_ru": "Продольное снижение функций",
+        "layer": "L1",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L1_AGE_DEPENDENT_FUNCTION",
+        "level": "L1",
+        "label_ru": "Ранние выгоды и поздние функциональные потери",
+        "layer": "L1",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      },
+      {
+        "id": "L1_FUNCTIONAL_RESILIENCE",
+        "level": "L1",
+        "label_ru": "Восстановление функций после нагрузки",
+        "layer": "L1",
+        "evidence_status": "hypothesis_context",
+        "causal_claim": false
+      }
+    ],
+    "links": [
+      {
+        "theory_id": "inflammaging",
+        "node_id": "L3_IL6",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "inflammaging",
+        "node_id": "L3_CRP",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "inflammaging",
+        "node_id": "L3_TNF",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "inflammaging",
+        "node_id": "L2_PERSISTENT_INFLAMMATION",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "inflammaging",
+        "node_id": "L1_ALL_CAUSE_MORTALITY",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "antagonistic_pleiotropy",
+        "node_id": "L3_IL6",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "antagonistic_pleiotropy",
+        "node_id": "L3_TNF",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "antagonistic_pleiotropy",
+        "node_id": "L2_PHYSIOLOGICAL_RESILIENCE",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "antagonistic_pleiotropy",
+        "node_id": "L1_AGE_DEPENDENT_FUNCTION",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "hyperfunction",
+        "node_id": "L3_PBMC_PS6",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "hyperfunction",
+        "node_id": "L3_GDF15",
+        "relation": "proposes_marker",
+        "rationale": "GDF15 — неспецифичный стрессовый компаратор, а не прямое измерение данной теории.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "hyperfunction",
+        "node_id": "L2_GROWTH_SIGNALING",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "hyperfunction",
+        "node_id": "L1_FUNCTIONAL_DECLINE",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "free_radical_damage",
+        "node_id": "L3_F2_ISOPROSTANES",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "free_radical_damage",
+        "node_id": "L3_GDF15",
+        "relation": "proposes_marker",
+        "rationale": "GDF15 — неспецифичный стрессовый компаратор, а не прямое измерение данной теории.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "free_radical_damage",
+        "node_id": "L2_DAMAGE_BURDEN",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "free_radical_damage",
+        "node_id": "L1_FUNCTIONAL_DECLINE",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "telomere_attrition",
+        "node_id": "L3_LEUKOCYTE_TELOMERE_LENGTH",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "telomere_attrition",
+        "node_id": "L2_REPLICATIVE_SENESCENCE",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "telomere_attrition",
+        "node_id": "L1_FUNCTIONAL_DECLINE",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "caloric_restriction",
+        "node_id": "L3_LEPTIN",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "caloric_restriction",
+        "node_id": "L3_F2_ISOPROSTANES",
+        "relation": "proposes_marker",
+        "rationale": "Авторское предложение измерения для проверки гипотезы; основание концепции не доказывает пригодности этого аналита.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "caloric_restriction",
+        "node_id": "L2_ENERGY_BALANCE",
+        "relation": "organizes",
+        "rationale": "Операциональная гипотеза о состоянии L2; её наличие не выводится автоматически из маркера L3.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      },
+      {
+        "theory_id": "caloric_restriction",
+        "node_id": "L1_FUNCTIONAL_RESILIENCE",
+        "relation": "organizes",
+        "rationale": "Предлагаемый клинический исход для отдельной продольной проверки; связь с теорией не является эмпирическим ребром.",
+        "observation_ids": [],
+        "causal_claim": false,
+        "empirical_edge": false,
+        "status": "hypothesis"
+      }
+    ],
+    "predictions": [
+      {
+        "id": "P_INFLAM_PERSISTENCE",
+        "theory_ids": [
+          "inflammaging"
+        ],
+        "analyte_ids": [
+          "IL6",
+          "CRP",
+          "TNF"
+        ],
+        "endpoint": "functional_decline",
+        "question": "Связано ли устойчивое повышение воспалительных маркеров с последующим снижением функций сверх возраста и сопутствующих заболеваний?",
+        "alternative_explanation": "Острая инфекция, ожирение, функция почек или лечение могут объяснять однократное повышение.",
+        "required_test": "Повторные измерения и продольный исход; заранее заданные поправки и проверка независимой когорты.",
+        "observation_ids": [],
+        "query_terms": [
+          "persistent inflammation",
+          "functional decline"
+        ],
+        "falsification_criterion": "После контроля заранее заданных альтернатив и независимой репликации устойчивость маркеров не улучшает прогноз заданного продольного исхода.",
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_AGE_SIGN_REVERSAL",
+        "theory_ids": [
+          "antagonistic_pleiotropy",
+          "inflammaging"
+        ],
+        "analyte_ids": [
+          "TNF",
+          "IL6"
+        ],
+        "endpoint": "age_dependent_function",
+        "question": "Меняется ли направление связи одного процесса с исходом между возрастными контекстами?",
+        "alternative_explanation": "Различие популяций, методик или тяжести болезни может имитировать возрастную смену эффекта.",
+        "required_test": "Возрастное взаимодействие на сопоставимых данных; ранняя польза и поздний вред должны быть измерены отдельно.",
+        "observation_ids": [],
+        "query_terms": [
+          "age interaction",
+          "antagonistic pleiotropy"
+        ],
+        "falsification_criterion": "Для одного и того же признака отсутствует совместная ранняя выгода и поздняя потеря; одно возрастное взаимодействие без раннего фитнес-выигрыша недостаточно.",
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_DAMAGE_VS_HYPERFUNCTION",
+        "theory_ids": [
+          "free_radical_damage",
+          "hyperfunction"
+        ],
+        "analyte_ids": [
+          "GDF15",
+          "PBMC_PS6",
+          "F2_ISOPROSTANES"
+        ],
+        "endpoint": "functional_decline",
+        "question": "Добавляют ли прямые клеточные показатели сигналинга и окисления различающую информацию к неспецифичному GDF15 для последующего снижения функций?",
+        "alternative_explanation": "GDF15 отражает неспецифичный стресс и может быть одинаково совместим с несколькими объяснениями.",
+        "required_test": "Одновременные независимые измерения повреждений и ростового сигналинга; различающиеся предсказания и временная последовательность.",
+        "observation_ids": [],
+        "query_terms": [
+          "GDF15",
+          "oxidative damage",
+          "mTOR"
+        ],
+        "falsification_criterion": "Различающие измерения и временные траектории не отделяют заранее заданные конкурирующие модели; неспецифичный GDF15 сам их не различает.",
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_TELOMERE_INCREMENT",
+        "theory_ids": [
+          "telomere_attrition"
+        ],
+        "analyte_ids": [
+          "LEUKOCYTE_TELOMERE_LENGTH"
+        ],
+        "endpoint": "functional_decline",
+        "question": "Добавляет ли длина теломер информацию к белковой панели и возрасту?",
+        "alternative_explanation": "Состав клеток крови и исходная длина теломер могут объяснять ассоциацию.",
+        "required_test": "Отдельный анализ теломер, клеточный состав, продольный исход и сравнение вложенных моделей.",
+        "observation_ids": [],
+        "query_terms": [
+          "leukocyte telomere",
+          "incremental prediction"
+        ],
+        "falsification_criterion": "После учёта возраста, клеточного состава и технической ошибки теломерное измерение не добавляет информацию в независимой выборке.",
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_DIET_RESTRICTION_RESPONSE",
+        "theory_ids": [
+          "caloric_restriction",
+          "hyperfunction"
+        ],
+        "analyte_ids": [
+          "GDF15",
+          "LEPTIN",
+          "F2_ISOPROSTANES"
+        ],
+        "endpoint": "functional_resilience",
+        "question": "Отличает ли профиль маркеров улучшение функций от неспецифичного ответа на энергетический дефицит?",
+        "alternative_explanation": "Потеря мышечной массы или сопутствующая болезнь могут менять белки независимо от полезного эффекта.",
+        "required_test": "Контролируемое исследование с функциональными исходами и составом тела; направление маркера само по себе не считается пользой.",
+        "observation_ids": [],
+        "query_terms": [
+          "dietary restriction",
+          "plasma proteomics"
+        ],
+        "falsification_criterion": "Динамика белков объясняется составом тела и энергетическим дефицитом либо не сопровождается сохранением/улучшением функционального исхода.",
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_REDOX_CONTEXT",
+        "theory_ids": [
+          "free_radical_damage"
+        ],
+        "analyte_ids": [
+          "F2_ISOPROSTANES"
+        ],
+        "endpoint": "functional_decline",
+        "question": "Сохраняется ли связь прямых показателей окисления с функциональным снижением при учёте редокс-сигналинга, почечного клиренса и типа экспозиции?",
+        "alternative_explanation": "Адаптивный редокс-ответ и различия клиренса могут менять показатель без большего повреждения.",
+        "required_test": "Продольная когорта, повторные измерения, учёт функции почек и заданного функционального исхода; видовые эксперименты анализируются отдельно.",
+        "falsification_criterion": "Предзаданная монотонная модель не воспроизводится в независимой человеческой когорте при аналитически сопоставимых измерениях.",
+        "observation_ids": [],
+        "query_terms": [],
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      },
+      {
+        "id": "P_TNF_INCREMENT",
+        "theory_ids": [
+          "inflammaging"
+        ],
+        "analyte_ids": [
+          "TNF",
+          "IL6",
+          "CRP"
+        ],
+        "endpoint": "functional_decline",
+        "question": "Добавляет ли измеряемый TNF самостоятельную информацию сверх IL-6 и CRP при приемлемых чувствительности и воспроизводимости анализа?",
+        "alternative_explanation": "Коррелированные воспалительные сигналы и аналитическая нестабильность могут исключать добавочную ценность TNF.",
+        "required_test": "Аналитическая валидация TNF, повторные пробы, сравнение вложенных моделей и независимая проверка исхода.",
+        "falsification_criterion": "TNF не улучшает заранее заданные метрики прогноза/решения либо добавочная информация исчезает после учёта аналитической ошибки.",
+        "observation_ids": [],
+        "query_terms": [],
+        "confirmed": false,
+        "causal_claim": false,
+        "status": "untested_hypothesis"
+      }
+    ],
+    "search_questions": [
+      {
+        "id": "SEARCH_INFLAMMAGING",
+        "theory_id": "inflammaging",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"inflammaging\" OR TITLE_ABS:\"inflamm-aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"inflammaging\" OR TITLE_ABS:\"inflamm-aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      },
+      {
+        "id": "SEARCH_ANTAGONISTIC_PLEIOTROPY",
+        "theory_id": "antagonistic_pleiotropy",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"antagonistic pleiotropy\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"antagonistic pleiotropy\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      },
+      {
+        "id": "SEARCH_HYPERFUNCTION",
+        "theory_id": "hyperfunction",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"hyperfunction\" OR TITLE_ABS:\"quasi-programmed aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"hyperfunction\" OR TITLE_ABS:\"quasi-programmed aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      },
+      {
+        "id": "SEARCH_FREE_RADICAL_DAMAGE",
+        "theory_id": "free_radical_damage",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"free radical theory\" OR TITLE_ABS:\"oxidative damage aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"free radical theory\" OR TITLE_ABS:\"oxidative damage aging\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      },
+      {
+        "id": "SEARCH_TELOMERE_ATTRITION",
+        "theory_id": "telomere_attrition",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"telomere attrition\" OR TITLE_ABS:\"telomere shortening\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"telomere attrition\" OR TITLE_ABS:\"telomere shortening\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      },
+      {
+        "id": "SEARCH_CALORIC_RESTRICTION",
+        "theory_id": "caloric_restriction",
+        "question": "Какие независимые измерения и результаты отличают эту концепцию от её альтернатив?",
+        "supportive_query": "(TITLE_ABS:\"caloric restriction\" OR TITLE_ABS:\"dietary restriction\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:longitudinal OR TITLE_ABS:intervention OR TITLE_ABS:biomarker)",
+        "contradictory_query": "(TITLE_ABS:\"caloric restriction\" OR TITLE_ABS:\"dietary restriction\") AND (TITLE_ABS:aging OR TITLE_ABS:ageing) AND (TITLE_ABS:\"no association\" OR TITLE_ABS:\"null result\" OR TITLE_ABS:\"failed replication\" OR TITLE_ABS:paradox)",
+        "interpretation": "Предложения дополнительного поиска, не выполненные поиски и не научные свидетельства. Основные шесть поисков и общий поиск противоречий формируются принимающим конвейером."
+      }
+    ],
+    "policy": {
+      "theory_membership_changes_panel_score": false,
+      "bibliographic_review_validates_theory": false,
+      "clinical_evidence_must_be_reviewed_downstream": true,
+      "search_questions_are_not_preregistered_studies": true
+    }
+  }
+}
